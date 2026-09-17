@@ -147,30 +147,22 @@ if [ -n "$LOGO_URL" ] && [ "$LOGO_URL" != "" ]; then
 fi
 
 # ============================================================
-# Baixar e instalar greeter personalizado
+# Baixar e instalar greeter personalizado (IMAGEM, nao tar.gz)
 # ============================================================
-echo ">>> Baixando greeter..."
+echo ">>> Baixando greeter (imagem)..."
 if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
-    GREETER_TARBALL="/tmp/seederlinux-greeter.tar.gz"
-    if wget -q --no-check-certificate -O "$GREETER_TARBALL" "$GREETER_URL"; then
-        mkdir -p /tmp/seederlinux-greeter
-        tar xzf "$GREETER_TARBALL" -C /tmp/seederlinux-greeter
-        # Copiar para o local apropriado conforme o DM
-        case "$DISPLAY_MANAGER" in
-            lightdm)
-                cp -r /tmp/seederlinux-greeter/* /usr/share/lightdm/ 2>/dev/null || true
-                ;;
-            gdm3)
-                cp -r /tmp/seederlinux-greeter/* /usr/share/gdm/ 2>/dev/null || true
-                ;;
-            sddm)
-                cp -r /tmp/seederlinux-greeter/* /usr/share/sddm/themes/ 2>/dev/null || true
-                ;;
-        esac
-        rm -rf /tmp/seederlinux-greeter "$GREETER_TARBALL"
-        echo ">>> Greeter instalado"
+    GREETER_IMG="/usr/share/backgrounds/seederlinux/greeter.jpg"
+    if wget -q --no-check-certificate -O "$GREETER_IMG" "$GREETER_URL"; then
+        # Se WALLPAPER_LOGIN_URL nao foi definido, usar o greeter como
+        # wallpaper de login (fallback). Se ja foi, mantem o wallpaper
+        # de login e o greeter fica apenas disponivel para uso futuro.
+        if [ -z "$WALLPAPER_LOGIN_URL" ] || [ ! -f /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
+            cp "$GREETER_IMG" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+            echo ">>> Greeter usado como wallpaper de login"
+        fi
+        echo ">>> Greeter (imagem) instalado: $GREETER_IMG"
     else
-        echo ">>> AVISO: Falha ao baixar greeter"
+        echo ">>> AVISO: Falha ao baixar greeter de: $GREETER_URL"
     fi
 fi
 
