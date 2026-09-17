@@ -48,10 +48,10 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 # Configurar proxy para downloads
-if [ "$PROXY_MODE" = "MANUAL" ] && [ -n "$PROXY_HTTP" ] && [ "$PROXY_HTTP" != "" ]; then
-    export http_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
-    export https_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
-fi
+##if [ "$PROXY_MODE" = "MANUAL" ] && [ -n "$PROXY_HTTP" ] && [ "$PROXY_HTTP" != "" ]; then
+##    export http_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
+##   export https_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
+##fi
 
 # ============================================================
 # Java 8 (OpenJDK 8) - apenas se INSTALL_JAVA8=true
