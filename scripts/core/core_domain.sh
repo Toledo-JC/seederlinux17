@@ -413,13 +413,17 @@ EOF
     echo ">>> Obtendo ticket Kerberos..."
     KINIT_OK=false
 
-    # Tentar com pipe se ADMIN_PASSWORD estiver disponível
-    if [ -n "$ADMIN_PASSWORD" ]; then
+        if [ -n "$ADMIN_PASSWORD" ]; then
         echo ">>> Tentando obter ticket com senha pre-definida..."
-        echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME}@${REALM}" 2>/dev/null && KINIT_OK=true
-        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME}@${DOMINIO_NETBIOS}" 2>/dev/null && KINIT_OK=true
-        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME,,}@${REALM}" 2>/dev/null && KINIT_OK=true
-        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME,,}@${DOMINIO,,}" 2>/dev/null && KINIT_OK=true
+        # --password-file=STDIN e a unica forma confiavel de passar senha
+        # ao kinit do MIT Kerberos. Um simples `echo "$SENHA" | kinit user`
+        # NAO funciona de forma confiavel: kinit relê a senha de /dev/tty
+        # quando o pipe nao esta no formato esperado, e cai em prompt
+        # interativo (foi o que causou o "Password for ...@REALM:" no log).
+        echo "$ADMIN_PASSWORD" | kinit --password-file=STDIN "${ADMIN_USERNAME}@${REALM}" 2>/dev/null && KINIT_OK=true
+        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit --password-file=STDIN "${ADMIN_USERNAME}@${DOMINIO_NETBIOS}" 2>/dev/null && KINIT_OK=true
+        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit --password-file=STDIN "${ADMIN_USERNAME,,}@${REALM}" 2>/dev/null && KINIT_OK=true
+        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit --password-file=STDIN "${ADMIN_USERNAME,,}@${DOMINIO,,}" 2>/dev/null && KINIT_OK=true
     elif [ "$NON_INTERACTIVE" = "true" ]; then
         echo ">>> ERRO: ADMIN_PASSWORD nao definido em modo nao interativo."
     fi
