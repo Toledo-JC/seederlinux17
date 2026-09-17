@@ -452,11 +452,12 @@ EOF
         done
     fi
 
-    if [ "$KINIT_OK" != "true" ]; then
+        if [ "$KINIT_OK" != "true" ]; then
         echo ">>> ERRO: Falha ao obter ticket Kerberos."
         echo ">>> Verifique as credenciais e conectividade com o DC."
         if [ "$NON_INTERACTIVE" = "true" ]; then
-            echo ">>> Modo não interativo: continuando sem pedir senha."
+            echo ">>> Modo nao interativo: abortando (sem ticket nao ha como ingressar no dominio)."
+            exit 1
         else
             exit 1
         fi
