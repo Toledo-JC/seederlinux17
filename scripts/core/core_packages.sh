@@ -163,6 +163,7 @@ AUTH_PACKAGES=(
     sssd-tools
     sssd-krb5
     sssd-krb5-common
+    libsss-sudo
     libnss-sss
     libpam-sss
     adcli
