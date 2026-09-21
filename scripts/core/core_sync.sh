@@ -148,17 +148,28 @@ sync_branding() {
     echo "--- branding ---"
     mkdir -p /usr/share/backgrounds/seederlinux /usr/share/pixmaps
 
+    _baixar_ativo() {
+        local url="$1"
+        local dest="$2"
+        local tmp
+        tmp="$(mktemp /tmp/seeder-asset.XXXXXX)"
+        if wget -q --no-check-certificate --no-proxy -O "$tmp" "$url" && [ -s "$tmp" ]; then
+            mv "$tmp" "$dest"
+            echo "OK: $(basename "$dest")"
+        else
+            rm -f "$tmp"
+            echo "AVISO: falha/arquivo vazio ao baixar $(basename "$dest") - mantendo o existente"
+        fi
+    }
+
     if [ -n "${WALLPAPER_URL:-}" ]; then
-        wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper.jpg "$WALLPAPER_URL" \
-            && echo "wallpaper OK" || echo "AVISO: falha ao baixar wallpaper"
+        _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
     fi
     if [ -n "${WALLPAPER_LOGIN_URL:-}" ]; then
-        wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper-login.jpg "$WALLPAPER_LOGIN_URL" \
-            2>/dev/null || echo "AVISO: falha ao baixar wallpaper de login"
+        _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
     fi
     if [ -n "${LOGO_URL:-}" ]; then
-        wget -q --no-check-certificate --no-proxy -O /usr/share/pixmaps/seederlinux-logo.png "$LOGO_URL" \
-            2>/dev/null || echo "AVISO: falha ao baixar logo"
+        _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
     fi
 
     # THEME="DEFAULT" (ou vazio) nao e um tema GTK valido - mesma
