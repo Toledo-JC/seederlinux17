@@ -115,15 +115,32 @@ elif ! grep -q "^system-db:local$" /etc/dconf/profile/user; then
 fi
 
 # ============================================================
+# Helper: baixar asset validando tamanho. Evita que um download
+# falho (wget -O cria arquivo vazio) sobrescreva o asset correto -
+# causa da tela preta (wallpaper zerado).
+# ============================================================
+_baixar_ativo() {
+    local url="$1"
+    local dest="$2"
+    local tmp
+    tmp="$(mktemp /tmp/seeder-asset.XXXXXX)"
+    if wget -q --no-check-certificate --no-proxy -O "$tmp" "$url" && [ -s "$tmp" ]; then
+        mv "$tmp" "$dest"
+        echo ">>> $(basename "$dest") instalado"
+        return 0
+    else
+        rm -f "$tmp"
+        echo ">>> AVISO: falha/arquivo vazio ao baixar $(basename "$dest") - mantendo o existente"
+        return 1
+    fi
+}
+
+# ============================================================
 # Baixar e instalar wallpaper
 # ============================================================
 echo ">>> Baixando wallpaper..."
 if [ -n "$WALLPAPER_URL" ] && [ "$WALLPAPER_URL" != "" ]; then
-    if wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper.jpg "$WALLPAPER_URL"; then
-        echo ">>> Wallpaper instalado"
-    else
-        echo ">>> AVISO: Falha ao baixar wallpaper de: $WALLPAPER_URL"
-    fi
+    _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
 else
     echo ">>> WALLPAPER_URL nao definido. Pulando wallpaper."
 fi
@@ -133,11 +150,9 @@ fi
 # ============================================================
 echo ">>> Baixando wallpaper de login..."
 if [ -n "$WALLPAPER_LOGIN_URL" ] && [ "$WALLPAPER_LOGIN_URL" != "" ]; then
-    if wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper-login.jpg "$WALLPAPER_LOGIN_URL"; then
-        echo ">>> Wallpaper de login instalado"
-    else
-        echo ">>> AVISO: Falha ao baixar wallpaper de login"
-    fi
+    _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+else
+    echo ">>> WALLPAPER_LOGIN_URL nao definido. Pulando wallpaper de login."
 fi
 
 # ============================================================
@@ -145,11 +160,9 @@ fi
 # ============================================================
 echo ">>> Baixando logo..."
 if [ -n "$LOGO_URL" ] && [ "$LOGO_URL" != "" ]; then
-    if wget -q --no-check-certificate --no-proxy -O /usr/share/pixmaps/seederlinux-logo.png "$LOGO_URL"; then
-        echo ">>> Logo instalado"
-    else
-        echo ">>> AVISO: Falha ao baixar logo"
-    fi
+    _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
+else
+    echo ">>> LOGO_URL nao definido. Pulando logo."
 fi
 
 # ============================================================
@@ -172,7 +185,7 @@ fi
 echo ">>> Baixando greeter..."
 if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
     GREETER_TARBALL="/tmp/seederlinux-greeter.bin"
-    if wget -q --no-check-certificate --no-proxy -O "$GREETER_TARBALL" "$GREETER_URL"; then
+    if wget -q --no-check-certificate --no-proxy -O "$GREETER_TARBALL" "$GREETER_URL" && [ -s "$GREETER_TARBALL" ]; then
         GREETER_MIME="$(file -b --mime-type "$GREETER_TARBALL" 2>/dev/null)"
         echo ">>> Greeter detectado como: ${GREETER_MIME:-desconhecido}"
 
@@ -247,7 +260,8 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
 
         rm -f "$GREETER_TARBALL"
     else
-        echo ">>> AVISO: Falha ao baixar greeter"
+        echo ">>> AVISO: greeter baixado vazio ou com falha - pulando"
+        rm -f "$GREETER_TARBALL"
     fi
 fi
 
