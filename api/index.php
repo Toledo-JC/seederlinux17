@@ -2637,13 +2637,24 @@ function handleGenerateBundle($input) {
 }
 
 function handleDownloadBundle($id) {
-    requireAuth();
-    $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$id]);
-    if (!$bundle) jsonError('Bundle nao encontrado', 404);
+    $stationAuth = requireStationAuth();
+    if ($stationAuth) {
+        $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$id]);
+        if (!$bundle) jsonError('Bundle nao encontrado', 404);
 
-    $userOrgId = getUserOrgId();
-    if ($userOrgId !== null && !isAdminGap() && (int)$bundle['organization_id'] !== $userOrgId) {
-        jsonError('Sem permissao', 403);
+        $stationOrgId = (int)($_REQUEST['station_org_id'] ?? 0);
+        if ($stationOrgId > 0 && (int)$bundle['organization_id'] !== $stationOrgId) {
+            jsonError('Sem permissao', 403);
+        }
+    } else {
+        requireAuth();
+        $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$id]);
+        if (!$bundle) jsonError('Bundle nao encontrado', 404);
+
+        $userOrgId = getUserOrgId();
+        if ($userOrgId !== null && !isAdminGap() && (int)$bundle['organization_id'] !== $userOrgId) {
+            jsonError('Sem permissao', 403);
+        }
     }
 
     header('Content-Type: application/octet-stream');

@@ -79,6 +79,32 @@ function requireAuth() {
     jsonError('Autenticacao necessaria', 401);
 }
 
+function requireStationAuth() {
+    $headers = function_exists('getallheaders') ? getallheaders() : [];
+    $authHeader = '';
+    foreach ($headers as $name => $value) {
+        if (strtolower($name) === 'authorization') {
+            $authHeader = $value;
+            break;
+        }
+    }
+
+    if (preg_match('/Bearer\s+(.+)/', $authHeader, $matches)) {
+        $token = trim($matches[1]);
+        $station = Database::fetchOne(
+            "SELECT id, organization_id, hostname FROM stations WHERE token = ? LIMIT 1",
+            [$token]
+        );
+        if ($station) {
+            $_REQUEST['station_id'] = $station['id'];
+            $_REQUEST['station_org_id'] = $station['organization_id'];
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function bumpOrgSerial($orgId) {
     Database::execute(
         "UPDATE organizations SET serial_config = serial_config + 1 WHERE id = ?",
