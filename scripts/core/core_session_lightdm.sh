@@ -143,19 +143,36 @@ echo ">>> Display Manager: $DISPLAY_MANAGER"
 echo ">>> Ambiente: $DESKTOP_ENV"
 
 # ============================================================
-# Instalar LightDM (pular se ja estiver instalado)
+# Verificar se LightDM + greeter estao presentes.
+# CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
+# no AD, quando o DNS ja foi trocado pro controlador de dominio e
+# nao resolve mais repositorios publicos. A instalacao real acontece
+# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# esta ativo. Aqui so verificamos e configuramos.
 # ============================================================
-if ! command -v lightdm &>/dev/null && ! dpkg -l lightdm 2>/dev/null | grep -q "^ii"; then
-    echo ">>> Instalando LightDM..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y lightdm lightdm-gtk-greeter
-else
-    echo ">>> LightDM ja esta instalado. Pulando instalacao."
+if ! dpkg -l lightdm 2>/dev/null | grep -q "^ii"; then
+    echo ">>> ERRO: lightdm nao instalado (deveria ter sido no core_packages.sh)."
+    echo ">>> Pulando configuracao de LightDM."
+    echo "============================================================"
+    exit 0
 fi
 
-# Garantir que o LightDM seja o DM padrao
+if dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
+    GREETER_SESSION="lightdm-slick-greeter"
+elif dpkg -l lightdm-gtk-greeter 2>/dev/null | grep -q "^ii"; then
+    GREETER_SESSION="lightdm-gtk-greeter"
+else
+    echo ">>> ERRO: nenhum greeter instalado."
+    echo ">>> Pulando configuracao de LightDM."
+    echo "============================================================"
+    exit 0
+fi
+echo ">>> Greeter a usar: $GREETER_SESSION"
+
+# Registrar LightDM como DM padrao (arquivo canonico do Debian/Ubuntu)
 echo "lightdm shared/default-x-display-manager select lightdm" | debconf-set-selections 2>/dev/null || true
 echo "lightdm lightdm/daemon_name string lightdm" | debconf-set-selections 2>/dev/null || true
+echo "/usr/sbin/lightdm" > /etc/X11/default-display-manager
 
 # ============================================================
 # Configurar LightDM
@@ -166,7 +183,7 @@ mkdir -p /etc/lightdm
 cat > /etc/lightdm/lightdm.conf <<EOF
 # Configuracao LightDM - SeederLinux
 [Seat:*]
-greeter-session=lightdm-gtk-greeter
+greeter-session=${GREETER_SESSION}
 user-session=${DESKTOP_ENV}
 allow-guest=false
 greeter-hide-users=true
@@ -187,13 +204,17 @@ echo ">>> LightDM configurado"
 
 # ============================================================
 # Configurar greeter do LightDM
+# CORRECAO: theme-name = ${THEME} removido daqui incondicionalmente -
+# quando THEME="DEFAULT" (ou vazio), "DEFAULT" nao e um tema GTK
+# valido; o core_branding.sh ja decide se THEME deve ser aplicado
+# (grava em outro arquivo quando aplicavel). Este greeter.conf fica
+# sem theme-name explicito, usando o tema padrao do sistema.
 # ============================================================
 echo ">>> Configurando greeter..."
 mkdir -p /etc/lightdm
 
 cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
 [greeter]
-theme-name = ${THEME}
 icon-theme-name = Adwaita
 font-name = DejaVu Sans 10
 background = /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
@@ -233,15 +254,26 @@ done
 echo ">>> Desabilitando outros display managers..."
 systemctl disable gdm3 2>/dev/null || true
 systemctl disable sddm 2>/dev/null || true
-systemctl enable lightdm
+# CORRECAO: "systemctl enable lightdm" removido - o unit e estatico
+# (sem secao [Install]), o enable so emitia warning sem efeito; quem
+# registra o DM padrao e o arquivo /etc/X11/default-display-manager
+# (ja escrito acima).
 
 # ============================================================
 # Reiniciar servico
+# CORRECAO: reiniciar o LightDM enquanto o bundle roda DENTRO de uma
+# sessao grafica ativa (console, nao SSH) mata a propria sessao que
+# esta executando o bundle. So reinicia se nao ha $DISPLAY (execucao
+# via TTY/cron) ou se veio por SSH (nao afeta sessao grafica local).
 # ============================================================
-echo ">>> Reiniciando LightDM..."
-systemctl restart lightdm 2>/dev/null || {
-    echo ">>> AVISO: LightDM sera iniciado no proximo boot."
-}
+if [ -z "$DISPLAY" ] || [ -n "$SSH_CONNECTION" ]; then
+    echo ">>> Reiniciando LightDM..."
+    systemctl restart lightdm 2>/dev/null || {
+        echo ">>> AVISO: LightDM sera iniciado no proximo boot."
+    }
+else
+    echo ">>> Rodando dentro da sessao grafica - LightDM sera aplicado no proximo boot."
+fi
 
 echo ">>> [14a] LightDM configurado!"
 echo "============================================================"

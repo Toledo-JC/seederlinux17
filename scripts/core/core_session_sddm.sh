@@ -135,18 +135,23 @@ echo ">>> Display Manager: $DISPLAY_MANAGER"
 echo ">>> Ambiente: $DESKTOP_ENV"
 
 # ============================================================
-# Instalar SDDM
+# Verificar se SDDM esta presente.
+# CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
+# no AD, quando o DNS ja foi trocado pro controlador de dominio e
+# nao resolve mais repositorios publicos. A instalacao real acontece
+# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# esta ativo.
 # ============================================================
 if ! dpkg -l sddm 2>/dev/null | grep -q "^ii"; then
-    echo ">>> Instalando SDDM..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y sddm sddm-theme-breeze
-else
-    echo ">>> SDDM ja esta instalado. Pulando instalacao."
+    echo ">>> ERRO: sddm nao instalado (deveria ter sido no core_packages.sh)."
+    echo ">>> Pulando configuracao do SDDM."
+    echo "============================================================"
+    exit 0
 fi
 
 echo "sddm shared/default-x-display-manager select sddm" | debconf-set-selections 2>/dev/null || true
 echo "sddm sddm/daemon_name string sddm" | debconf-set-selections 2>/dev/null || true
+echo "/usr/sbin/sddm" > /etc/X11/default-display-manager
 
 # ============================================================
 # Configurar SDDM
@@ -217,15 +222,22 @@ done
 echo ">>> Desabilitando outros display managers..."
 systemctl disable lightdm 2>/dev/null || true
 systemctl disable gdm3 2>/dev/null || true
-systemctl enable sddm
+# CORRECAO: "systemctl enable sddm" removido - registro do DM padrao
+# ja feito via /etc/X11/default-display-manager acima.
 
 # ============================================================
 # Reiniciar servico
+# CORRECAO: mesmo guard do LightDM/GDM3 - reiniciar dentro de uma
+# sessao grafica ativa mataria a propria sessao rodando o bundle.
 # ============================================================
-echo ">>> Reiniciando SDDM..."
-systemctl restart sddm 2>/dev/null || {
-    echo ">>> AVISO: SDDM sera iniciado no proximo boot."
-}
+if [ -z "$DISPLAY" ] || [ -n "$SSH_CONNECTION" ]; then
+    echo ">>> Reiniciando SDDM..."
+    systemctl restart sddm 2>/dev/null || {
+        echo ">>> AVISO: SDDM sera iniciado no proximo boot."
+    }
+else
+    echo ">>> Rodando dentro da sessao grafica - SDDM sera aplicado no proximo boot."
+fi
 
 echo ">>> [14c] SDDM configurado!"
 echo "============================================================"

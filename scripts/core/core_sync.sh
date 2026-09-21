@@ -149,16 +149,24 @@ sync_branding() {
     mkdir -p /usr/share/backgrounds/seederlinux /usr/share/pixmaps
 
     if [ -n "${WALLPAPER_URL:-}" ]; then
-        wget -q --no-check-certificate -O /usr/share/backgrounds/seederlinux/wallpaper.jpg "$WALLPAPER_URL" \
+        wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper.jpg "$WALLPAPER_URL" \
             && echo "wallpaper OK" || echo "AVISO: falha ao baixar wallpaper"
     fi
     if [ -n "${WALLPAPER_LOGIN_URL:-}" ]; then
-        wget -q --no-check-certificate -O /usr/share/backgrounds/seederlinux/wallpaper-login.jpg "$WALLPAPER_LOGIN_URL" \
+        wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper-login.jpg "$WALLPAPER_LOGIN_URL" \
             2>/dev/null || echo "AVISO: falha ao baixar wallpaper de login"
     fi
     if [ -n "${LOGO_URL:-}" ]; then
-        wget -q --no-check-certificate -O /usr/share/pixmaps/seederlinux-logo.png "$LOGO_URL" \
+        wget -q --no-check-certificate --no-proxy -O /usr/share/pixmaps/seederlinux-logo.png "$LOGO_URL" \
             2>/dev/null || echo "AVISO: falha ao baixar logo"
+    fi
+
+    # THEME="DEFAULT" (ou vazio) nao e um tema GTK valido - mesma
+    # regra do core_branding.sh: so aplica se existir de verdade em
+    # /usr/share/themes, senao mantem o tema atual do sistema.
+    THEME_APLICAR=false
+    if [ -n "${THEME:-}" ] && [ "${THEME}" != "DEFAULT" ] && [ -d "/usr/share/themes/${THEME}" ]; then
+        THEME_APLICAR=true
     fi
 
     # Perfil dconf (system-db:local) - sem isso, nada de dconf abaixo aplica
@@ -176,11 +184,15 @@ sync_branding() {
 [org/cinnamon/desktop/background]
 picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
+EOF
+            if [ "$THEME_APLICAR" = "true" ]; then
+                cat >> /etc/dconf/db/local.d/seederlinux-branding-cinnamon <<EOF
 
 [org/cinnamon/desktop/interface]
-gtk-theme='${THEME:-Adwaita}'
+gtk-theme='${THEME}'
 icon-theme-name='Adwaita'
 EOF
+            fi
             dconf update 2>/dev/null || true
             ;;
         mate)
@@ -188,11 +200,15 @@ EOF
 [org/mate/desktop/background]
 picture-filename='/usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
+EOF
+            if [ "$THEME_APLICAR" = "true" ]; then
+                cat >> /etc/dconf/db/local.d/seederlinux-branding-mate <<EOF
 
 [org/mate/desktop/interface]
-gtk-theme='${THEME:-Adwaita}'
+gtk-theme='${THEME}'
 icon-theme='Adwaita'
 EOF
+            fi
             dconf update 2>/dev/null || true
             ;;
         gnome)
@@ -201,13 +217,17 @@ EOF
 picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
 
-[org/gnome/desktop/interface]
-gtk-theme='${THEME:-Adwaita}'
-icon-theme='Adwaita'
-
 [org/gnome/login-screen]
 logo='/usr/share/pixmaps/seederlinux-logo.png'
 EOF
+            if [ "$THEME_APLICAR" = "true" ]; then
+                cat >> /etc/dconf/db/local.d/seederlinux-branding-gnome <<EOF
+
+[org/gnome/desktop/interface]
+gtk-theme='${THEME}'
+icon-theme='Adwaita'
+EOF
+            fi
             dconf update 2>/dev/null || true
             ;;
         xfce)

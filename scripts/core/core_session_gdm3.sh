@@ -134,18 +134,23 @@ echo ">>> Display Manager: $DISPLAY_MANAGER"
 echo ">>> Ambiente: $DESKTOP_ENV"
 
 # ============================================================
-# Instalar GDM3
+# Verificar se GDM3 esta presente.
+# CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
+# no AD, quando o DNS ja foi trocado pro controlador de dominio e
+# nao resolve mais repositorios publicos. A instalacao real acontece
+# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# esta ativo.
 # ============================================================
 if ! dpkg -l gdm3 2>/dev/null | grep -q "^ii"; then
-    echo ">>> Instalando GDM3..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y gdm3
-else
-    echo ">>> GDM3 ja esta instalado. Pulando instalacao."
+    echo ">>> ERRO: gdm3 nao instalado (deveria ter sido no core_packages.sh)."
+    echo ">>> Pulando configuracao do GDM3."
+    echo "============================================================"
+    exit 0
 fi
 
 echo "gdm3 shared/default-x-display-manager select gdm3" | debconf-set-selections 2>/dev/null || true
 echo "gdm3 gdm3/daemon_name string gdm3" | debconf-set-selections 2>/dev/null || true
+echo "/usr/sbin/gdm3" > /etc/X11/default-display-manager
 
 # ============================================================
 # Configurar GDM3
@@ -213,15 +218,22 @@ done
 echo ">>> Desabilitando outros display managers..."
 systemctl disable lightdm 2>/dev/null || true
 systemctl disable sddm 2>/dev/null || true
-systemctl enable gdm3
+# CORRECAO: "systemctl enable gdm3" removido - registro do DM padrao
+# ja feito via /etc/X11/default-display-manager acima.
 
 # ============================================================
 # Reiniciar servico
+# CORRECAO: mesmo guard do LightDM - reiniciar dentro de uma sessao
+# grafica ativa mataria a propria sessao rodando o bundle.
 # ============================================================
-echo ">>> Reiniciando GDM3..."
-systemctl restart gdm3 2>/dev/null || {
-    echo ">>> AVISO: GDM3 sera iniciado no proximo boot."
-}
+if [ -z "$DISPLAY" ] || [ -n "$SSH_CONNECTION" ]; then
+    echo ">>> Reiniciando GDM3..."
+    systemctl restart gdm3 2>/dev/null || {
+        echo ">>> AVISO: GDM3 sera iniciado no proximo boot."
+    }
+else
+    echo ">>> Rodando dentro da sessao grafica - GDM3 sera aplicado no proximo boot."
+fi
 
 echo ">>> [14b] GDM3 configurado!"
 echo "============================================================"

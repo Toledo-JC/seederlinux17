@@ -11,6 +11,12 @@
 
 set -e
 
+# CORRECAO: script envolvido em subshell - uma falha aqui (ex: asset
+# externo que nao baixa/extrai direito) nao pode mais derrubar o
+# bundle inteiro, so este modulo.
+(
+set -e
+
 echo "============================================================"
 echo "13 - Aplicar identidade visual (branding)"
 echo "============================================================"
@@ -113,7 +119,7 @@ fi
 # ============================================================
 echo ">>> Baixando wallpaper..."
 if [ -n "$WALLPAPER_URL" ] && [ "$WALLPAPER_URL" != "" ]; then
-    if wget -q --no-check-certificate -O /usr/share/backgrounds/seederlinux/wallpaper.jpg "$WALLPAPER_URL"; then
+    if wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper.jpg "$WALLPAPER_URL"; then
         echo ">>> Wallpaper instalado"
     else
         echo ">>> AVISO: Falha ao baixar wallpaper de: $WALLPAPER_URL"
@@ -127,7 +133,7 @@ fi
 # ============================================================
 echo ">>> Baixando wallpaper de login..."
 if [ -n "$WALLPAPER_LOGIN_URL" ] && [ "$WALLPAPER_LOGIN_URL" != "" ]; then
-    if wget -q --no-check-certificate -O /usr/share/backgrounds/seederlinux/wallpaper-login.jpg "$WALLPAPER_LOGIN_URL"; then
+    if wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper-login.jpg "$WALLPAPER_LOGIN_URL"; then
         echo ">>> Wallpaper de login instalado"
     else
         echo ">>> AVISO: Falha ao baixar wallpaper de login"
@@ -139,7 +145,7 @@ fi
 # ============================================================
 echo ">>> Baixando logo..."
 if [ -n "$LOGO_URL" ] && [ "$LOGO_URL" != "" ]; then
-    if wget -q --no-check-certificate -O /usr/share/pixmaps/seederlinux-logo.png "$LOGO_URL"; then
+    if wget -q --no-check-certificate --no-proxy -O /usr/share/pixmaps/seederlinux-logo.png "$LOGO_URL"; then
         echo ">>> Logo instalado"
     else
         echo ">>> AVISO: Falha ao baixar logo"
@@ -147,31 +153,129 @@ if [ -n "$LOGO_URL" ] && [ "$LOGO_URL" != "" ]; then
 fi
 
 # ============================================================
-# Baixar e instalar greeter personalizado (IMAGEM, nao tar.gz)
+# Baixar e instalar greeter personalizado
 # ============================================================
-echo ">>> Baixando greeter (imagem)..."
+# GREETER_URL pode ser:
+#   - um pacote compactado (tar/gzip/bzip2/xz) com tema de greeter
+#     personalizado, OU
+#   - uma imagem (.jpg, .jpeg, .png, .bmp, .gif, .webp, .tif, ...)
+#     que sera usada como wallpaper de login.
+#
+# Deteccao por conteudo (MIME type via magic bytes), NAO por
+# extensao do arquivo - funciona com qualquer formato, mesmo que o
+# nome/extensao esteja errado. Corrige o achado em teste real (Linux
+# Mint Cinnamon): GREETER_URL apontando pra .jpg fazia `tar xzf`
+# falhar e, como este script nao estava em subshell, derrubava o
+# bundle inteiro. Agora, alem de nao travar mais nada, a imagem e
+# de fato aproveitada em vez de descartada.
+# ============================================================
+echo ">>> Baixando greeter..."
 if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
-    GREETER_IMG="/usr/share/backgrounds/seederlinux/greeter.jpg"
-    if wget -q --no-check-certificate -O "$GREETER_IMG" "$GREETER_URL"; then
-        # Se WALLPAPER_LOGIN_URL nao foi definido, usar o greeter como
-        # wallpaper de login (fallback). Se ja foi, mantem o wallpaper
-        # de login e o greeter fica apenas disponivel para uso futuro.
-        if [ -z "$WALLPAPER_LOGIN_URL" ] || [ ! -f /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
-            cp "$GREETER_IMG" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
-            echo ">>> Greeter usado como wallpaper de login"
-        fi
-        echo ">>> Greeter (imagem) instalado: $GREETER_IMG"
+    GREETER_TARBALL="/tmp/seederlinux-greeter.bin"
+    if wget -q --no-check-certificate --no-proxy -O "$GREETER_TARBALL" "$GREETER_URL"; then
+        GREETER_MIME="$(file -b --mime-type "$GREETER_TARBALL" 2>/dev/null)"
+        echo ">>> Greeter detectado como: ${GREETER_MIME:-desconhecido}"
+
+        case "$GREETER_MIME" in
+            # --- Caso 1: arquivo compactado (tar/gzip/bzip2/xz) ---
+            application/gzip|application/x-gzip|application/x-tar|\
+            application/x-bzip2|application/x-xz|application/octet-stream)
+                # octet-stream e ambiguo - confirmar via file -b (magic)
+                GREETER_FILETYPE="$(file -b "$GREETER_TARBALL" 2>/dev/null)"
+                if echo "$GREETER_FILETYPE" | grep -qiE 'gzip|tar|bzip2|xz'; then
+                    mkdir -p /tmp/seederlinux-greeter
+                    if tar xf "$GREETER_TARBALL" -C /tmp/seederlinux-greeter 2>/dev/null; then
+                        case "$DISPLAY_MANAGER" in
+                            lightdm)
+                                cp -r /tmp/seederlinux-greeter/* /usr/share/lightdm/ 2>/dev/null || true
+                                ;;
+                            gdm3)
+                                cp -r /tmp/seederlinux-greeter/* /usr/share/gdm/ 2>/dev/null || true
+                                ;;
+                            sddm)
+                                cp -r /tmp/seederlinux-greeter/* /usr/share/sddm/themes/ 2>/dev/null || true
+                                ;;
+                        esac
+                        echo ">>> Greeter (pacote) instalado"
+                    else
+                        echo ">>> AVISO: falha ao extrair o pacote do greeter."
+                    fi
+                    rm -rf /tmp/seederlinux-greeter
+                else
+                    echo ">>> AVISO: conteudo nao reconhecido como tar/gzip/bzip2/xz."
+                fi
+                ;;
+
+            # --- Caso 2: qualquer imagem ---
+            image/*)
+                GREETER_EXT="${GREETER_MIME#image/}"
+                case "$GREETER_EXT" in
+                    jpeg) GREETER_EXT="jpg" ;;
+                    x-ms-bmp) GREETER_EXT="bmp" ;;
+                    x-icon) GREETER_EXT="ico" ;;
+                    svg+xml) GREETER_EXT="svg" ;;
+                    x-portable-pixmap) GREETER_EXT="ppm" ;;
+                    tiff) GREETER_EXT="tif" ;;
+                esac
+                GREETER_IMG="/usr/share/backgrounds/seederlinux/greeter.${GREETER_EXT}"
+                cp "$GREETER_TARBALL" "$GREETER_IMG"
+                echo ">>> Greeter (imagem ${GREETER_EXT}) instalado: $GREETER_IMG"
+
+                # Se WALLPAPER_LOGIN_URL nao foi definido OU o arquivo
+                # de wallpaper de login ainda nao existe, usar o
+                # greeter como wallpaper de login. Copiado com nome
+                # fixo wallpaper-login.jpg independente do formato
+                # real - GTK/LightDM/GDM3/SDDM detectam o formato pelo
+                # conteudo (magic bytes), nao pela extensao, entao
+                # isso nao quebra a leitura. Ressalva: formatos menos
+                # comuns (webp, svg) dependem do loader gdk-pixbuf
+                # correspondente estar instalado na imagem do SO.
+                if [ -z "$WALLPAPER_LOGIN_URL" ] || [ ! -f /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
+                    cp "$GREETER_TARBALL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+                    echo ">>> Greeter usado como wallpaper de login"
+                else
+                    echo ">>> Wallpaper de login proprio ja instalado - greeter mantido apenas em $GREETER_IMG"
+                fi
+                ;;
+
+            # --- Caso 3: qualquer outra coisa ---
+            *)
+                echo ">>> AVISO: GREETER_URL nao e imagem nem pacote compactado valido"
+                echo ">>> (detectado como: ${GREETER_MIME:-desconhecido}). Pulando greeter customizado."
+                ;;
+        esac
+
+        rm -f "$GREETER_TARBALL"
     else
-        echo ">>> AVISO: Falha ao baixar greeter de: $GREETER_URL"
+        echo ">>> AVISO: Falha ao baixar greeter"
     fi
 fi
 
 # ============================================================
-# Aplicar tema GTK
 # ============================================================
+# Aplicar tema GTK (SOMENTE se THEME foi definido explicitamente)
+# ============================================================
+# CORRECAO (achado em teste real): THEME="DEFAULT" (valor de fato
+# configurado nas OMs) NAO e um tema GTK valido - "DEFAULT" nao
+# existe em /usr/share/themes, entao gtk-theme-name=DEFAULT e
+# simplesmente ignorado pelo GTK. Pior: theme-name=DEFAULT no
+# greeter e ColorScheme=DEFAULT no KDE tambem nao fazem nada. Agora
+# so aplicamos tema se THEME vier definido E existir de verdade em
+# /usr/share/themes - caso contrario mantemos o tema atual do
+# sistema/DE, sem sobrescrever nada.
 echo ">>> Aplicando tema GTK: $THEME"
-if [ -n "$THEME" ] && [ "$THEME" != "" ]; then
-    # Configuracao global do tema
+THEME_APLICAR=false
+
+if [ -z "$THEME" ] || [ "$THEME" = "DEFAULT" ]; then
+    echo ">>> THEME=DEFAULT (ou vazio) - mantendo tema atual do sistema."
+elif [ -d "/usr/share/themes/$THEME" ]; then
+    THEME_APLICAR=true
+    echo ">>> THEME=$THEME - tema encontrado em /usr/share/themes."
+else
+    echo ">>> AVISO: THEME=$THEME nao existe em /usr/share/themes - mantendo tema atual."
+fi
+
+if [ "$THEME_APLICAR" = "true" ]; then
     mkdir -p /etc/skel/.config/gtk-3.0
     cat > /etc/skel/.config/gtk-3.0/settings.ini <<EOF
 [Settings]
@@ -187,6 +291,8 @@ gtk-menu-images=1
 gtk-application-prefer-dark-theme=0
 EOF
     echo ">>> Tema GTK configurado: $THEME"
+else
+    echo ">>> Tema GTK NAO foi alterado (DEFAULT ou inexistente)."
 fi
 
 # ============================================================
@@ -207,6 +313,9 @@ case "$DESKTOP_ENV" in
 [org/cinnamon/desktop/background]
 picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
+EOF
+        if [ "$THEME_APLICAR" = "true" ]; then
+            cat >> /etc/dconf/db/local.d/seederlinux-branding-cinnamon <<EOF
 
 [org/cinnamon/desktop/interface]
 gtk-theme='${THEME}'
@@ -215,6 +324,7 @@ icon-theme-name='Adwaita'
 [org/cinnamon/theme]
 name='${THEME}'
 EOF
+        fi
         dconf update 2>/dev/null || true
         ;;
 
@@ -226,11 +336,15 @@ EOF
 [org/mate/desktop/background]
 picture-filename='/usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
+EOF
+        if [ "$THEME_APLICAR" = "true" ]; then
+            cat >> /etc/dconf/db/local.d/seederlinux-branding-mate <<EOF
 
 [org/mate/desktop/interface]
 gtk-theme='${THEME}'
 icon-theme='Adwaita'
 EOF
+        fi
         dconf update 2>/dev/null || true
         ;;
 
@@ -243,13 +357,17 @@ picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-uri-dark='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
 
-[org/gnome/desktop/interface]
-gtk-theme='${THEME}'
-icon-theme='Adwaita'
-
 [org/gnome/login-screen]
 logo='/usr/share/pixmaps/seederlinux-logo.png'
 EOF
+        if [ "$THEME_APLICAR" = "true" ]; then
+            cat >> /etc/dconf/db/local.d/seederlinux-branding <<EOF
+
+[org/gnome/desktop/interface]
+gtk-theme='${THEME}'
+icon-theme='Adwaita'
+EOF
+        fi
         dconf update 2>/dev/null || true
         ;;
 
@@ -272,9 +390,10 @@ EOF
         ;;
 
     kde)
-        # KDE Plasma - via kdeglobals
-        mkdir -p /etc/skel/.config
-        cat > /etc/skel/.config/kdeglobals <<EOF
+        # KDE Plasma - via kdeglobals (SOMENTE se THEME_APLICAR)
+        if [ "$THEME_APLICAR" = "true" ]; then
+            mkdir -p /etc/skel/.config
+            cat > /etc/skel/.config/kdeglobals <<EOF
 [General]
 ColorScheme=${THEME}
 Name=${THEME}
@@ -282,7 +401,8 @@ Name=${THEME}
 [KDE]
 widgetStyle=${THEME}
 EOF
-        # Wallpaper via plasma config
+        fi
+        # Wallpaper via plasma config (independe de tema)
         mkdir -p /etc/skel/.config
         cat > /etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc <<EOF
 [Containments][1][Wallpaper][org.kde.image][General]
@@ -303,6 +423,8 @@ esac
 
 # ============================================================
 # Configurar wallpaper de login (greeter)
+# CORRECAO: theme-name=${THEME} incondicional removido do LightDM -
+# mesmo problema do THEME=DEFAULT explicado acima.
 # ============================================================
 echo ">>> Configurando wallpaper de login..."
 case "$DISPLAY_MANAGER" in
@@ -313,10 +435,12 @@ case "$DISPLAY_MANAGER" in
 [greeter]
 background=/usr/share/backgrounds/seederlinux/wallpaper-login.jpg
 logo=/usr/share/pixmaps/seederlinux-logo.png
-theme-name=${THEME}
 icon-theme-name=Adwaita
 font-name=DejaVu Sans 10
 EOF
+            if [ "$THEME_APLICAR" = "true" ]; then
+                echo "theme-name=${THEME}" >> /etc/lightdm/lightdm-gtk-greeter.conf
+            fi
         fi
         ;;
     gdm3)
@@ -346,3 +470,4 @@ esac
 
 echo ">>> [13] Identidade visual aplicada!"
 echo "============================================================"
+)

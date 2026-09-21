@@ -272,6 +272,83 @@ EXTRA_PACKAGES=(
 instalar_pacotes "extras" "${EXTRA_PACKAGES[@]}"
 
 # ============================================================
+# Display Manager + greeter
+# ============================================================
+# CORRECAO CRITICA (achado em teste real): os DMs precisam ser
+# instalados AQUI (etapa 03, com DNS de internet ainda ativo) -
+# porque os scripts de sessao (14a/14b/14c) rodam DEPOIS do ingresso
+# no AD (core_domain.sh), quando o DNS ja foi trocado para apontar
+# so pro controlador de dominio. Nesse ponto, apt-get nao consegue
+# mais alcancar repositorios publicos - instalar o DM la (como o
+# fluxo antigo fazia) falhava silenciosamente sem conectividade.
+#
+# Deteccao nessa ordem: DISPLAY_MANAGER/DESKTOP_ENV da OM -> deteccao
+# em runtime na estacao -> mapeamento DE->DM padrao.
+# ============================================================
+detectar_de_dm() {
+    if command -v cinnamon-session &>/dev/null; then echo "cinnamon"
+    elif command -v mate-session &>/dev/null; then echo "mate"
+    elif command -v gnome-session &>/dev/null; then echo "gnome"
+    elif command -v startxfce4 &>/dev/null; then echo "xfce"
+    elif command -v startplasma-x11 &>/dev/null; then echo "kde"
+    elif command -v lxqt-session &>/dev/null; then echo "lxqt"
+    elif command -v startlxde &>/dev/null; then echo "lxde"
+    else echo "unknown"
+    fi
+}
+
+dm_padrao_de() {
+    case "$1" in
+        gnome) echo "gdm3" ;;
+        kde)   echo "sddm" ;;
+        *)     echo "lightdm" ;;
+    esac
+}
+
+DE_EFFECTIVE="${DESKTOP_ENV:-}"
+[ -z "$DE_EFFECTIVE" ] && DE_EFFECTIVE="$(detectar_de_dm)"
+[ -z "$DE_EFFECTIVE" ] && DE_EFFECTIVE="unknown"
+
+DM_EFFECTIVE="${DISPLAY_MANAGER:-}"
+[ -z "$DM_EFFECTIVE" ] && DM_EFFECTIVE="$(dm_padrao_de "$DE_EFFECTIVE")"
+
+echo ">>> DE efetivo: $DE_EFFECTIVE"
+echo ">>> DM efetivo: $DM_EFFECTIVE"
+
+case "$DM_EFFECTIVE" in
+    lightdm)
+        instalar_pacotes "dm-lightdm" lightdm lightdm-slick-greeter
+        if ! dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
+            echo ">>> slick-greeter indisponivel - tentando lightdm-gtk-greeter..."
+            instalar_pacotes "dm-lightdm-gtk" lightdm-gtk-greeter
+        fi
+        ;;
+    gdm3)
+        instalar_pacotes "dm-gdm3" gdm3
+        ;;
+    sddm)
+        instalar_pacotes "dm-sddm" sddm sddm-theme-breeze
+        ;;
+    *)
+        echo ">>> AVISO: DM '$DM_EFFECTIVE' desconhecido - instalando lightdm."
+        instalar_pacotes "dm-lightdm" lightdm lightdm-slick-greeter
+        if ! dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
+            instalar_pacotes "dm-lightdm-gtk" lightdm-gtk-greeter
+        fi
+        ;;
+esac
+
+DM_OK=false
+command -v lightdm &>/dev/null && DM_OK=true
+command -v gdm3    &>/dev/null && DM_OK=true
+command -v sddm    &>/dev/null && DM_OK=true
+if [ "$DM_OK" != "true" ]; then
+    echo ">>> ERRO: nenhum display manager foi instalado com sucesso."
+else
+    echo ">>> Display manager instalado com sucesso."
+fi
+
+# ============================================================
 # OCS Inventory Agent (pacote critico para inventario)
 # Instalado separadamente para garantir verificacao e diagnostico
 # ============================================================

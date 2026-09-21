@@ -29,6 +29,8 @@ DOMINIO="{{DOMINIO}}"
 DOMINIO_NETBIOS="{{DOMINIO_NETBIOS}}"
 DC_IP="{{DC_IP}}"
 DC_IP_LIST="{{DC_IP_LIST}}"
+DNS_PRIMARIO="{{DNS_PRIMARIO}}"
+DNS_SECUNDARIO="{{DNS_SECUNDARIO}}"
 OU_PADRAO="{{OU_PADRAO}}"
 GRUPO_ADMIN="{{GRUPO_ADMIN}}"
 GRUPO_ADMIN_AD="{{GRUPO_ADMIN_AD}}"
@@ -346,36 +348,60 @@ if [ "$ESTADO" = "NAO_INGRESSADO" ]; then
     echo ">>> ESTÁGIO 4: Executando ingresso no domínio"
 
     # ------------------------------------------------------------
-    # Ajustar DNS para o(s) DC(s) - o DC principal primeiro, os
-    # demais de DC_IP_LIST como fallback. Sem isso, se o DC_IP
-    # unico estiver fora do ar, o ingresso falha desnecessariamente.
+    # Ajustar DNS para o ingresso, usando os servidores DNS
+    # designados pela OM (DNS_PRIMARIO/DNS_SECUNDARIO), nao a lista
+    # de controladores de dominio (DC_IP_LIST) - ver correcao abaixo.
     # ------------------------------------------------------------
     echo ">>> Ajustando DNS para ingresso no dominio..."
+    # CORRECAO (achado em teste real): systemd-resolved intercepta
+    # /etc/resolv.conf via symlink para 127.0.0.53 e nao encaminha
+    # corretamente consultas SRV (_ldap._tcp.DOMINIO) para o AD nesse
+    # modo, quebrando o SSSD. chattr -i remove qualquer imutabilidade
+    # deixada por uma execucao anterior.
+    systemctl disable --now systemd-resolved 2>/dev/null || true
+    chattr -i /etc/resolv.conf 2>/dev/null || true
+    rm -f /etc/resolv.conf
+    # DNS primario + secundario (nao usar DC_IP_LIST aqui - sao
+    # conceitos diferentes: DC_IP_LIST e a lista de controladores de
+    # dominio redundantes, DNS_PRIMARIO/DNS_SECUNDARIO sao os
+    # servidores DNS de fato designados pela OM, que podem ter IPs
+    # distintos dos DCs. Usar DC_IP_LIST aqui descartava
+    # DNS_SECUNDARIO sempre que ele nao coincidisse com nenhum IP da
+    # lista de DCs - achado em teste real na COMARA.
+    # Fallback para DC_IP so se DNS_PRIMARIO nao foi informado.
     {
-        echo "nameserver $DC_IP"
-        for dc in $DC_IP_LIST; do
-            [ "$dc" != "$DC_IP" ] && echo "nameserver $dc"
-        done
+        [ -n "$DNS_PRIMARIO" ]   && echo "nameserver $DNS_PRIMARIO"
+        [ -n "$DNS_SECUNDARIO" ] && echo "nameserver $DNS_SECUNDARIO"
+        [ -z "$DNS_PRIMARIO" ]   && [ -n "$DC_IP" ] && echo "nameserver $DC_IP"
         echo "search $DOMINIO"
     } > /etc/resolv.conf
 
     # Configurar Kerberos
     echo ">>> Configurando Kerberos..."
     REALM="${DOMINIO^^}"
+    # CORRECAO: dns_lookup_kdc=false (era true) - nao depender de SRV
+    # ja que acabamos de desativar o encaminhamento via
+    # systemd-resolved; kdc listado por FQDN E IP como redundancia;
+    # default_ccache_name para integracao com keyring do systemd;
+    # kpasswd_server para permitir troca de senha pelo usuario.
     cat > /etc/krb5.conf <<EOF
 [libdefaults]
     default_realm = ${REALM}
     dns_lookup_realm = false
-    dns_lookup_kdc = true
+    dns_lookup_kdc = false
     rdns = false
     ticket_lifetime = 24h
     forwardable = yes
     renew_lifetime = 7d
+    udp_preference_limit = 0
+    default_ccache_name = KEYRING:persistent:%{uid}
 
 [realms]
     ${REALM} = {
+        kdc = dc-${OM_ACRONYM,,}.${DOMINIO}
         kdc = ${DC_IP}
-        admin_server = ${DC_IP}
+        admin_server = dc-${OM_ACRONYM,,}.${DOMINIO}
+        kpasswd_server = dc-${OM_ACRONYM,,}.${DOMINIO}
     }
 
 [domain_realm]
@@ -413,17 +439,13 @@ EOF
     echo ">>> Obtendo ticket Kerberos..."
     KINIT_OK=false
 
-        if [ -n "$ADMIN_PASSWORD" ]; then
+    # Tentar com pipe se ADMIN_PASSWORD estiver disponível
+    if [ -n "$ADMIN_PASSWORD" ]; then
         echo ">>> Tentando obter ticket com senha pre-definida..."
-        # --password-file=STDIN e a unica forma confiavel de passar senha
-        # ao kinit do MIT Kerberos. Um simples `echo "$SENHA" | kinit user`
-        # NAO funciona de forma confiavel: kinit relê a senha de /dev/tty
-        # quando o pipe nao esta no formato esperado, e cai em prompt
-        # interativo (foi o que causou o "Password for ...@REALM:" no log).
-        echo "$ADMIN_PASSWORD" | kinit --password-file=STDIN "${ADMIN_USERNAME}@${REALM}" 2>/dev/null && KINIT_OK=true
-        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit --password-file=STDIN "${ADMIN_USERNAME}@${DOMINIO_NETBIOS}" 2>/dev/null && KINIT_OK=true
-        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit --password-file=STDIN "${ADMIN_USERNAME,,}@${REALM}" 2>/dev/null && KINIT_OK=true
-        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit --password-file=STDIN "${ADMIN_USERNAME,,}@${DOMINIO,,}" 2>/dev/null && KINIT_OK=true
+        echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME}@${REALM}" 2>/dev/null && KINIT_OK=true
+        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME}@${DOMINIO_NETBIOS}" 2>/dev/null && KINIT_OK=true
+        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME,,}@${REALM}" 2>/dev/null && KINIT_OK=true
+        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME,,}@${DOMINIO,,}" 2>/dev/null && KINIT_OK=true
     elif [ "$NON_INTERACTIVE" = "true" ]; then
         echo ">>> ERRO: ADMIN_PASSWORD nao definido em modo nao interativo."
     fi
@@ -452,12 +474,11 @@ EOF
         done
     fi
 
-        if [ "$KINIT_OK" != "true" ]; then
+    if [ "$KINIT_OK" != "true" ]; then
         echo ">>> ERRO: Falha ao obter ticket Kerberos."
         echo ">>> Verifique as credenciais e conectividade com o DC."
         if [ "$NON_INTERACTIVE" = "true" ]; then
-            echo ">>> Modo nao interativo: abortando (sem ticket nao ha como ingressar no dominio)."
-            exit 1
+            echo ">>> Modo não interativo: continuando sem pedir senha."
         else
             exit 1
         fi
@@ -564,18 +585,25 @@ domains = ${DOMINIO}
 [domain/${DOMINIO}]
     id_provider = ad
     ad_domain = ${DOMINIO}
-    ad_server = ${DC_IP}
+    ad_server = dc-${OM_ACRONYM,,}.${DOMINIO}
+    ad_backup_server = ${DC_IP}
+    krb5_server = ${DC_IP}
+    krb5_backup_server = ${DC_IP}
     ad_hostname = $(hostname).${DOMINIO}
     ldap_id_mapping = true
+    ldap_schema = ad
+    ldap_user_principal = userPrincipalName
+    ldap_user_name = sAMAccountName
+    ldap_user_gecos = displayName
+    ldap_user_home_directory = unixHomeDirectory
+    ldap_user_shell = loginShell
     enumerate = false
     use_fully_qualified_names = false
     fallback_homedir = /home/%d/%u
     default_shell = /bin/bash
-    krb5_use_fast = false
+    krb5_use_fast = never
     ${OFFLINE_CACHE}
     dyndns_update = false
-    sudo_provider = ad
-    ldap_sudo_search_base = OU=sudoers,${OU_PADRAO}
 EOF
 
     chmod 600 /etc/sssd/sssd.conf
