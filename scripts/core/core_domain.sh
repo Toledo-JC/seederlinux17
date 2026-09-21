@@ -455,16 +455,21 @@ EOF
             "${ADMIN_USERNAME,,}@${DOMINIO,,}"; do
             echo ">>>   tentando kinit para ${TRY_USER}..."
             if [ "$KINIT_HAS_PWFILE" = "true" ]; then
-                printf '%s\n' "$ADMIN_PASSWORD" | kinit --password-file=- "$TRY_USER" >/tmp/kinit-out.txt 2>&1
+                if printf '%s\n' "$ADMIN_PASSWORD" | kinit --password-file=- "$TRY_USER" >/tmp/kinit-out.txt 2>&1; then
+                    KINIT_OK=true
+                    echo ">>>   OK"
+                    break
+                else
+                    echo ">>>   falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
+                fi
             else
-                printf '%s\n' "$ADMIN_PASSWORD" | kinit "$TRY_USER" >/tmp/kinit-out.txt 2>&1
-            fi
-            if [ $? -eq 0 ]; then
-                KINIT_OK=true
-                echo ">>>   OK"
-                break
-            else
-                echo ">>>   falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
+                if printf '%s\n' "$ADMIN_PASSWORD" | kinit "$TRY_USER" >/tmp/kinit-out.txt 2>&1; then
+                    KINIT_OK=true
+                    echo ">>>   OK"
+                    break
+                else
+                    echo ">>>   falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
+                fi
             fi
         done
         rm -f /tmp/kinit-out.txt
