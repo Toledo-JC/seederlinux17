@@ -442,10 +442,32 @@ EOF
     # Tentar com pipe se ADMIN_PASSWORD estiver disponível
     if [ -n "$ADMIN_PASSWORD" ]; then
         echo ">>> Tentando obter ticket com senha pre-definida..."
-        echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME}@${REALM}" 2>/dev/null && KINIT_OK=true
-        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME}@${DOMINIO_NETBIOS}" 2>/dev/null && KINIT_OK=true
-        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME,,}@${REALM}" 2>/dev/null && KINIT_OK=true
-        [ "$KINIT_OK" != "true" ] && echo "$ADMIN_PASSWORD" | kinit "${ADMIN_USERNAME,,}@${DOMINIO,,}" 2>/dev/null && KINIT_OK=true
+        KINIT_HAS_PWFILE=false
+        if kinit --help 2>&1 | grep -q -- '--password-file'; then
+            KINIT_HAS_PWFILE=true
+        fi
+        echo ">>>   suporte a --password-file: $KINIT_HAS_PWFILE"
+
+        for TRY_USER in \
+            "${ADMIN_USERNAME}@${REALM}" \
+            "${ADMIN_USERNAME}@${DOMINIO_NETBIOS}" \
+            "${ADMIN_USERNAME,,}@${REALM}" \
+            "${ADMIN_USERNAME,,}@${DOMINIO,,}"; do
+            echo ">>>   tentando kinit para ${TRY_USER}..."
+            if [ "$KINIT_HAS_PWFILE" = "true" ]; then
+                printf '%s\n' "$ADMIN_PASSWORD" | kinit --password-file=- "$TRY_USER" >/tmp/kinit-out.txt 2>&1
+            else
+                printf '%s\n' "$ADMIN_PASSWORD" | kinit "$TRY_USER" >/tmp/kinit-out.txt 2>&1
+            fi
+            if [ $? -eq 0 ]; then
+                KINIT_OK=true
+                echo ">>>   OK"
+                break
+            else
+                echo ">>>   falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
+            fi
+        done
+        rm -f /tmp/kinit-out.txt
     elif [ "$NON_INTERACTIVE" = "true" ]; then
         echo ">>> ERRO: ADMIN_PASSWORD nao definido em modo nao interativo."
     fi
@@ -477,11 +499,7 @@ EOF
     if [ "$KINIT_OK" != "true" ]; then
         echo ">>> ERRO: Falha ao obter ticket Kerberos."
         echo ">>> Verifique as credenciais e conectividade com o DC."
-        if [ "$NON_INTERACTIVE" = "true" ]; then
-            echo ">>> Modo não interativo: continuando sem pedir senha."
-        else
-            exit 1
-        fi
+        exit 1
     fi
     echo ">>> Ticket Kerberos obtido com sucesso!"
 
