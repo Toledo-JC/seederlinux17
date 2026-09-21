@@ -1,4 +1,7 @@
-# SeederLinux Lite.
+######################
+## SeederLinux Lite.##
+######################
+
 
 O SeederLinux Lite automatiza a preparação e a personalização de estações Linux para ambientes corporativos multi-organizacionais. Ele monta bundles de instalação a partir de scripts Bash, grava configurações no PostgreSQL e disponibiliza a gestão por meio de painel web.
 
