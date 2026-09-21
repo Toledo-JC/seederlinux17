@@ -660,6 +660,7 @@ AUTH_PACKAGES=(
     sssd-tools
     sssd-krb5
     sssd-krb5-common
+    libsss-sudo
     libnss-sss
     libpam-sss
     adcli
@@ -766,6 +767,83 @@ EXTRA_PACKAGES=(
 )
 
 instalar_pacotes "extras" "${EXTRA_PACKAGES[@]}"
+
+# ============================================================
+# Display Manager + greeter
+# ============================================================
+# CORRECAO CRITICA (achado em teste real): os DMs precisam ser
+# instalados AQUI (etapa 03, com DNS de internet ainda ativo) -
+# porque os scripts de sessao (14a/14b/14c) rodam DEPOIS do ingresso
+# no AD (core_domain.sh), quando o DNS ja foi trocado para apontar
+# so pro controlador de dominio. Nesse ponto, apt-get nao consegue
+# mais alcancar repositorios publicos - instalar o DM la (como o
+# fluxo antigo fazia) falhava silenciosamente sem conectividade.
+#
+# Deteccao nessa ordem: DISPLAY_MANAGER/DESKTOP_ENV da OM -> deteccao
+# em runtime na estacao -> mapeamento DE->DM padrao.
+# ============================================================
+detectar_de_dm() {
+    if command -v cinnamon-session &>/dev/null; then echo "cinnamon"
+    elif command -v mate-session &>/dev/null; then echo "mate"
+    elif command -v gnome-session &>/dev/null; then echo "gnome"
+    elif command -v startxfce4 &>/dev/null; then echo "xfce"
+    elif command -v startplasma-x11 &>/dev/null; then echo "kde"
+    elif command -v lxqt-session &>/dev/null; then echo "lxqt"
+    elif command -v startlxde &>/dev/null; then echo "lxde"
+    else echo "unknown"
+    fi
+}
+
+dm_padrao_de() {
+    case "$1" in
+        gnome) echo "gdm3" ;;
+        kde)   echo "sddm" ;;
+        *)     echo "lightdm" ;;
+    esac
+}
+
+DE_EFFECTIVE="${DESKTOP_ENV:-}"
+[ -z "$DE_EFFECTIVE" ] && DE_EFFECTIVE="$(detectar_de_dm)"
+[ -z "$DE_EFFECTIVE" ] && DE_EFFECTIVE="unknown"
+
+DM_EFFECTIVE="${DISPLAY_MANAGER:-}"
+[ -z "$DM_EFFECTIVE" ] && DM_EFFECTIVE="$(dm_padrao_de "$DE_EFFECTIVE")"
+
+echo ">>> DE efetivo: $DE_EFFECTIVE"
+echo ">>> DM efetivo: $DM_EFFECTIVE"
+
+case "$DM_EFFECTIVE" in
+    lightdm)
+        instalar_pacotes "dm-lightdm" lightdm lightdm-slick-greeter
+        if ! dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
+            echo ">>> slick-greeter indisponivel - tentando lightdm-gtk-greeter..."
+            instalar_pacotes "dm-lightdm-gtk" lightdm-gtk-greeter
+        fi
+        ;;
+    gdm3)
+        instalar_pacotes "dm-gdm3" gdm3
+        ;;
+    sddm)
+        instalar_pacotes "dm-sddm" sddm sddm-theme-breeze
+        ;;
+    *)
+        echo ">>> AVISO: DM '$DM_EFFECTIVE' desconhecido - instalando lightdm."
+        instalar_pacotes "dm-lightdm" lightdm lightdm-slick-greeter
+        if ! dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
+            instalar_pacotes "dm-lightdm-gtk" lightdm-gtk-greeter
+        fi
+        ;;
+esac
+
+DM_OK=false
+command -v lightdm &>/dev/null && DM_OK=true
+command -v gdm3    &>/dev/null && DM_OK=true
+command -v sddm    &>/dev/null && DM_OK=true
+if [ "$DM_OK" != "true" ]; then
+    echo ">>> ERRO: nenhum display manager foi instalado com sucesso."
+else
+    echo ">>> Display manager instalado com sucesso."
+fi
 
 # ============================================================
 # OCS Inventory Agent (pacote critico para inventario)
@@ -896,10 +974,10 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 # Configurar proxy para downloads
-if [ "$PROXY_MODE" = "MANUAL" ] && [ -n "$PROXY_HTTP" ] && [ "$PROXY_HTTP" != "" ]; then
-    export http_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
-    export https_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
-fi
+##if [ "$PROXY_MODE" = "MANUAL" ] && [ -n "$PROXY_HTTP" ] && [ "$PROXY_HTTP" != "" ]; then
+##    export http_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
+##   export https_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
+##fi
 
 # ============================================================
 # Java 8 (OpenJDK 8) - apenas se INSTALL_JAVA8=true
@@ -1120,10 +1198,10 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 
 # Configurar proxy para downloads se necessario
-if [ "$PROXY_MODE" = "MANUAL" ] && [ -n "$PROXY_HTTP" ] && [ "$PROXY_HTTP" != "" ]; then
-    export http_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
-    export https_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
-fi
+##if [ "$PROXY_MODE" = "MANUAL" ] && [ -n "$PROXY_HTTP" ] && [ "$PROXY_HTTP" != "" ]; then
+##    export http_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
+##    export https_proxy="http://${PROXY_HTTP}:${PROXY_PORTA}"
+##fi
 
 # ============================================================
 # Google Chrome (instalado via .deb/wget, nao via apt-get)
@@ -1276,6 +1354,8 @@ DOMINIO="{{DOMINIO}}"
 DOMINIO_NETBIOS="{{DOMINIO_NETBIOS}}"
 DC_IP="{{DC_IP}}"
 DC_IP_LIST="{{DC_IP_LIST}}"
+DNS_PRIMARIO="{{DNS_PRIMARIO}}"
+DNS_SECUNDARIO="{{DNS_SECUNDARIO}}"
 OU_PADRAO="{{OU_PADRAO}}"
 GRUPO_ADMIN="{{GRUPO_ADMIN}}"
 GRUPO_ADMIN_AD="{{GRUPO_ADMIN_AD}}"
@@ -1593,36 +1673,60 @@ if [ "$ESTADO" = "NAO_INGRESSADO" ]; then
     echo ">>> ESTÁGIO 4: Executando ingresso no domínio"
 
     # ------------------------------------------------------------
-    # Ajustar DNS para o(s) DC(s) - o DC principal primeiro, os
-    # demais de DC_IP_LIST como fallback. Sem isso, se o DC_IP
-    # unico estiver fora do ar, o ingresso falha desnecessariamente.
+    # Ajustar DNS para o ingresso, usando os servidores DNS
+    # designados pela OM (DNS_PRIMARIO/DNS_SECUNDARIO), nao a lista
+    # de controladores de dominio (DC_IP_LIST) - ver correcao abaixo.
     # ------------------------------------------------------------
     echo ">>> Ajustando DNS para ingresso no dominio..."
+    # CORRECAO (achado em teste real): systemd-resolved intercepta
+    # /etc/resolv.conf via symlink para 127.0.0.53 e nao encaminha
+    # corretamente consultas SRV (_ldap._tcp.DOMINIO) para o AD nesse
+    # modo, quebrando o SSSD. chattr -i remove qualquer imutabilidade
+    # deixada por uma execucao anterior.
+    systemctl disable --now systemd-resolved 2>/dev/null || true
+    chattr -i /etc/resolv.conf 2>/dev/null || true
+    rm -f /etc/resolv.conf
+    # DNS primario + secundario (nao usar DC_IP_LIST aqui - sao
+    # conceitos diferentes: DC_IP_LIST e a lista de controladores de
+    # dominio redundantes, DNS_PRIMARIO/DNS_SECUNDARIO sao os
+    # servidores DNS de fato designados pela OM, que podem ter IPs
+    # distintos dos DCs. Usar DC_IP_LIST aqui descartava
+    # DNS_SECUNDARIO sempre que ele nao coincidisse com nenhum IP da
+    # lista de DCs - achado em teste real na COMARA.
+    # Fallback para DC_IP so se DNS_PRIMARIO nao foi informado.
     {
-        echo "nameserver $DC_IP"
-        for dc in $DC_IP_LIST; do
-            [ "$dc" != "$DC_IP" ] && echo "nameserver $dc"
-        done
+        [ -n "$DNS_PRIMARIO" ]   && echo "nameserver $DNS_PRIMARIO"
+        [ -n "$DNS_SECUNDARIO" ] && echo "nameserver $DNS_SECUNDARIO"
+        [ -z "$DNS_PRIMARIO" ]   && [ -n "$DC_IP" ] && echo "nameserver $DC_IP"
         echo "search $DOMINIO"
     } > /etc/resolv.conf
 
     # Configurar Kerberos
     echo ">>> Configurando Kerberos..."
     REALM="${DOMINIO^^}"
+    # CORRECAO: dns_lookup_kdc=false (era true) - nao depender de SRV
+    # ja que acabamos de desativar o encaminhamento via
+    # systemd-resolved; kdc listado por FQDN E IP como redundancia;
+    # default_ccache_name para integracao com keyring do systemd;
+    # kpasswd_server para permitir troca de senha pelo usuario.
     cat > /etc/krb5.conf <<EOF
 [libdefaults]
     default_realm = ${REALM}
     dns_lookup_realm = false
-    dns_lookup_kdc = true
+    dns_lookup_kdc = false
     rdns = false
     ticket_lifetime = 24h
     forwardable = yes
     renew_lifetime = 7d
+    udp_preference_limit = 0
+    default_ccache_name = KEYRING:persistent:%{uid}
 
 [realms]
     ${REALM} = {
+        kdc = dc-${OM_ACRONYM,,}.${DOMINIO}
         kdc = ${DC_IP}
-        admin_server = ${DC_IP}
+        admin_server = dc-${OM_ACRONYM,,}.${DOMINIO}
+        kpasswd_server = dc-${OM_ACRONYM,,}.${DOMINIO}
     }
 
 [domain_realm]
@@ -1806,18 +1910,25 @@ domains = ${DOMINIO}
 [domain/${DOMINIO}]
     id_provider = ad
     ad_domain = ${DOMINIO}
-    ad_server = ${DC_IP}
+    ad_server = dc-${OM_ACRONYM,,}.${DOMINIO}
+    ad_backup_server = ${DC_IP}
+    krb5_server = ${DC_IP}
+    krb5_backup_server = ${DC_IP}
     ad_hostname = $(hostname).${DOMINIO}
     ldap_id_mapping = true
+    ldap_schema = ad
+    ldap_user_principal = userPrincipalName
+    ldap_user_name = sAMAccountName
+    ldap_user_gecos = displayName
+    ldap_user_home_directory = unixHomeDirectory
+    ldap_user_shell = loginShell
     enumerate = false
     use_fully_qualified_names = false
     fallback_homedir = /home/%d/%u
     default_shell = /bin/bash
-    krb5_use_fast = false
+    krb5_use_fast = never
     ${OFFLINE_CACHE}
     dyndns_update = false
-    sudo_provider = ad
-    ldap_sudo_search_base = OU=sudoers,${OU_PADRAO}
 EOF
 
     chmod 600 /etc/sssd/sssd.conf
@@ -3307,6 +3418,12 @@ VALUES (
 
 set -e
 
+# CORRECAO: script envolvido em subshell - uma falha aqui (ex: asset
+# externo que nao baixa/extrai direito) nao pode mais derrubar o
+# bundle inteiro, so este modulo.
+(
+set -e
+
 echo "============================================================"
 echo "13 - Aplicar identidade visual (branding)"
 echo "============================================================"
@@ -3409,7 +3526,7 @@ fi
 # ============================================================
 echo ">>> Baixando wallpaper..."
 if [ -n "$WALLPAPER_URL" ] && [ "$WALLPAPER_URL" != "" ]; then
-    if wget -q --no-check-certificate -O /usr/share/backgrounds/seederlinux/wallpaper.jpg "$WALLPAPER_URL"; then
+    if wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper.jpg "$WALLPAPER_URL"; then
         echo ">>> Wallpaper instalado"
     else
         echo ">>> AVISO: Falha ao baixar wallpaper de: $WALLPAPER_URL"
@@ -3423,7 +3540,7 @@ fi
 # ============================================================
 echo ">>> Baixando wallpaper de login..."
 if [ -n "$WALLPAPER_LOGIN_URL" ] && [ "$WALLPAPER_LOGIN_URL" != "" ]; then
-    if wget -q --no-check-certificate -O /usr/share/backgrounds/seederlinux/wallpaper-login.jpg "$WALLPAPER_LOGIN_URL"; then
+    if wget -q --no-check-certificate --no-proxy -O /usr/share/backgrounds/seederlinux/wallpaper-login.jpg "$WALLPAPER_LOGIN_URL"; then
         echo ">>> Wallpaper de login instalado"
     else
         echo ">>> AVISO: Falha ao baixar wallpaper de login"
@@ -3435,7 +3552,7 @@ fi
 # ============================================================
 echo ">>> Baixando logo..."
 if [ -n "$LOGO_URL" ] && [ "$LOGO_URL" != "" ]; then
-    if wget -q --no-check-certificate -O /usr/share/pixmaps/seederlinux-logo.png "$LOGO_URL"; then
+    if wget -q --no-check-certificate --no-proxy -O /usr/share/pixmaps/seederlinux-logo.png "$LOGO_URL"; then
         echo ">>> Logo instalado"
     else
         echo ">>> AVISO: Falha ao baixar logo"
@@ -3445,37 +3562,127 @@ fi
 # ============================================================
 # Baixar e instalar greeter personalizado
 # ============================================================
+# GREETER_URL pode ser:
+#   - um pacote compactado (tar/gzip/bzip2/xz) com tema de greeter
+#     personalizado, OU
+#   - uma imagem (.jpg, .jpeg, .png, .bmp, .gif, .webp, .tif, ...)
+#     que sera usada como wallpaper de login.
+#
+# Deteccao por conteudo (MIME type via magic bytes), NAO por
+# extensao do arquivo - funciona com qualquer formato, mesmo que o
+# nome/extensao esteja errado. Corrige o achado em teste real (Linux
+# Mint Cinnamon): GREETER_URL apontando pra .jpg fazia `tar xzf`
+# falhar e, como este script nao estava em subshell, derrubava o
+# bundle inteiro. Agora, alem de nao travar mais nada, a imagem e
+# de fato aproveitada em vez de descartada.
+# ============================================================
 echo ">>> Baixando greeter..."
 if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
-    GREETER_TARBALL="/tmp/seederlinux-greeter.tar.gz"
-    if wget -q --no-check-certificate -O "$GREETER_TARBALL" "$GREETER_URL"; then
-        mkdir -p /tmp/seederlinux-greeter
-        tar xzf "$GREETER_TARBALL" -C /tmp/seederlinux-greeter
-        # Copiar para o local apropriado conforme o DM
-        case "$DISPLAY_MANAGER" in
-            lightdm)
-                cp -r /tmp/seederlinux-greeter/* /usr/share/lightdm/ 2>/dev/null || true
+    GREETER_TARBALL="/tmp/seederlinux-greeter.bin"
+    if wget -q --no-check-certificate --no-proxy -O "$GREETER_TARBALL" "$GREETER_URL"; then
+        GREETER_MIME="$(file -b --mime-type "$GREETER_TARBALL" 2>/dev/null)"
+        echo ">>> Greeter detectado como: ${GREETER_MIME:-desconhecido}"
+
+        case "$GREETER_MIME" in
+            # --- Caso 1: arquivo compactado (tar/gzip/bzip2/xz) ---
+            application/gzip|application/x-gzip|application/x-tar|\
+            application/x-bzip2|application/x-xz|application/octet-stream)
+                # octet-stream e ambiguo - confirmar via file -b (magic)
+                GREETER_FILETYPE="$(file -b "$GREETER_TARBALL" 2>/dev/null)"
+                if echo "$GREETER_FILETYPE" | grep -qiE 'gzip|tar|bzip2|xz'; then
+                    mkdir -p /tmp/seederlinux-greeter
+                    if tar xf "$GREETER_TARBALL" -C /tmp/seederlinux-greeter 2>/dev/null; then
+                        case "$DISPLAY_MANAGER" in
+                            lightdm)
+                                cp -r /tmp/seederlinux-greeter/* /usr/share/lightdm/ 2>/dev/null || true
+                                ;;
+                            gdm3)
+                                cp -r /tmp/seederlinux-greeter/* /usr/share/gdm/ 2>/dev/null || true
+                                ;;
+                            sddm)
+                                cp -r /tmp/seederlinux-greeter/* /usr/share/sddm/themes/ 2>/dev/null || true
+                                ;;
+                        esac
+                        echo ">>> Greeter (pacote) instalado"
+                    else
+                        echo ">>> AVISO: falha ao extrair o pacote do greeter."
+                    fi
+                    rm -rf /tmp/seederlinux-greeter
+                else
+                    echo ">>> AVISO: conteudo nao reconhecido como tar/gzip/bzip2/xz."
+                fi
                 ;;
-            gdm3)
-                cp -r /tmp/seederlinux-greeter/* /usr/share/gdm/ 2>/dev/null || true
+
+            # --- Caso 2: qualquer imagem ---
+            image/*)
+                GREETER_EXT="${GREETER_MIME#image/}"
+                case "$GREETER_EXT" in
+                    jpeg) GREETER_EXT="jpg" ;;
+                    x-ms-bmp) GREETER_EXT="bmp" ;;
+                    x-icon) GREETER_EXT="ico" ;;
+                    svg+xml) GREETER_EXT="svg" ;;
+                    x-portable-pixmap) GREETER_EXT="ppm" ;;
+                    tiff) GREETER_EXT="tif" ;;
+                esac
+                GREETER_IMG="/usr/share/backgrounds/seederlinux/greeter.${GREETER_EXT}"
+                cp "$GREETER_TARBALL" "$GREETER_IMG"
+                echo ">>> Greeter (imagem ${GREETER_EXT}) instalado: $GREETER_IMG"
+
+                # Se WALLPAPER_LOGIN_URL nao foi definido OU o arquivo
+                # de wallpaper de login ainda nao existe, usar o
+                # greeter como wallpaper de login. Copiado com nome
+                # fixo wallpaper-login.jpg independente do formato
+                # real - GTK/LightDM/GDM3/SDDM detectam o formato pelo
+                # conteudo (magic bytes), nao pela extensao, entao
+                # isso nao quebra a leitura. Ressalva: formatos menos
+                # comuns (webp, svg) dependem do loader gdk-pixbuf
+                # correspondente estar instalado na imagem do SO.
+                if [ -z "$WALLPAPER_LOGIN_URL" ] || [ ! -f /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
+                    cp "$GREETER_TARBALL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+                    echo ">>> Greeter usado como wallpaper de login"
+                else
+                    echo ">>> Wallpaper de login proprio ja instalado - greeter mantido apenas em $GREETER_IMG"
+                fi
                 ;;
-            sddm)
-                cp -r /tmp/seederlinux-greeter/* /usr/share/sddm/themes/ 2>/dev/null || true
+
+            # --- Caso 3: qualquer outra coisa ---
+            *)
+                echo ">>> AVISO: GREETER_URL nao e imagem nem pacote compactado valido"
+                echo ">>> (detectado como: ${GREETER_MIME:-desconhecido}). Pulando greeter customizado."
                 ;;
         esac
-        rm -rf /tmp/seederlinux-greeter "$GREETER_TARBALL"
-        echo ">>> Greeter instalado"
+
+        rm -f "$GREETER_TARBALL"
     else
         echo ">>> AVISO: Falha ao baixar greeter"
     fi
 fi
 
 # ============================================================
-# Aplicar tema GTK
 # ============================================================
+# Aplicar tema GTK (SOMENTE se THEME foi definido explicitamente)
+# ============================================================
+# CORRECAO (achado em teste real): THEME="DEFAULT" (valor de fato
+# configurado nas OMs) NAO e um tema GTK valido - "DEFAULT" nao
+# existe em /usr/share/themes, entao gtk-theme-name=DEFAULT e
+# simplesmente ignorado pelo GTK. Pior: theme-name=DEFAULT no
+# greeter e ColorScheme=DEFAULT no KDE tambem nao fazem nada. Agora
+# so aplicamos tema se THEME vier definido E existir de verdade em
+# /usr/share/themes - caso contrario mantemos o tema atual do
+# sistema/DE, sem sobrescrever nada.
 echo ">>> Aplicando tema GTK: $THEME"
-if [ -n "$THEME" ] && [ "$THEME" != "" ]; then
-    # Configuracao global do tema
+THEME_APLICAR=false
+
+if [ -z "$THEME" ] || [ "$THEME" = "DEFAULT" ]; then
+    echo ">>> THEME=DEFAULT (ou vazio) - mantendo tema atual do sistema."
+elif [ -d "/usr/share/themes/$THEME" ]; then
+    THEME_APLICAR=true
+    echo ">>> THEME=$THEME - tema encontrado em /usr/share/themes."
+else
+    echo ">>> AVISO: THEME=$THEME nao existe em /usr/share/themes - mantendo tema atual."
+fi
+
+if [ "$THEME_APLICAR" = "true" ]; then
     mkdir -p /etc/skel/.config/gtk-3.0
     cat > /etc/skel/.config/gtk-3.0/settings.ini <<EOF
 [Settings]
@@ -3491,6 +3698,8 @@ gtk-menu-images=1
 gtk-application-prefer-dark-theme=0
 EOF
     echo ">>> Tema GTK configurado: $THEME"
+else
+    echo ">>> Tema GTK NAO foi alterado (DEFAULT ou inexistente)."
 fi
 
 # ============================================================
@@ -3511,6 +3720,9 @@ case "$DESKTOP_ENV" in
 [org/cinnamon/desktop/background]
 picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
+EOF
+        if [ "$THEME_APLICAR" = "true" ]; then
+            cat >> /etc/dconf/db/local.d/seederlinux-branding-cinnamon <<EOF
 
 [org/cinnamon/desktop/interface]
 gtk-theme='${THEME}'
@@ -3519,6 +3731,7 @@ icon-theme-name='Adwaita'
 [org/cinnamon/theme]
 name='${THEME}'
 EOF
+        fi
         dconf update 2>/dev/null || true
         ;;
 
@@ -3530,11 +3743,15 @@ EOF
 [org/mate/desktop/background]
 picture-filename='/usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
+EOF
+        if [ "$THEME_APLICAR" = "true" ]; then
+            cat >> /etc/dconf/db/local.d/seederlinux-branding-mate <<EOF
 
 [org/mate/desktop/interface]
 gtk-theme='${THEME}'
 icon-theme='Adwaita'
 EOF
+        fi
         dconf update 2>/dev/null || true
         ;;
 
@@ -3547,13 +3764,17 @@ picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-uri-dark='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
 
-[org/gnome/desktop/interface]
-gtk-theme='${THEME}'
-icon-theme='Adwaita'
-
 [org/gnome/login-screen]
 logo='/usr/share/pixmaps/seederlinux-logo.png'
 EOF
+        if [ "$THEME_APLICAR" = "true" ]; then
+            cat >> /etc/dconf/db/local.d/seederlinux-branding <<EOF
+
+[org/gnome/desktop/interface]
+gtk-theme='${THEME}'
+icon-theme='Adwaita'
+EOF
+        fi
         dconf update 2>/dev/null || true
         ;;
 
@@ -3576,9 +3797,10 @@ EOF
         ;;
 
     kde)
-        # KDE Plasma - via kdeglobals
-        mkdir -p /etc/skel/.config
-        cat > /etc/skel/.config/kdeglobals <<EOF
+        # KDE Plasma - via kdeglobals (SOMENTE se THEME_APLICAR)
+        if [ "$THEME_APLICAR" = "true" ]; then
+            mkdir -p /etc/skel/.config
+            cat > /etc/skel/.config/kdeglobals <<EOF
 [General]
 ColorScheme=${THEME}
 Name=${THEME}
@@ -3586,7 +3808,8 @@ Name=${THEME}
 [KDE]
 widgetStyle=${THEME}
 EOF
-        # Wallpaper via plasma config
+        fi
+        # Wallpaper via plasma config (independe de tema)
         mkdir -p /etc/skel/.config
         cat > /etc/skel/.config/plasma-org.kde.plasma.desktop-appletsrc <<EOF
 [Containments][1][Wallpaper][org.kde.image][General]
@@ -3607,6 +3830,8 @@ esac
 
 # ============================================================
 # Configurar wallpaper de login (greeter)
+# CORRECAO: theme-name=${THEME} incondicional removido do LightDM -
+# mesmo problema do THEME=DEFAULT explicado acima.
 # ============================================================
 echo ">>> Configurando wallpaper de login..."
 case "$DISPLAY_MANAGER" in
@@ -3617,10 +3842,12 @@ case "$DISPLAY_MANAGER" in
 [greeter]
 background=/usr/share/backgrounds/seederlinux/wallpaper-login.jpg
 logo=/usr/share/pixmaps/seederlinux-logo.png
-theme-name=${THEME}
 icon-theme-name=Adwaita
 font-name=DejaVu Sans 10
 EOF
+            if [ "$THEME_APLICAR" = "true" ]; then
+                echo "theme-name=${THEME}" >> /etc/lightdm/lightdm-gtk-greeter.conf
+            fi
         fi
         ;;
     gdm3)
@@ -3650,6 +3877,7 @@ esac
 
 echo ">>> [13] Identidade visual aplicada!"
 echo "============================================================"
+)
 $SeederScript$,
     TRUE,
     TRUE,
@@ -4426,19 +4654,36 @@ echo ">>> Display Manager: $DISPLAY_MANAGER"
 echo ">>> Ambiente: $DESKTOP_ENV"
 
 # ============================================================
-# Instalar LightDM (pular se ja estiver instalado)
+# Verificar se LightDM + greeter estao presentes.
+# CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
+# no AD, quando o DNS ja foi trocado pro controlador de dominio e
+# nao resolve mais repositorios publicos. A instalacao real acontece
+# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# esta ativo. Aqui so verificamos e configuramos.
 # ============================================================
-if ! command -v lightdm &>/dev/null && ! dpkg -l lightdm 2>/dev/null | grep -q "^ii"; then
-    echo ">>> Instalando LightDM..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y lightdm lightdm-gtk-greeter
-else
-    echo ">>> LightDM ja esta instalado. Pulando instalacao."
+if ! dpkg -l lightdm 2>/dev/null | grep -q "^ii"; then
+    echo ">>> ERRO: lightdm nao instalado (deveria ter sido no core_packages.sh)."
+    echo ">>> Pulando configuracao de LightDM."
+    echo "============================================================"
+    exit 0
 fi
 
-# Garantir que o LightDM seja o DM padrao
+if dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
+    GREETER_SESSION="lightdm-slick-greeter"
+elif dpkg -l lightdm-gtk-greeter 2>/dev/null | grep -q "^ii"; then
+    GREETER_SESSION="lightdm-gtk-greeter"
+else
+    echo ">>> ERRO: nenhum greeter instalado."
+    echo ">>> Pulando configuracao de LightDM."
+    echo "============================================================"
+    exit 0
+fi
+echo ">>> Greeter a usar: $GREETER_SESSION"
+
+# Registrar LightDM como DM padrao (arquivo canonico do Debian/Ubuntu)
 echo "lightdm shared/default-x-display-manager select lightdm" | debconf-set-selections 2>/dev/null || true
 echo "lightdm lightdm/daemon_name string lightdm" | debconf-set-selections 2>/dev/null || true
+echo "/usr/sbin/lightdm" > /etc/X11/default-display-manager
 
 # ============================================================
 # Configurar LightDM
@@ -4449,7 +4694,7 @@ mkdir -p /etc/lightdm
 cat > /etc/lightdm/lightdm.conf <<EOF
 # Configuracao LightDM - SeederLinux
 [Seat:*]
-greeter-session=lightdm-gtk-greeter
+greeter-session=${GREETER_SESSION}
 user-session=${DESKTOP_ENV}
 allow-guest=false
 greeter-hide-users=true
@@ -4470,13 +4715,17 @@ echo ">>> LightDM configurado"
 
 # ============================================================
 # Configurar greeter do LightDM
+# CORRECAO: theme-name = ${THEME} removido daqui incondicionalmente -
+# quando THEME="DEFAULT" (ou vazio), "DEFAULT" nao e um tema GTK
+# valido; o core_branding.sh ja decide se THEME deve ser aplicado
+# (grava em outro arquivo quando aplicavel). Este greeter.conf fica
+# sem theme-name explicito, usando o tema padrao do sistema.
 # ============================================================
 echo ">>> Configurando greeter..."
 mkdir -p /etc/lightdm
 
 cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
 [greeter]
-theme-name = ${THEME}
 icon-theme-name = Adwaita
 font-name = DejaVu Sans 10
 background = /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
@@ -4516,15 +4765,26 @@ done
 echo ">>> Desabilitando outros display managers..."
 systemctl disable gdm3 2>/dev/null || true
 systemctl disable sddm 2>/dev/null || true
-systemctl enable lightdm
+# CORRECAO: "systemctl enable lightdm" removido - o unit e estatico
+# (sem secao [Install]), o enable so emitia warning sem efeito; quem
+# registra o DM padrao e o arquivo /etc/X11/default-display-manager
+# (ja escrito acima).
 
 # ============================================================
 # Reiniciar servico
+# CORRECAO: reiniciar o LightDM enquanto o bundle roda DENTRO de uma
+# sessao grafica ativa (console, nao SSH) mata a propria sessao que
+# esta executando o bundle. So reinicia se nao ha $DISPLAY (execucao
+# via TTY/cron) ou se veio por SSH (nao afeta sessao grafica local).
 # ============================================================
-echo ">>> Reiniciando LightDM..."
-systemctl restart lightdm 2>/dev/null || {
-    echo ">>> AVISO: LightDM sera iniciado no proximo boot."
-}
+if [ -z "$DISPLAY" ] || [ -n "$SSH_CONNECTION" ]; then
+    echo ">>> Reiniciando LightDM..."
+    systemctl restart lightdm 2>/dev/null || {
+        echo ">>> AVISO: LightDM sera iniciado no proximo boot."
+    }
+else
+    echo ">>> Rodando dentro da sessao grafica - LightDM sera aplicado no proximo boot."
+fi
 
 echo ">>> [14a] LightDM configurado!"
 echo "============================================================"
@@ -4689,18 +4949,23 @@ echo ">>> Display Manager: $DISPLAY_MANAGER"
 echo ">>> Ambiente: $DESKTOP_ENV"
 
 # ============================================================
-# Instalar GDM3
+# Verificar se GDM3 esta presente.
+# CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
+# no AD, quando o DNS ja foi trocado pro controlador de dominio e
+# nao resolve mais repositorios publicos. A instalacao real acontece
+# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# esta ativo.
 # ============================================================
 if ! dpkg -l gdm3 2>/dev/null | grep -q "^ii"; then
-    echo ">>> Instalando GDM3..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y gdm3
-else
-    echo ">>> GDM3 ja esta instalado. Pulando instalacao."
+    echo ">>> ERRO: gdm3 nao instalado (deveria ter sido no core_packages.sh)."
+    echo ">>> Pulando configuracao do GDM3."
+    echo "============================================================"
+    exit 0
 fi
 
 echo "gdm3 shared/default-x-display-manager select gdm3" | debconf-set-selections 2>/dev/null || true
 echo "gdm3 gdm3/daemon_name string gdm3" | debconf-set-selections 2>/dev/null || true
+echo "/usr/sbin/gdm3" > /etc/X11/default-display-manager
 
 # ============================================================
 # Configurar GDM3
@@ -4768,15 +5033,22 @@ done
 echo ">>> Desabilitando outros display managers..."
 systemctl disable lightdm 2>/dev/null || true
 systemctl disable sddm 2>/dev/null || true
-systemctl enable gdm3
+# CORRECAO: "systemctl enable gdm3" removido - registro do DM padrao
+# ja feito via /etc/X11/default-display-manager acima.
 
 # ============================================================
 # Reiniciar servico
+# CORRECAO: mesmo guard do LightDM - reiniciar dentro de uma sessao
+# grafica ativa mataria a propria sessao rodando o bundle.
 # ============================================================
-echo ">>> Reiniciando GDM3..."
-systemctl restart gdm3 2>/dev/null || {
-    echo ">>> AVISO: GDM3 sera iniciado no proximo boot."
-}
+if [ -z "$DISPLAY" ] || [ -n "$SSH_CONNECTION" ]; then
+    echo ">>> Reiniciando GDM3..."
+    systemctl restart gdm3 2>/dev/null || {
+        echo ">>> AVISO: GDM3 sera iniciado no proximo boot."
+    }
+else
+    echo ">>> Rodando dentro da sessao grafica - GDM3 sera aplicado no proximo boot."
+fi
 
 echo ">>> [14b] GDM3 configurado!"
 echo "============================================================"
@@ -4942,18 +5214,23 @@ echo ">>> Display Manager: $DISPLAY_MANAGER"
 echo ">>> Ambiente: $DESKTOP_ENV"
 
 # ============================================================
-# Instalar SDDM
+# Verificar se SDDM esta presente.
+# CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
+# no AD, quando o DNS ja foi trocado pro controlador de dominio e
+# nao resolve mais repositorios publicos. A instalacao real acontece
+# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# esta ativo.
 # ============================================================
 if ! dpkg -l sddm 2>/dev/null | grep -q "^ii"; then
-    echo ">>> Instalando SDDM..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get install -y sddm sddm-theme-breeze
-else
-    echo ">>> SDDM ja esta instalado. Pulando instalacao."
+    echo ">>> ERRO: sddm nao instalado (deveria ter sido no core_packages.sh)."
+    echo ">>> Pulando configuracao do SDDM."
+    echo "============================================================"
+    exit 0
 fi
 
 echo "sddm shared/default-x-display-manager select sddm" | debconf-set-selections 2>/dev/null || true
 echo "sddm sddm/daemon_name string sddm" | debconf-set-selections 2>/dev/null || true
+echo "/usr/sbin/sddm" > /etc/X11/default-display-manager
 
 # ============================================================
 # Configurar SDDM
@@ -5024,15 +5301,22 @@ done
 echo ">>> Desabilitando outros display managers..."
 systemctl disable lightdm 2>/dev/null || true
 systemctl disable gdm3 2>/dev/null || true
-systemctl enable sddm
+# CORRECAO: "systemctl enable sddm" removido - registro do DM padrao
+# ja feito via /etc/X11/default-display-manager acima.
 
 # ============================================================
 # Reiniciar servico
+# CORRECAO: mesmo guard do LightDM/GDM3 - reiniciar dentro de uma
+# sessao grafica ativa mataria a propria sessao rodando o bundle.
 # ============================================================
-echo ">>> Reiniciando SDDM..."
-systemctl restart sddm 2>/dev/null || {
-    echo ">>> AVISO: SDDM sera iniciado no proximo boot."
-}
+if [ -z "$DISPLAY" ] || [ -n "$SSH_CONNECTION" ]; then
+    echo ">>> Reiniciando SDDM..."
+    systemctl restart sddm 2>/dev/null || {
+        echo ">>> AVISO: SDDM sera iniciado no proximo boot."
+    }
+else
+    echo ">>> Rodando dentro da sessao grafica - SDDM sera aplicado no proximo boot."
+fi
 
 echo ">>> [14c] SDDM configurado!"
 echo "============================================================"
@@ -5456,17 +5740,36 @@ sync_branding() {
     echo "--- branding ---"
     mkdir -p /usr/share/backgrounds/seederlinux /usr/share/pixmaps
 
+    _baixar_ativo() {
+        local url="$1"
+        local dest="$2"
+        local tmp
+        tmp="$(mktemp /tmp/seeder-asset.XXXXXX)"
+        if wget -q --no-check-certificate --no-proxy -O "$tmp" "$url" && [ -s "$tmp" ]; then
+            mv "$tmp" "$dest"
+            echo "OK: $(basename "$dest")"
+        else
+            rm -f "$tmp"
+            echo "AVISO: falha/arquivo vazio ao baixar $(basename "$dest") - mantendo o existente"
+        fi
+    }
+
     if [ -n "${WALLPAPER_URL:-}" ]; then
-        wget -q --no-check-certificate -O /usr/share/backgrounds/seederlinux/wallpaper.jpg "$WALLPAPER_URL" \
-            && echo "wallpaper OK" || echo "AVISO: falha ao baixar wallpaper"
+        _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
     fi
     if [ -n "${WALLPAPER_LOGIN_URL:-}" ]; then
-        wget -q --no-check-certificate -O /usr/share/backgrounds/seederlinux/wallpaper-login.jpg "$WALLPAPER_LOGIN_URL" \
-            2>/dev/null || echo "AVISO: falha ao baixar wallpaper de login"
+        _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
     fi
     if [ -n "${LOGO_URL:-}" ]; then
-        wget -q --no-check-certificate -O /usr/share/pixmaps/seederlinux-logo.png "$LOGO_URL" \
-            2>/dev/null || echo "AVISO: falha ao baixar logo"
+        _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
+    fi
+
+    # THEME="DEFAULT" (ou vazio) nao e um tema GTK valido - mesma
+    # regra do core_branding.sh: so aplica se existir de verdade em
+    # /usr/share/themes, senao mantem o tema atual do sistema.
+    THEME_APLICAR=false
+    if [ -n "${THEME:-}" ] && [ "${THEME}" != "DEFAULT" ] && [ -d "/usr/share/themes/${THEME}" ]; then
+        THEME_APLICAR=true
     fi
 
     # Perfil dconf (system-db:local) - sem isso, nada de dconf abaixo aplica
@@ -5484,11 +5787,15 @@ sync_branding() {
 [org/cinnamon/desktop/background]
 picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
+EOF
+            if [ "$THEME_APLICAR" = "true" ]; then
+                cat >> /etc/dconf/db/local.d/seederlinux-branding-cinnamon <<EOF
 
 [org/cinnamon/desktop/interface]
-gtk-theme='${THEME:-Adwaita}'
+gtk-theme='${THEME}'
 icon-theme-name='Adwaita'
 EOF
+            fi
             dconf update 2>/dev/null || true
             ;;
         mate)
@@ -5496,11 +5803,15 @@ EOF
 [org/mate/desktop/background]
 picture-filename='/usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
+EOF
+            if [ "$THEME_APLICAR" = "true" ]; then
+                cat >> /etc/dconf/db/local.d/seederlinux-branding-mate <<EOF
 
 [org/mate/desktop/interface]
-gtk-theme='${THEME:-Adwaita}'
+gtk-theme='${THEME}'
 icon-theme='Adwaita'
 EOF
+            fi
             dconf update 2>/dev/null || true
             ;;
         gnome)
@@ -5509,13 +5820,17 @@ EOF
 picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
 
-[org/gnome/desktop/interface]
-gtk-theme='${THEME:-Adwaita}'
-icon-theme='Adwaita'
-
 [org/gnome/login-screen]
 logo='/usr/share/pixmaps/seederlinux-logo.png'
 EOF
+            if [ "$THEME_APLICAR" = "true" ]; then
+                cat >> /etc/dconf/db/local.d/seederlinux-branding-gnome <<EOF
+
+[org/gnome/desktop/interface]
+gtk-theme='${THEME}'
+icon-theme='Adwaita'
+EOF
+            fi
             dconf update 2>/dev/null || true
             ;;
         xfce)
