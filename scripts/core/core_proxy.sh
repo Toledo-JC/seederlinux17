@@ -28,6 +28,7 @@ PROXY_PORTA="{{PROXY_PORTA}}"
 PROXY_URL="{{PROXY_URL}}"
 PAC_URL="{{PAC_URL}}"
 NO_PROXY="{{NO_PROXY}}"
+SEEDER_SERVER="{{SEEDER_SERVER}}"
 
 echo ">>> Modo de proxy: $PROXY_MODE"
 
@@ -62,6 +63,21 @@ Acquire::http::Proxy "${PROXY_FULL_URL}";
 Acquire::https::Proxy "${PROXY_FULL_URL}";
 Acquire::ftp::Proxy "${PROXY_FULL_URL}";
 EOF
+
+        # Garantir que o servidor Seeder esteja sempre no NO_PROXY - o
+        # agente Python faz check-in nele e nao pode passar pelo proxy
+        # corporativo (recebe 407 Proxy Authentication Required).
+        SEEDER_HOST=""
+        if [ -n "${SEEDER_SERVER:-}" ]; then
+            SEEDER_HOST="$(echo "$SEEDER_SERVER" | sed -E 's|https?://([^/]+).*|\1|')"
+        fi
+        if [ -n "$SEEDER_HOST" ]; then
+            case ",$NO_PROXY," in
+                *",$SEEDER_HOST,"*) ;;
+                *) NO_PROXY="${NO_PROXY:+${NO_PROXY},}${SEEDER_HOST}" ;;
+            esac
+            echo ">>> SEEDER_HOST adicionado ao NO_PROXY: $SEEDER_HOST"
+        fi
 
         # Configurar /etc/environment
         if [ -f /etc/environment ]; then
@@ -104,6 +120,21 @@ EOF
 Acquire::http::Proxy::Pac "${PAC_URL}";
 Acquire::https::Proxy::Pac "${PAC_URL}";
 EOF
+
+        # Garantir que o servidor Seeder esteja sempre no NO_PROXY - o
+        # agente Python faz check-in nele e nao pode passar pelo proxy
+        # corporativo (recebe 407 Proxy Authentication Required).
+        SEEDER_HOST=""
+        if [ -n "${SEEDER_SERVER:-}" ]; then
+            SEEDER_HOST="$(echo "$SEEDER_SERVER" | sed -E 's|https?://([^/]+).*|\1|')"
+        fi
+        if [ -n "$SEEDER_HOST" ]; then
+            case ",$NO_PROXY," in
+                *",$SEEDER_HOST,"*) ;;
+                *) NO_PROXY="${NO_PROXY:+${NO_PROXY},}${SEEDER_HOST}" ;;
+            esac
+            echo ">>> SEEDER_HOST adicionado ao NO_PROXY: $SEEDER_HOST"
+        fi
 
         # Para navegadores, o PAC sera configurado no core_browser.sh
         echo "PAC_URL=${PAC_URL}" > /etc/seederlinux/pac_url.conf 2>/dev/null || {
