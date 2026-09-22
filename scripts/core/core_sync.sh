@@ -24,6 +24,21 @@
 # sem efeito colateral - ele nao usa `set -e` (uma falha isolada, ex.
 # wallpaper que nao baixou, nao pode interromper os demais modulos).
 #
+# CORRECOES NESTA VERSAO:
+#   - _baixar_ativo() usa `install -m 0644` (nao `mv`) e valida MIME
+#     `image/*` alem do tamanho. O `mv` de um arquivo criado por
+#     `mktemp` (0600) preservava o modo restritivo e o greeter do
+#     LightDM (usuario `lightdm`) nao conseguia ler -> tela preta.
+#   - chmod 0755 no diretorio /usr/share/backgrounds/seederlinux a
+#     cada ciclo (autocorrige se algo externo mudar o modo).
+#   - fallback wallpaper-login.jpg <- wallpaper.jpg (greeter nunca
+#     fica sem fundo).
+#   - reaplica config do greeter (LightDM/GDM3/SDDM) a cada ciclo -
+#     antes o sync so aplicava wallpaper de sessao, nao do login.
+#   - chmod 0644 nos arquivos de wallpaper por usuario (xfce/kde/
+#     lxde) e nos arquivos de config do greeter (lightdm le como
+#     usuario `lightdm`, nao root).
+#
 # LIMITACAO CONHECIDA: os modulos de impressoras (fila/protocolo
 # completo) e certificados aqui sao um subconjunto simplificado,
 # porque este script foi escrito sem acesso ao core_printers.sh /
@@ -137,29 +152,78 @@ detectar_de() {
 }
 [ -z "${DESKTOP_ENV:-}" ] && DESKTOP_ENV="$(detectar_de)"
 
+detectar_dm() {
+    if systemctl is-active --quiet lightdm 2>/dev/null; then echo "lightdm"
+    elif systemctl is-active --quiet gdm3 2>/dev/null; then echo "gdm3"
+    elif systemctl is-active --quiet sddm 2>/dev/null; then echo "sddm"
+    elif [ -f /etc/X11/default-display-manager ]; then
+        basename "$(cat /etc/X11/default-display-manager)"
+    else echo "unknown"
+    fi
+}
+[ -z "${DISPLAY_MANAGER:-}" ] && DISPLAY_MANAGER="$(detectar_dm)"
+
 usuarios_com_sessao_grafica() {
     loginctl list-sessions --no-legend 2>/dev/null | awk '{print $3}' | grep -v '^root$' | sort -u
 }
 
 # ============================================================
 # MODULO: branding (wallpaper, logo, tema via dconf/xfconf/kde)
+#
+# CORRECOES (mesmas aplicadas no core_branding.sh):
+#   - _baixar_ativo usa `install -m 0644` em vez de `mv` e valida
+#     MIME `image/*` alem do tamanho. Causa raiz da tela preta: o
+#     `mv` de um arquivo criado por `mktemp` (0600) preservava o
+#     modo restritivo, e o greeter do LightDM (usuario `lightdm`)
+#     tomava EACCES ao tentar ler o wallpaper.
+#   - chmod 0755 no diretorio a cada ciclo, para autocorrigir se
+#     algo externo mudou o modo (evita greeter sem acesso ao dir).
+#   - fallback wallpaper-login.jpg <- wallpaper.jpg quando o
+#     primeiro nao existe (URL vazia, download falho, HTML de erro).
+#   - reaplica config do greeter (LightDM/GDM3/SDDM). Antes o sync
+#     nao tocava nisso - so o core_branding.sh na Fase 1 fazia, o
+#     que contraria a filosofia GPO "reaplicar tudo".
+#   - chmod 0644 nos arquivos de wallpaper por usuario (xfce/kde/
+#     lxde), que antes herdavam umask do root no `cat >`.
 # ============================================================
 sync_branding() {
     echo "--- branding ---"
     mkdir -p /usr/share/backgrounds/seederlinux /usr/share/pixmaps
+    chmod 0755 /usr/share/backgrounds/seederlinux /usr/share/pixmaps
 
     _baixar_ativo() {
         local url="$1"
         local dest="$2"
         local tmp
         tmp="$(mktemp /tmp/seeder-asset.XXXXXX)"
-        if wget -q --no-check-certificate --no-proxy -O "$tmp" "$url" && [ -s "$tmp" ]; then
-            mv "$tmp" "$dest"
-            echo "OK: $(basename "$dest")"
-        else
+
+        if ! wget -q --no-check-certificate --no-proxy --timeout=20 -O "$tmp" "$url"; then
             rm -f "$tmp"
-            echo "AVISO: falha/arquivo vazio ao baixar $(basename "$dest") - mantendo o existente"
+            echo "AVISO: falha de download de $(basename "$dest") ($url) - mantendo o existente"
+            return 1
         fi
+
+        if [ ! -s "$tmp" ]; then
+            rm -f "$tmp"
+            echo "AVISO: $(basename "$dest") baixou 0 bytes (404/proxy/DNS?) - mantendo o existente"
+            return 1
+        fi
+
+        # Validacao de tipo: aceita apenas image/*. Se o servidor
+        # devolver HTML de erro (proxy 407, 404 estilizado, portal
+        # cativo), o arquivo tem bytes mas nao e' imagem.
+        local mime
+        mime="$(file -b --mime-type "$tmp" 2>/dev/null || echo "application/octet-stream")"
+        if ! echo "$mime" | grep -q '^image/'; then
+            rm -f "$tmp"
+            echo "AVISO: $(basename "$dest") baixou $mime (nao e imagem - HTML de erro?) - mantendo o existente"
+            return 1
+        fi
+
+        install -m 0644 "$tmp" "$dest"
+        rm -f "$tmp"
+        echo "OK: $(basename "$dest") ($mime)"
+        return 0
     }
 
     if [ -n "${WALLPAPER_URL:-}" ]; then
@@ -170,6 +234,15 @@ sync_branding() {
     fi
     if [ -n "${LOGO_URL:-}" ]; then
         _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
+    fi
+
+    # Fallback do wallpaper de login: se nao existe no disco mas o
+    # da sessao existe, copia por cima. Greeter nunca fica preto.
+    local LOGIN_WP="/usr/share/backgrounds/seederlinux/wallpaper-login.jpg"
+    local SESSION_WP="/usr/share/backgrounds/seederlinux/wallpaper.jpg"
+    if [ ! -s "$LOGIN_WP" ] && [ -s "$SESSION_WP" ]; then
+        install -m 0644 "$SESSION_WP" "$LOGIN_WP"
+        echo "OK: wallpaper-login.jpg (fallback do wallpaper de sessao)"
     fi
 
     # THEME="DEFAULT" (ou vazio) nao e um tema GTK valido - mesma
@@ -202,6 +275,9 @@ EOF
 [org/cinnamon/desktop/interface]
 gtk-theme='${THEME}'
 icon-theme-name='Adwaita'
+
+[org/cinnamon/theme]
+name='${THEME}'
 EOF
             fi
             dconf update 2>/dev/null || true
@@ -226,6 +302,7 @@ EOF
             cat > /etc/dconf/db/local.d/seederlinux-branding-gnome <<EOF
 [org/gnome/desktop/background]
 picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
+picture-uri-dark='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
 picture-options='zoom'
 
 [org/gnome/login-screen]
@@ -259,6 +336,9 @@ EOF
   </property>
 </channel>
 EOF
+                # chmod antes do chown: garante modo consistente
+                # independente do umask corrente do sync (roda como root).
+                chmod 0644 "$uh/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml" 2>/dev/null || true
                 chown "$u:$u" "$uh/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml" 2>/dev/null || true
             done
             ;;
@@ -271,6 +351,7 @@ EOF
 [Containments][1][Wallpaper][org.kde.image][General]
 Image=file:///usr/share/backgrounds/seederlinux/wallpaper.jpg
 EOF
+                chmod 0644 "$uh/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
                 chown "$u:$u" "$uh/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
             done
             ;;
@@ -284,27 +365,78 @@ EOF
 wallpaper_mode=crop
 wallpaper=/usr/share/backgrounds/seederlinux/wallpaper.jpg
 EOF
+                chmod 0644 "$uh/.config/pcmanfm/LXDE/desktop-items-0.conf" 2>/dev/null || true
                 chown "$u:$u" "$uh/.config/pcmanfm/LXDE/desktop-items-0.conf" 2>/dev/null || true
             done
             ;;
     esac
+
+    # --------------------------------------------------------
+    # Reaplica config do greeter (wallpaper de login).
+    # O sync roda a cada 10min; se alguem editar/corromper a config
+    # do greeter, ela volta ao estado da OM no proximo ciclo.
+    # Lightdm le o arquivo como usuario `lightdm` (uid 113) - por
+    # isso chmod 0644 explicito.
+    # --------------------------------------------------------
+    case "$DISPLAY_MANAGER" in
+        lightdm)
+            if [ -s "$LOGIN_WP" ]; then
+                mkdir -p /etc/lightdm
+                cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
+[greeter]
+background=${LOGIN_WP}
+logo=/usr/share/pixmaps/seederlinux-logo.png
+icon-theme-name=Adwaita
+font-name=DejaVu Sans 10
+EOF
+                if [ "$THEME_APLICAR" = "true" ]; then
+                    echo "theme-name=${THEME}" >> /etc/lightdm/lightdm-gtk-greeter.conf
+                fi
+                chmod 0644 /etc/lightdm/lightdm-gtk-greeter.conf
+                echo "OK: lightdm-gtk-greeter.conf reaplicado"
+            fi
+            ;;
+        gdm3)
+            if [ -s "$LOGIN_WP" ]; then
+                mkdir -p /etc/dconf/db/gdm.d
+                cat > /etc/dconf/db/gdm.d/01-seederlinux-background <<EOF
+[org/gnome/desktop/background]
+picture-uri='file://${LOGIN_WP}'
+picture-options='zoom'
+EOF
+                dconf update 2>/dev/null || true
+                echo "OK: GDM3 background reaplicado"
+            fi
+            ;;
+        sddm)
+            if [ -s "$LOGIN_WP" ]; then
+                mkdir -p /etc/sddm.conf.d
+                cat > /etc/sddm.conf.d/seederlinux.conf <<EOF
+[Theme]
+ThemeDir=/usr/share/sddm/themes
+Current=seederlinux
+Background=${LOGIN_WP}
+EOF
+                echo "OK: SDDM background reaplicado"
+            fi
+            ;;
+    esac
+
+    # Sumario dos assets no log do sync (observabilidade)
+    if [ -d /usr/share/backgrounds/seederlinux ]; then
+        echo "Assets em /usr/share/backgrounds/seederlinux:"
+        ls -la /usr/share/backgrounds/seederlinux/ 2>/dev/null | sed 's/^/    /'
+    fi
 }
 
 # ============================================================
 # MODULO: politica do Firefox
 #
-# CONFIRMADO/ALINHADO contra o core_browser.sh real (recebido depois
-# deste modulo ser escrito): o caminho canonico e
-# /usr/lib/firefox-esr/distribution/policies.json (instalacao do
-# pacote Debian/Ubuntu), nao /etc/firefox*/policies/ que eu tinha
-# inventado. Mantemos os dois: o caminho correto como primario, e o
+# CONFIRMADO/ALINHADO contra o core_browser.sh real: o caminho
+# canonico e /usr/lib/firefox-esr/distribution/policies.json
+# (instalacao do pacote Debian/Ubuntu). Mantemos tambem
 # /etc/firefox*/policies/ como cobertura extra para builds que
-# suportem esse local alternativo (nao custa nada, e idempotente).
-#
-# Conteudo da politica trazido para paridade com o core_browser.sh
-# (telemetria, Pocket, SearchEngines, SanitizeOnShutdown etc.) -
-# antes este modulo tinha uma versao simplificada demais, que a cada
-# ciclo de 10min "empobrecia" a politica aplicada no provisionamento.
+# suportem esse local alternativo.
 #
 # Bloco de Proxy dinamico por PROXY_MODE - mesma correcao aplicada
 # no core_browser.sh (antes ficava fixo em "system" la).
@@ -403,7 +535,7 @@ EOF
 # MODULO: politica do Chrome/Chromium
 # CONFIRMADO/ALINHADO contra o core_browser.sh - conteudo trazido
 # para paridade (BlockThirdPartyCookies, SyncDisabled,
-# TelemetryReportingEnabled etc.), mesmo motivo do Firefox acima.
+# TelemetryReportingEnabled etc.).
 # ============================================================
 sync_chrome_policy() {
     echo "--- chrome/chromium policy ---"
@@ -489,14 +621,11 @@ EOF
 # ============================================================
 # MODULO: impressoras (CUPS + filas via IPP Everywhere)
 #
-# CONFIRMADO contra o core_printers.sh real (recebido depois deste
-# modulo ser escrito): a convencao de fila ipp://PRINT_SERVER/
-# printers/NOME + `-m everywhere` esta correta. Este modulo agora
-# tambem reaplica a config do daemon CUPS (cupsd.conf/client.conf/
-# cupsctl) e a descoberta automatica quando PRINTERS vem vazio -
-# ambos existiam no core_printers.sh (rodado uma vez, no
-# provisionamento) mas nao no sync periodico. Por filosofia GPO
-# (reaplicar tudo, nao so parte), replicamos aqui tambem.
+# CONFIRMADO contra o core_printers.sh real: a convencao de fila
+# ipp://PRINT_SERVER/printers/NOME + `-m everywhere` esta correta.
+# Este modulo tambem reaplica a config do daemon CUPS
+# (cupsd.conf/client.conf/cupsctl) e a descoberta automatica quando
+# PRINTERS vem vazio.
 #
 # PRINTERS: lista de nomes separados por espaco (mesma convencao de
 # COMPARTILHAMENTOS).
@@ -593,7 +722,7 @@ sync_conky() {
 
 # ============================================================
 # MODULO: compartilhamentos CIFS - remonta para sessoes ativas que
-# eventualmente caíram, sem esperar um novo login
+# eventualmente cairam, sem esperar um novo login
 # ============================================================
 sync_shares() {
     echo "--- compartilhamentos ---"
@@ -632,8 +761,14 @@ sync_certificates() {
     CERT_DEST_DIR="/usr/local/share/ca-certificates/seederlinux"
     mkdir -p "$CERT_DEST_DIR"
 
-    if ! wget -q --no-check-certificate -O "$CERT_TMP" "$CERTIFICATE_BUNDLE" 2>/dev/null; then
+    if ! wget -q --no-check-certificate --timeout=20 -O "$CERT_TMP" "$CERTIFICATE_BUNDLE" 2>/dev/null; then
         echo "AVISO: falha ao baixar CERTIFICATE_BUNDLE de $CERTIFICATE_BUNDLE"
+        return 0
+    fi
+
+    if [ ! -s "$CERT_TMP" ]; then
+        echo "AVISO: CERTIFICATE_BUNDLE baixou 0 bytes - descartado"
+        rm -f "$CERT_TMP"
         return 0
     fi
 
