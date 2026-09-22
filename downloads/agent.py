@@ -42,7 +42,15 @@ Logs:
 Cron (recomendado a cada 15 minutos):
     */15 * * * * root /usr/local/bin/seeder-agent >> /var/log/seeder/agent.log 2>&1
 """
-
+# No topo de run_agent(), antes de qualquer request HTTP:
+# O agente só fala com o Seeder. Este host está sempre no NO_PROXY
+# corporativo e não deve passar pelo proxy (que exige autenticação
+# e devolve 407). Desabilitamos o proxy para o processo inteiro -
+# o próprio agente não precisa dele para nada.
+for _k in ("http_proxy", "https_proxy", "all_proxy",
+           "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+    os.environ.pop(_k, None)
+             
 import argparse
 import fcntl
 import json
