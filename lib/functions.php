@@ -106,11 +106,25 @@ function requireStationAuth() {
 }
 
 function bumpOrgSerial($orgId) {
-    Database::execute(
-        "UPDATE organizations SET serial_config = serial_config + 1 WHERE id = ?",
+    $prefix = (int)date('Ymd');
+    $row = Database::fetchOne(
+        "SELECT serial_config FROM organizations WHERE id = ?",
         [$orgId]
     );
-    return true;
+    $current = (int)($row['serial_config'] ?? 0);
+    $todayBase = (int)($prefix * 100);
+    if ($current > $todayBase) {
+        $newSerial = $current + 1;
+    } elseif ($current >= $prefix * 100 && $current < ($prefix + 1) * 100) {
+        $newSerial = $current + 1;
+    } else {
+        $newSerial = $todayBase + 1;
+    }
+    Database::execute(
+        "UPDATE organizations SET serial_config = ? WHERE id = ?",
+        [$newSerial, $orgId]
+    );
+    return $newSerial;
 }
 
 function isAdminGap() {

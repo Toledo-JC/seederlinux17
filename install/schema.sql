@@ -18,11 +18,23 @@ CREATE TABLE IF NOT EXISTS organizations (
     domain VARCHAR(100),
     description TEXT,
     is_active BOOLEAN DEFAULT true,
-    serial_config INTEGER DEFAULT 1,
+    serial_config BIGINT DEFAULT 1,
     logo_url TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Migra serial_config de INTEGER para BIGINT (suporta formato AAAAMMDDNN)
+DO $
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'organizations' AND column_name = 'serial_config'
+          AND data_type = 'integer'
+    ) THEN
+        ALTER TABLE organizations ALTER COLUMN serial_config TYPE BIGINT;
+    END IF;
+END $;
 
 -- Seed: default organization
 INSERT INTO organizations (id, name, acronym, domain, description)

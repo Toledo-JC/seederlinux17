@@ -199,6 +199,36 @@ apply_database_schema() {
     print_success "Schema aplicado com sucesso"
 }
 
+regenerate_core_scripts() {
+    print_header "REGENERANDO SCRIPTS CORE NO BANCO"
+
+    if [ ! -f "${SCRIPT_DIR}/gen_insert_core.py" ]; then
+        print_error "gen_insert_core.py nao encontrado em ${SCRIPT_DIR}"
+        exit 1
+    fi
+
+    print_step "Executando gen_insert_core.py..."
+    if python3 "${SCRIPT_DIR}/gen_insert_core.py" 2>&1; then
+        print_success "insert_core_scripts.sql regenerado"
+    else
+        print_error "Falha ao executar gen_insert_core.py"
+        exit 1
+    fi
+
+    if [ ! -f "${SCRIPT_DIR}/insert_core_scripts.sql" ]; then
+        print_error "insert_core_scripts.sql nao foi gerado"
+        exit 1
+    fi
+
+    print_step "Aplicando insert_core_scripts.sql no banco..."
+    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -f "${SCRIPT_DIR}/insert_core_scripts.sql" 2>&1 | grep -v "already exists"; then
+        print_success "Scripts Core atualizados no banco"
+    else
+        print_error "Falha ao aplicar insert_core_scripts.sql"
+        exit 1
+    fi
+}
+
 setup_project_files() {
     print_header "CONFIGURANDO ARQUIVOS DO PROJETO"
 
@@ -419,6 +449,7 @@ main() {
     install_system_packages
     setup_postgresql
     apply_database_schema
+    regenerate_core_scripts
     setup_project_files
     setup_permissions
     configure_apache
