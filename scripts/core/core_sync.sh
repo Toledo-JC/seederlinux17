@@ -25,24 +25,30 @@
 # wallpaper que nao baixou, nao pode interromper os demais modulos).
 #
 # CORRECOES NESTA VERSAO:
-#   - _baixar_ativo() usa `install -m 0644` (nao `mv`) e valida MIME
-#     `image/*` alem do tamanho. O `mv` de um arquivo criado por
-#     `mktemp` (0600) preservava o modo restritivo e o greeter do
-#     LightDM (usuario `lightdm`) nao conseguia ler -> tela preta.
-#   - chmod 0755 no diretorio /usr/share/backgrounds/seederlinux a
-#     cada ciclo (autocorrige se algo externo mudar o modo).
-#   - fallback wallpaper-login.jpg <- wallpaper.jpg (greeter nunca
-#     fica sem fundo).
-#   - reaplica config do greeter (LightDM/GDM3/SDDM) a cada ciclo -
-#     antes o sync so aplicava wallpaper de sessao, nao do login.
-#   - chmod 0644 nos arquivos de wallpaper por usuario (xfce/kde/
-#     lxde) e nos arquivos de config do greeter (lightdm le como
-#     usuario `lightdm`, nao root).
+#   1. sync_conky passa a REGERAR o /etc/seederlinux/conky/conky.conf
+#      a partir do CONKY_CONFIG do config.env, e a REINICIAR o processo
+#      do usuario quando o arquivo muda. Antes, o modulo so verificava
+#      se o conky estava rodando - mudar "position" no painel nunca
+#      chegava na estacao, mesmo com bundle novo e reboot. Esta era a
+#      causa raiz do "conky continua embaixo mesmo depois de trocar".
+#   2. _prefixar_seeder_url helper global: URLs relativas de assets
+#      ("/assets/wallpapers/xxx.jpg") sao prefixadas com SEEDER_SERVER
+#      antes do wget. Isso e' defesa em profundidade - o core_config.sh
+#      ja corrigiu a origem gravando URLs absolutas, mas estacoes
+#      provisionadas com bundle ANTIGO ainda tem URLs relativas no
+#      config.env. Este fix faz o sync funcionar nelas.
+#   3. _baixar_ativo (dentro de sync_branding) e sync_certificates
+#      usam _prefixar_seeder_url antes do wget.
+#   4. sync_conky agora cobre todos os DEs com suporte a autostart
+#      (cinnamon, mate, gnome, xfce, kde, lxde, lxqt) - antes so
+#      cinnamon|mate eram tratados, deixando usuarios de outros DEs
+#      com conky "morto" (autostart dispara 1x no login, mas o sync
+#      nunca reiniciava se o usuario fechasse acidentalmente).
+#   5. launcher /usr/local/bin/seederlinux-conky reescrito a cada
+#      ciclo com install -m 0755 (idempotente, autocorrige chmod).
 #
 # LIMITACAO CONHECIDA: os modulos de impressoras (fila/protocolo
-# completo) e certificados aqui sao um subconjunto simplificado,
-# porque este script foi escrito sem acesso ao core_printers.sh /
-# lógica completa de certificados da OM (nao foram enviados ainda).
+# completo) e certificados aqui sao um subconjunto simplificado.
 # Revisar com atencao antes de usar em producao - ver comentarios
 # "REVISAR" nos respectivos modulos.
 #
@@ -55,8 +61,6 @@ set -e
 echo "============================================================"
 echo "19 - Instalar seeder-sync (aplicador GPO) + timer systemd"
 echo "============================================================"
-
-SEEDER_SERVER="{{SEEDER_SERVER}}"
 
 mkdir -p /etc/seederlinux
 mkdir -p /var/log/seederlinux
@@ -87,6 +91,42 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
+
+# ============================================================
+# Helper global: prefixar URL relativa com SEEDER_SERVER
+# ============================================================
+# Regra:
+#   - Vazio -> retorna vazio
+#   - Ja absoluta (http:// ou https://host/...) -> mantem
+#   - Relativa ("/assets/...") -> prefixa com SEEDER_SERVER
+#   - SEEDER_SERVER vazio -> retorna como veio (deixa o wget falhar
+#     com erro claro em vez de gravar algo quebrado)
+_prefixar_seeder_url() {
+    local url="$1"
+    [ -z "$url" ] && { echo ""; return; }
+    echo "$url" | grep -qE '^https?://[^/]+/' && { echo "$url"; return; }
+    [ -z "${SEEDER_SERVER:-}" ] && { echo "$url"; return; }
+    local server_clean="${SEEDER_SERVER%/}"
+    if echo "$url" | grep -q '^/'; then
+        echo "${server_clean}${url}"
+    else
+        echo "${server_clean}/${url}"
+    fi
+}
+
+# ============================================================
+# Helper global: ler chave de um JSON com fallback
+# (usado pelo sync_conky para parsear CONKY_CONFIG)
+# ============================================================
+_json_get() {
+    local json="$1" key="$2" default="$3" val
+    val=$(echo "$json" | jq -r "if has(\"${key}\") then .${key} else \"\" end" 2>/dev/null)
+    if [ -z "$val" ] || [ "$val" = "null" ] || [ "$val" = "" ]; then
+        echo "$default"
+    else
+        echo "$val"
+    fi
+}
 
 # ============================================================
 # Resolucao de modo: --force (sempre usado pelo timer systemd, a
@@ -185,6 +225,10 @@ usuarios_com_sessao_grafica() {
 #     que contraria a filosofia GPO "reaplicar tudo".
 #   - chmod 0644 nos arquivos de wallpaper por usuario (xfce/kde/
 #     lxde), que antes herdavam umask do root no `cat >`.
+#   - NOVO: _baixar_ativo agora prefixa URLs relativas com
+#     SEEDER_SERVER via _prefixar_seeder_url. Protege estacoes que
+#     foram provisionadas com bundle antigo (URL relativa no
+#     config.env).
 # ============================================================
 sync_branding() {
     echo "--- branding ---"
@@ -192,7 +236,8 @@ sync_branding() {
     chmod 0755 /usr/share/backgrounds/seederlinux /usr/share/pixmaps
 
     _baixar_ativo() {
-        local url="$1"
+        local url
+        url="$(_prefixar_seeder_url "$1")"
         local dest="$2"
         local tmp
         tmp="$(mktemp /tmp/seeder-asset.XXXXXX)"
@@ -705,69 +750,68 @@ EOF
 }
 
 # ============================================================
-# MODULO: Conky - regenera conky.conf a partir do CONKY_CONFIG e
-# reinicia o processo dos usuarios com sessao ativa se o arquivo
-# mudou. Antes esta funcao so verificava se o Conky estava rodando;
-# agora ela reescreve /etc/seederlinux/conky/conky.conf (mesmo
-# parsing JSON do core_conky.sh) e so reinicia se o hash mudou,
-# garantindo idempotencia.
+# MODULO: Conky
+#
+# REGERENCIA o /etc/seederlinux/conky/conky.conf a partir do
+# CONKY_CONFIG do config.env. Compara com o que ja esta no disco e
+# so reescreve se mudou. Se mudou, REINICIA o conky dos usuarios com
+# sessao grafica (senao a mudanca nao aparece ate relogar).
+#
+# Antes, este modulo so fazia `pgrep conky || start` - nunca regerava
+# o arquivo. Era a causa raiz do "mudei a posicao no painel e nao
+# aplica nem com reboot".
+#
+# Restricao de DE: qualquer DE onde o core_conky.sh instalou
+# autostart (cinnamon, mate, gnome, xfce, kde, lxde, lxqt).
 # ============================================================
 sync_conky() {
     echo "--- conky ---"
-    [ -x /usr/local/bin/seederlinux-conky ] || return 0
-    [ -z "${CONKY_CONFIG:-}" ] && { echo "CONKY_CONFIG vazio, pulando"; return 0; }
-    command -v jq &>/dev/null || { echo "jq ausente, pulando conky"; return 0; }
 
-    _conky_parse_json() {
-        local key="$1"
-        local default="$2"
-        local val
-        val=$(echo "$CONKY_CONFIG" | jq -r "if has(\"${key}\") then .${key} else \"__UNSET__\" end" 2>/dev/null)
-        if [ -z "$val" ] || [ "$val" = "null" ] || [ "$val" = "__UNSET__" ]; then
-            echo "$default"
-        else
-            echo "$val"
-        fi
-    }
+    command -v conky &>/dev/null || { echo "AVISO: Conky nao instalado, pulando modulo"; return 0; }
+    command -v jq &>/dev/null || { echo "AVISO: jq nao instalado, pulando modulo de conky"; return 0; }
+    [ -z "${CONKY_CONFIG:-}" ] && { echo "CONKY_CONFIG vazio, pulando modulo de conky"; return 0; }
 
+    case "$DESKTOP_ENV" in
+        cinnamon|mate|gnome|xfce|kde|lxde|lxqt) ;;
+        *) echo "DESKTOP_ENV='$DESKTOP_ENV' nao suportado pelo modulo conky, pulando"; return 0 ;;
+    esac
+
+    # --- Parse do JSON (mesmos defaults do core_conky.sh) ---
     local CFG_POSITION CFG_TRANSPARENT CFG_COLOR_TEXT CFG_COLOR_BG
     local CFG_FONT_SIZE CFG_GAP_X CFG_GAP_Y CFG_UPDATE_INTERVAL
     local CFG_SHOW_CPU CFG_SHOW_RAM CFG_SHOW_DISK CFG_DISK_PARTITION
     local CFG_SHOW_NETWORK CFG_NETWORK_IFACE CFG_SHOW_TOP
     local CFG_SHOW_DATETIME CFG_SHOW_HOSTNAME CFG_HOSTNAME_FONT_SIZE
 
-    CFG_POSITION=$(_conky_parse_json position "top_right")
-    CFG_TRANSPARENT=$(_conky_parse_json transparent "true")
-    CFG_COLOR_TEXT=$(_conky_parse_json color_text "#FFFFFF")
-    CFG_COLOR_BG=$(_conky_parse_json color_bg "#000000")
-    CFG_FONT_SIZE=$(_conky_parse_json font_size "10")
-    CFG_GAP_X=$(_conky_parse_json gap_x "10")
-    CFG_GAP_Y=$(_conky_parse_json gap_y "40")
-    CFG_UPDATE_INTERVAL=$(_conky_parse_json update_interval "1.0")
-    CFG_SHOW_CPU=$(_conky_parse_json show_cpu "true")
-    CFG_SHOW_RAM=$(_conky_parse_json show_ram "true")
-    CFG_SHOW_DISK=$(_conky_parse_json show_disk "true")
-    CFG_DISK_PARTITION=$(_conky_parse_json disk_partition "/")
-    CFG_SHOW_NETWORK=$(_conky_parse_json show_network "true")
-    CFG_NETWORK_IFACE=$(_conky_parse_json network_interface "eth0")
-    CFG_SHOW_TOP=$(_conky_parse_json show_top_processes "true")
-    CFG_SHOW_DATETIME=$(_conky_parse_json show_datetime "true")
-    CFG_SHOW_HOSTNAME=$(_conky_parse_json show_hostname "true")
-    CFG_HOSTNAME_FONT_SIZE=$(_conky_parse_json font_size_hostname "14")
+    CFG_POSITION="$(_json_get "$CONKY_CONFIG" position "top_right")"
+    CFG_TRANSPARENT="$(_json_get "$CONKY_CONFIG" transparent "true")"
+    CFG_COLOR_TEXT="$(_json_get "$CONKY_CONFIG" color_text "#FFFFFF")"
+    CFG_COLOR_BG="$(_json_get "$CONKY_CONFIG" color_bg "#000000")"
+    CFG_FONT_SIZE="$(_json_get "$CONKY_CONFIG" font_size "10")"
+    CFG_GAP_X="$(_json_get "$CONKY_CONFIG" gap_x "10")"
+    CFG_GAP_Y="$(_json_get "$CONKY_CONFIG" gap_y "40")"
+    CFG_UPDATE_INTERVAL="$(_json_get "$CONKY_CONFIG" update_interval "1.0")"
+    CFG_SHOW_CPU="$(_json_get "$CONKY_CONFIG" show_cpu "true")"
+    CFG_SHOW_RAM="$(_json_get "$CONKY_CONFIG" show_ram "true")"
+    CFG_SHOW_DISK="$(_json_get "$CONKY_CONFIG" show_disk "true")"
+    CFG_DISK_PARTITION="$(_json_get "$CONKY_CONFIG" disk_partition "/")"
+    CFG_SHOW_NETWORK="$(_json_get "$CONKY_CONFIG" show_network "true")"
+    CFG_NETWORK_IFACE="$(_json_get "$CONKY_CONFIG" network_interface "eth0")"
+    CFG_SHOW_TOP="$(_json_get "$CONKY_CONFIG" show_top_processes "true")"
+    CFG_SHOW_DATETIME="$(_json_get "$CONKY_CONFIG" show_datetime "true")"
+    CFG_SHOW_HOSTNAME="$(_json_get "$CONKY_CONFIG" show_hostname "true")"
+    CFG_HOSTNAME_FONT_SIZE="$(_json_get "$CONKY_CONFIG" font_size_hostname "14")"
 
     local COLOR_TEXT_LUA="${CFG_COLOR_TEXT#\#}"
     local COLOR_BG_LUA="${CFG_COLOR_BG#\#}"
     local OWN_TRANSPARENT OWN_ARGB_VALUE
     if [ "$CFG_TRANSPARENT" = "true" ]; then
-        OWN_TRANSPARENT="true"
-        OWN_ARGB_VALUE="0"
+        OWN_TRANSPARENT="true"; OWN_ARGB_VALUE="0"
     else
-        OWN_TRANSPARENT="false"
-        OWN_ARGB_VALUE="200"
+        OWN_TRANSPARENT="false"; OWN_ARGB_VALUE="200"
     fi
 
-    mkdir -p /etc/seederlinux/conky
-
+    # --- Montar CONKY_TEXT (mesma logica do core_conky.sh) ---
     local CONKY_TEXT
     if [ "$CFG_SHOW_HOSTNAME" = "true" ]; then
         CONKY_TEXT="\${font DejaVu Sans Mono:size=${CFG_HOSTNAME_FONT_SIZE}}\${color ${COLOR_TEXT_LUA}}Host: \${nodename}
@@ -817,10 +861,15 @@ sync_conky() {
 \${color ${COLOR_TEXT_LUA}}\${time %A, %d/%m/%Y %H:%M:%S}"
     fi
 
-    # Gerar em arquivo temporario e comparar hash com o atual
-    local TMP_CONF="/tmp/seederlinux-conky-sync.$"
-    cat > "$TMP_CONF" <<CONKYEOF
--- Configuracao Conky - SeederLinux (gerada dinamicamente pelo seeder-sync)
+    # --- Montar conteudo NOVO num tmp, comparar com o atual ---
+    local CONKY_DIR="/etc/seederlinux/conky"
+    local CONKY_CONF="$CONKY_DIR/conky.conf"
+    local NEW_CONF
+    NEW_CONF="$(mktemp /tmp/seeder-conky.XXXXXX)"
+
+    cat > "$NEW_CONF" <<EOF
+-- Configuracao Conky - SeederLinux (gerada dinamicamente)
+-- Perfil: ${CONKY_PROFILE:-default}
 
 conky.config = {
     alignment = '${CFG_POSITION}',
@@ -852,35 +901,49 @@ conky.config = {
 conky.text = [[
 ${CONKY_TEXT}
 ]]
-CONKYEOF
+EOF
 
-    local CONKY_CONF="/etc/seederlinux/conky/conky.conf"
-    local HASH_FILE="/etc/seederlinux/conky/.last-hash"
-    local NEW_HASH OLD_HASH
-    NEW_HASH=$(sha256sum "$TMP_CONF" 2>/dev/null | awk '{print $1}')
-    OLD_HASH=$(cat "$HASH_FILE" 2>/dev/null)
-
-    if [ "$NEW_HASH" = "$OLD_HASH" ]; then
-        rm -f "$TMP_CONF"
-        echo "conky.conf inalterado - nada a fazer"
+    mkdir -p "$CONKY_DIR"
+    local CONF_CHANGED=false
+    if [ ! -f "$CONKY_CONF" ] || ! cmp -s "$NEW_CONF" "$CONKY_CONF"; then
+        install -m 0644 "$NEW_CONF" "$CONKY_CONF"
+        CONF_CHANGED=true
+        echo "OK: conky.conf regravado (config mudou)"
     else
-        install -m 0644 "$TMP_CONF" "$CONKY_CONF"
-        rm -f "$TMP_CONF"
-        echo "$NEW_HASH" > "$HASH_FILE"
-        echo "conky.conf regenerado (hash mudou)"
-
-        case "$DESKTOP_ENV" in
-            cinnamon|mate|xfce|lxde|lxqt|gnome|kde)
-                for u in $(usuarios_com_sessao_grafica); do
-                    if pgrep -u "$u" conky &>/dev/null; then
-                        pkill -u "$u" conky 2>/dev/null || true
-                        sleep 0.5
-                    fi
-                    su - "$u" -c "DISPLAY=:0 /usr/local/bin/seederlinux-conky" 2>/dev/null &
-                done
-                ;;
-        esac
+        echo "OK: conky.conf ja em dia (sem mudancas)"
     fi
+    rm -f "$NEW_CONF"
+
+    # --- Garantir launcher /usr/local/bin/seederlinux-conky ---
+    install -m 0755 /dev/stdin /usr/local/bin/seederlinux-conky <<'LAUNCHER'
+#!/bin/bash
+CONKY_CONF="/etc/seederlinux/conky/conky.conf"
+sleep 3
+if [ -f "$CONKY_CONF" ]; then
+    killall conky 2>/dev/null || true
+    conky -c "$CONKY_CONF" &
+else
+    echo "Configuracao do Conky nao encontrada: $CONKY_CONF"
+fi
+LAUNCHER
+
+    # --- Para cada usuario com sessao grafica ---
+    # Se a config mudou: mata o conky existente e reinicia (pega novo).
+    # Se nao mudou e nao esta rodando: inicia.
+    local u
+    for u in $(usuarios_com_sessao_grafica); do
+        if [ "$CONF_CHANGED" = "true" ]; then
+            su - "$u" -c "pkill -u '$u' conky 2>/dev/null; sleep 1; DISPLAY=:0 /usr/local/bin/seederlinux-conky" 2>/dev/null &
+            echo "OK: conky reiniciado para $u (config mudou)"
+        else
+            if ! pgrep -u "$u" conky &>/dev/null; then
+                su - "$u" -c "DISPLAY=:0 /usr/local/bin/seederlinux-conky" 2>/dev/null &
+                echo "OK: conky iniciado para $u (nao estava rodando)"
+            else
+                echo "OK: conky ja rodando para $u (sem mudancas)"
+            fi
+        fi
+    done
 }
 
 # ============================================================
@@ -914,18 +977,24 @@ sync_shares() {
 # .crt/.pem, ou (b) um pacote .tar.gz com varios certificados dentro.
 # Detectamos pelo Content-Type/magic bytes do download. Revisar se
 # a convencao real for outra (ex: PKCS#7 .p7b, .der binario).
+#
+# NOVO: aplica _prefixar_seeder_url antes do wget, mesma defesa em
+# profundidade do modulo de branding.
 # ============================================================
 sync_certificates() {
     echo "--- certificados ---"
     [ "${CERTIFICATE_AUTO_INSTALL:-}" = "true" ] || { echo "CERTIFICATE_AUTO_INSTALL != true, pulando"; return 0; }
     [ -z "${CERTIFICATE_BUNDLE:-}" ] && { echo "CERTIFICATE_BUNDLE vazio, pulando"; return 0; }
 
+    local CERT_URL
+    CERT_URL="$(_prefixar_seeder_url "$CERTIFICATE_BUNDLE")"
+
     CERT_TMP="/tmp/seederlinux-cert-bundle"
     CERT_DEST_DIR="/usr/local/share/ca-certificates/seederlinux"
     mkdir -p "$CERT_DEST_DIR"
 
-    if ! wget -q --no-check-certificate --timeout=20 -O "$CERT_TMP" "$CERTIFICATE_BUNDLE" 2>/dev/null; then
-        echo "AVISO: falha ao baixar CERTIFICATE_BUNDLE de $CERTIFICATE_BUNDLE"
+    if ! wget -q --no-check-certificate --timeout=20 -O "$CERT_TMP" "$CERT_URL" 2>/dev/null; then
+        echo "AVISO: falha ao baixar CERTIFICATE_BUNDLE de $CERT_URL"
         return 0
     fi
 
