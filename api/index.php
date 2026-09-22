@@ -2339,6 +2339,11 @@ function handleGenerateBundle($input) {
         $org = Database::fetchOne("SELECT id, acronym, domain, serial_config FROM organizations WHERE id = ?", [$orgId]);
         if (!$org) jsonError('Organizacao nao encontrada', 404);
 
+        // Bump serial BEFORE generating bundle content so the header
+        // carries the new serial, not the old one.
+        $newSerial = bumpOrgSerial($orgId);
+        $org['serial_config'] = $newSerial;
+
         // Sanitizar URLs dinâmicas baseadas na sigla da OM
         $org = sanitize_org_urls($org);
 
@@ -2602,8 +2607,6 @@ function handleGenerateBundle($input) {
         [$orgId, $bundleId]
     );
 
-    bumpOrgSerial($orgId);
-
         log_audit('GENERATE', 'bundles', $bundleId, [
             'organization' => $org['acronym'],
             'organization_acronym' => $org['acronym'],
@@ -2848,7 +2851,7 @@ function handleStationCheckin($input) {
     $macAddress = sanitizeInput($input['mac_address'] ?? '');
     $osName = sanitizeInput($input['os_name'] ?? '');
     $osVersion = sanitizeInput($input['os_version'] ?? '');
-    $configSerial = (int)($input['serial_aplicado'] ?? 0);
+    $configSerial = (int)($input['serial_applied'] ?? $input['serial_aplicado'] ?? 0);
     $orgAcronym = strtoupper(sanitizeInput($input['organization_acronym'] ?? ''));
     $stationToken = sanitizeInput($input['station_token'] ?? '');
 
