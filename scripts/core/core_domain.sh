@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# Core Script: core_domain.sh (v3 - State Machine)
+# Core Script: core_domain.sh (v4 - DNS swap incondicional + State Machine)
 # SeederLinux Lite - Gerenciador de Estado do Active Directory
 # ============================================================================
 # Implementa uma máquina de estados para diagnosticar, classificar e
@@ -9,6 +9,22 @@
 #
 # Estagios: 1) Diagnostico  2) Classificacao  3) Decisao
 #           4) Execucao (somente se necessario)  5) Pos-ingresso + Validacao
+#
+# CONTRATO DE FASES DO BUNDLE (INVARIANTE):
+#   Fase 1 (scripts 01..05): DNS de internet ativo. apt/wget funcionam.
+#   Fase 2 (ESTE script, PRIMEIRA coisa): troca /etc/resolv.conf para
+#     apontar SOMENTE para DNS_PRIMARIO + DNS_SECUNDARIO do AD.
+#   Fase 3 (scripts 07..23): DNS do AD mantido, sem apt-get.
+#
+# Este script aplica a Fase 2 DE FORMA INCONDICIONAL - independente do
+# estado da estacao (nova, ingressada, corrompida). Motivo: o
+# core_dns.sh (script 01) SEMPRE reescreve /etc/resolv.conf colocando
+# DNS_INTERNET na frente; se a estacao ja esta ingressada, a maquina
+# de estados pula o bloco de join e ninguem remove o 8.8.8.8 de novo.
+# Consequencia em producao: glibc nao tenta o proximo nameserver em
+# NXDOMAIN (so em timeout), entao consultas SRV/LDAP do SSSD falham
+# silenciosamente e nomes internos (ex: seederlinux.comara.intraer)
+# deixam de resolver apos o ingresso.
 #
 # Os placeholders {{VARIAVEL}} sao substituidos automaticamente
 # pelo sistema na geracao do bundle. Variaveis sensiveis usam o
@@ -73,6 +89,128 @@ echo ">>> Dominio: $DOMINIO"
 echo ">>> NetBIOS: $DOMINIO_NETBIOS"
 echo ">>> DC principal: $DC_IP"
 [ -n "$DC_IP_LIST" ] && echo ">>> DCs adicionais: $DC_IP_LIST"
+
+# ============================================================
+# ============================================================
+# FASE 2 — TROCA DE DNS (INCONDICIONAL)
+# ============================================================
+# Esta secao PRECISA rodar sempre, ANTES de qualquer comando que
+# dependa do AD (host, realm, kinit, net ads, sssd, adcli, ldapsearch).
+#
+# Era o bug principal da versao anterior: a troca de DNS estava
+# dentro do `if [ "$ESTADO" = "NAO_INGRESSADO" ]` do ESTAGIO 4. Numa
+# estacao ja ingressada, o ESTAGIO 4 nunca executava e o
+# /etc/resolv.conf ficava com o DNS_INTERNET (8.8.8.8) que o
+# core_dns.sh (script 01) tinha escrito - resultando em NXDOMAIN
+# para todo nome interno e SRV do AD.
+#
+# Idempotente: pode rodar N vezes sem efeito colateral.
+# ============================================================
+echo "============================================================"
+echo ">>> FASE 2: Aplicando DNS do AD (incondicional)"
+echo "============================================================"
+
+# Guarda o resolv.conf da Fase 1 para auditoria/debug
+if [ -s /etc/resolv.conf ]; then
+    cp -f /etc/resolv.conf /etc/resolv.conf.fase1.bak 2>/dev/null || true
+fi
+
+# -- Validar que temos pelo menos um DNS do AD definido.
+#    Se nao tiver, e erro de configuracao da OM - abortar, porque
+#    sem DNS do AD nao ha como ingressar nem manter o ingresso.
+if [ -z "$DNS_PRIMARIO" ] || [ "$DNS_PRIMARIO" = "" ]; then
+    if [ -n "$DC_IP" ] && [ "$DC_IP" != "" ]; then
+        echo ">>> AVISO: DNS_PRIMARIO vazio - usando DC_IP ($DC_IP) como fallback."
+        DNS_PRIMARIO="$DC_IP"
+    else
+        echo ">>> ERRO: DNS_PRIMARIO e DC_IP vazios. Ingresso impossivel."
+        echo ">>> Configure DNS_PRIMARIO na OM antes de gerar o bundle."
+        exit 1
+    fi
+fi
+
+# -- Neutralizar systemd-resolved: o stub 127.0.0.53 nao encaminha
+#    consultas SRV (_ldap._tcp.dc._msdcs.$DOMINIO) para o AD, o que
+#    quebra a descoberta automatica do SSSD.
+systemctl disable --now systemd-resolved 2>/dev/null || true
+systemctl stop systemd-resolved 2>/dev/null || true
+
+# -- Remover imutabilidade eventualmente deixada por uma execucao
+#    anterior deste script (idempotencia defensiva).
+chattr -i /etc/resolv.conf 2>/dev/null || true
+
+# -- Reescrever /etc/resolv.conf com SOMENTE os DNS do AD.
+#    Nao usamos DC_IP_LIST aqui - DC_IP_LIST e a lista de
+#    controladores de dominio redundantes; DNS_PRIMARIO/DNS_SECUNDARIO
+#    sao os servidores DNS propriamente ditos, que podem ter IPs
+#    distintos dos DCs.
+rm -f /etc/resolv.conf
+{
+    echo "# SeederLinux - Fase 2 (DNS do AD). NAO EDITAR."
+    echo "# Gerado por core_domain.sh em $(date -Is)"
+    echo "search ${DOMINIO}"
+    echo "nameserver ${DNS_PRIMARIO}"
+    if [ -n "$DNS_SECUNDARIO" ] && [ "$DNS_SECUNDARIO" != "" ]; then
+        echo "nameserver ${DNS_SECUNDARIO}"
+    fi
+    echo "options timeout:2 attempts:2 rotate"
+} > /etc/resolv.conf
+
+echo ">>> /etc/resolv.conf agora:"
+sed 's/^/    /' /etc/resolv.conf
+
+# -- NOTA sobre imutabilidade (chattr +i):
+#    O ideal seria aplicar `chattr +i /etc/resolv.conf` aqui para
+#    impedir que NetworkManager/dhclient sobrescrevam o arquivo em
+#    eventos de rede (lease renewal). NAO fazemos isso nesta versao
+#    porque o core_dns.sh (script 01) atual faz `> /etc/resolv.conf`
+#    SEM remover a imutabilidade antes - o que faria o bundle abortar
+#    na proxima execucao (script 01 nao consegue escrever num arquivo
+#    imutavel sob `set -e`).
+#    TODO: quando o core_dns.sh for ajustado para comecar com
+#          `chattr -i /etc/resolv.conf 2>/dev/null || true`,
+#          descomentar a linha abaixo.
+# chattr +i /etc/resolv.conf 2>/dev/null || true
+
+# -- Gate: confirmar que o DNS do AD responde ao SRV do dominio
+#    antes de seguir. Melhor abortar aqui (erro claro) do que deixar
+#    a estacao meio-ingressada.
+if command -v host >/dev/null 2>&1; then
+    echo ">>> [DNS] Validando SRV _ldap._tcp.dc._msdcs.${DOMINIO} ..."
+    if ! host -t SRV "_ldap._tcp.dc._msdcs.${DOMINIO}" >/dev/null 2>&1; then
+        # Heuristica: se ja ha artefatos de ingresso, apenas avisar
+        # (a estacao pode estar ingressada e o DNS e' "menos bom"
+        # que o ideal, mas nao vamos abortar re-provisionamento de
+        # uma estacao em producao por isso).
+        ALREADY_JOINED_HEURISTIC=false
+        if [ -f /etc/krb5.keytab ] && [ -s /etc/krb5.keytab ]; then
+            ALREADY_JOINED_HEURISTIC=true
+        fi
+        if [ -f /etc/sssd/sssd.conf ] && \
+           grep -qE '^[[:space:]]*domains[[:space:]]*=' /etc/sssd/sssd.conf 2>/dev/null; then
+            ALREADY_JOINED_HEURISTIC=true
+        fi
+
+        if [ "$ALREADY_JOINED_HEURISTIC" = "true" ]; then
+            echo ">>> AVISO: SRV nao resolve, mas a estacao parece ja ingressada."
+            echo ">>> Verifique DNS_PRIMARIO/DNS_SECUNDARIO da OM."
+            echo ">>> Seguindo para validacao do estado atual."
+        else
+            echo ">>> ERRO: SRV _ldap._tcp.dc._msdcs.${DOMINIO} nao resolve."
+            echo ">>> DNS configurado: ${DNS_PRIMARIO} / ${DNS_SECUNDARIO:-<vazio>}"
+            echo ">>> Verifique conectividade L3 com os DCs antes de reexecutar."
+            exit 1
+        fi
+    else
+        echo ">>> [DNS] SRV OK - dominio visivel via DNS do AD."
+    fi
+else
+    echo ">>> AVISO: comando 'host' nao encontrado - pulando gate de SRV."
+    echo ">>> (isso nao deveria acontecer: 'dnsutils' e' pacote base do bundle)"
+fi
+
+echo ">>> [FASE 2] DNS do AD aplicado."
+echo "============================================================"
 
 # ============================================================
 # ESTÁGIO 1: DIAGNÓSTICO
@@ -245,16 +383,15 @@ fi
 echo ">>> Estado detectado: $ESTADO"
 
 # ============================================================
-# Bloqueio preventivo: DNS/tempo quebrados antes de tentar ingresso
-# Kerberos depende diretamente dos dois - sem isso, kinit/realm join
-# falham de forma confusa la na frente. Avisamos aqui, cedo.
+# Bloqueio preventivo: tempo quebrado antes de tentar ingresso.
+# (DNS nao entra mais aqui - ja foi corrigido na FASE 2 acima.
+#  Se ainda estiver quebrado, o gate de SRV ja abortou.)
 # ============================================================
 if [ "$ESTADO" = "NAO_INGRESSADO" ] || [ "$ESTADO" = "INDETERMINADO" ]; then
-    if [ "$DNS_OK" = "false" ] || [ "$TIME_OK" = "false" ]; then
+    if [ "$TIME_OK" = "false" ]; then
         echo ""
-        echo ">>> AVISO: pre-requisitos do Kerberos com problema:"
-        [ "$DNS_OK" = "false" ] && echo "    - DNS nao resolve $DOMINIO (verifique DC_IP/DNS_PRIMARIO)"
-        [ "$TIME_OK" = "false" ] && echo "    - Relogio fora de sincronia (Kerberos rejeita diferenca > 5min)"
+        echo ">>> AVISO: relogio fora de sincronia (Kerberos rejeita diferenca > 5min)."
+        echo ">>>         O kinit provavelmente vai falhar com 'Clock skew too great'."
         if [ "$NON_INTERACTIVE" = "true" ]; then
             echo ">>> Modo nao interativo: prosseguindo mesmo assim (provavel falha adiante)."
         else
@@ -343,38 +480,14 @@ esac
 # ============================================================
 # ESTÁGIO 4: EXECUÇÃO (apenas se necessário)
 # ============================================================
+# NOTA: a troca de DNS NAO fica mais aqui - foi movida para a FASE 2
+# incondicional, no topo do script. Isso garante que mesmo uma
+# estacao ja ingressada (que pula este bloco inteiro) fique com o
+# /etc/resolv.conf correto apos o bundle rodar.
+# ============================================================
 if [ "$ESTADO" = "NAO_INGRESSADO" ]; then
     echo ""
     echo ">>> ESTÁGIO 4: Executando ingresso no domínio"
-
-    # ------------------------------------------------------------
-    # Ajustar DNS para o ingresso, usando os servidores DNS
-    # designados pela OM (DNS_PRIMARIO/DNS_SECUNDARIO), nao a lista
-    # de controladores de dominio (DC_IP_LIST) - ver correcao abaixo.
-    # ------------------------------------------------------------
-    echo ">>> Ajustando DNS para ingresso no dominio..."
-    # CORRECAO (achado em teste real): systemd-resolved intercepta
-    # /etc/resolv.conf via symlink para 127.0.0.53 e nao encaminha
-    # corretamente consultas SRV (_ldap._tcp.DOMINIO) para o AD nesse
-    # modo, quebrando o SSSD. chattr -i remove qualquer imutabilidade
-    # deixada por uma execucao anterior.
-    systemctl disable --now systemd-resolved 2>/dev/null || true
-    chattr -i /etc/resolv.conf 2>/dev/null || true
-    rm -f /etc/resolv.conf
-    # DNS primario + secundario (nao usar DC_IP_LIST aqui - sao
-    # conceitos diferentes: DC_IP_LIST e a lista de controladores de
-    # dominio redundantes, DNS_PRIMARIO/DNS_SECUNDARIO sao os
-    # servidores DNS de fato designados pela OM, que podem ter IPs
-    # distintos dos DCs. Usar DC_IP_LIST aqui descartava
-    # DNS_SECUNDARIO sempre que ele nao coincidisse com nenhum IP da
-    # lista de DCs - achado em teste real na COMARA.
-    # Fallback para DC_IP so se DNS_PRIMARIO nao foi informado.
-    {
-        [ -n "$DNS_PRIMARIO" ]   && echo "nameserver $DNS_PRIMARIO"
-        [ -n "$DNS_SECUNDARIO" ] && echo "nameserver $DNS_SECUNDARIO"
-        [ -z "$DNS_PRIMARIO" ]   && [ -n "$DC_IP" ] && echo "nameserver $DC_IP"
-        echo "search $DOMINIO"
-    } > /etc/resolv.conf
 
     # Configurar Kerberos
     echo ">>> Configurando Kerberos..."
@@ -501,6 +614,9 @@ EOF
         done
     fi
 
+    # Abortar em non-interactive quando kinit falha - sem isso o
+    # script segue com JOIN_METHOD=nenhum e deixa a estacao em estado
+    # "meio-ingressada" (pior cenario para depurar).
     if [ "$KINIT_OK" != "true" ]; then
         echo ">>> ERRO: Falha ao obter ticket Kerberos."
         echo ">>> Verifique as credenciais e conectividade com o DC."
@@ -599,6 +715,16 @@ if [ "$JOIN_METHOD" = "sssd" ] || [ "$ESTADO" = "INGRESSADO_SSSD" ] || [ "$ESTAD
         offline_credentials_expiration = ${DAYS}"
     fi
 
+    # ad_hostname: evitar duplicar o dominio se o hostname atual ja
+    # vier como FQDN (ex: se um core_dns.sh anterior setou
+    # hostnamectl com FQDN completo). Sem isso, sssd.conf fica com
+    # "host.dominio.dominio" e o SSSD nao sobe.
+    _HN_NOW="$(hostname)"
+    case "$_HN_NOW" in
+        *.*) SSSD_AD_HOSTNAME="$_HN_NOW" ;;
+        *)   SSSD_AD_HOSTNAME="${_HN_NOW}.${DOMINIO}" ;;
+    esac
+
     cat > /etc/sssd/sssd.conf <<EOF
 [sssd]
 services = nss, pam, sudo
@@ -612,7 +738,7 @@ domains = ${DOMINIO}
     ad_backup_server = ${DC_IP}
     krb5_server = ${DC_IP}
     krb5_backup_server = ${DC_IP}
-    ad_hostname = $(hostname).${DOMINIO}
+    ad_hostname = ${SSSD_AD_HOSTNAME}
     ldap_id_mapping = true
     ldap_schema = ad
     ldap_user_principal = userPrincipalName
@@ -630,7 +756,7 @@ domains = ${DOMINIO}
 EOF
 
     chmod 600 /etc/sssd/sssd.conf
-    echo ">>> SSSD configurado"
+    echo ">>> SSSD configurado (ad_hostname=${SSSD_AD_HOSTNAME})"
 fi
 
 # Configurar NSS
