@@ -6,18 +6,34 @@
 # Instala todos os pacotes necessarios para o funcionamento da estacao:
 # ferramentas de rede, autenticacao, sistema grafico, utilitarios.
 #
-# CORRECAO: a instalacao do ambiente grafico (DE) antes era uma unica
-# chamada atomica "apt-get install -y pacote1 pacote2 pacote3" sem
-# fallback. Como este script roda no nivel raiz do bundle (sem
-# subshell) sob `set -e`, se QUALQUER nome de pacote estivesse errado,
-# obsoleto ou renomeado numa versao mais nova da distro, o apt-get
-# falhava e O BUNDLE INTEIRO ABORTAVA ali, na etapa 03 - nunca chegando
-# no ingresso AD, sessao, etc. Agora a instalacao de DE segue o mesmo
-# padrao ja usado em AUTH_PACKAGES: loop pacote a pacote, avisa e
-# continua em vez de derrubar o bundle.
+# CORRECOES NESTA VERSAO:
+#   1. DE e DM/greeter ja eram instalados via instalar_pacotes (loop
+#      per-package, tolerante a pacotes faltantes). Mas BASE_PACKAGES
+#      ainda usava uma unica chamada atomica `apt-get install -y` -
+#      se QUALQUER nome nao existisse na distro, o apt falhava e,
+#      sob `set -e`, O BUNDLE INTEIRO ABORTAVA ali na etapa 03. Isso
+#      aconteceu em teste real com Ubuntu 26.04: o pacote `policykit-1`
+#      nao existe mais (foi renomeado para `polkitd` + `pkexec`), e o
+#      bundle morreu sem chance de recuperacao. Agora BASE_PACKAGES
+#      tambem usa instalar_pacotes.
+#   2. policykit-1 convive com polkitd e pkexec na lista de base
+#      packages. Em distros antigas (Debian 11, Ubuntu 20.04) so
+#      `policykit-1` existe; em distros modernas (Ubuntu 22.04+,
+#      Debian 12+) so `polkitd` e `pkexec`. Listar os tres e' seguro
+#      porque instalar_pacotes tenta cada um e so emite AVISO para os
+#      que nao existem.
+#   3. `apt-get update` do topo ficou tolerante: se a OM tem um repo
+#      com chave GPG faltando (ou rede instavel), o cache do apt
+#      continua valido e o bundle pode seguir em frente. Antes, uma
+#      falha aqui abortava tudo. Alinhado com a mesma decisao aplicada
+#      no core_repositories.sh em modo PUBLIC.
+#   4. `apt-get -y upgrade` permanece ESTRITO: se falhar (dpkg
+#      travado, disco cheio, conflito de pacote), queremos saber.
+#   5. Comentarios atualizados sobre o que e' virtual vs real
+#      (dnsutils -> bind9-dnsutils no Ubuntu 24.04+).
 #
-# Os placeholders VARIAVEL são substituídos automaticamente
-# pelo sistema na geração do bundle.
+# Os placeholders VARIAVEL sao substituidos automaticamente
+# pelo sistema na geracao do bundle.
 # ============================================================================
 
 set -e
@@ -29,8 +45,8 @@ echo "============================================================"
 # ============================================================
 # Variáveis
 # ============================================================
-DESKTOP_ENV="{{DESKTOP_ENV}}"
-INSTALL_DESKTOP="{{INSTALL_DESKTOP}}"
+DESKTOP_ENV=""
+INSTALL_DESKTOP="false"
 
 echo ">>> Ambiente grafico solicitado (opcional): $DESKTOP_ENV"
 echo ">>> Instalar ambiente grafico: $INSTALL_DESKTOP"
@@ -68,8 +84,17 @@ echo ">>> DE detectado na estacao: $DETECTED_DE"
 echo ">>> DM detectado na estacao: $DETECTED_DM"
 
 # ============================================================
-# Instalar pacotes com fallback por item (nao aborta o bundle
-# se um pacote individual nao existir/falhar)
+# Instalar pacotes com fallback por item
+#
+# Esta funcao e' o padrao obrigatorio para instalacao de QUALQUER
+# conjunto de pacotes neste script: itera um por um, emite AVISO
+# para os que falharem, e NUNCA aborta o bundle inteiro por causa
+# de um pacote individual que nao existe na distro.
+#
+# Motivo: nomes de pacote mudam entre versoes de distro
+# (policykit-1 -> polkitd + pkexec, dnsutils -> bind9-dnsutils,
+# etc). Uma chamada atomica com nome desatualizado derruba o
+# bundle sob `set -e`, sem chance de recuperacao.
 # ============================================================
 instalar_pacotes() {
     # $1 = nome do grupo (so para o log), restante = lista de pacotes
@@ -88,14 +113,38 @@ instalar_pacotes() {
 
 # ============================================================
 # Atualizar sistema
+#
+# apt-get update: TOLERANTE. So refresca o cache do indice. Se um
+#   repo especifico falhar (chave GPG faltando, rede instavel), o
+#   cache antigo continua valido e podemos prosseguir. Mesma decisao
+#   aplicada no core_repositories.sh em modo PUBLIC.
+#
+# apt-get -y upgrade: ESTRITO. Isso muda o sistema de verdade. Se
+#   falhar (dpkg travado por outro processo, disco cheio, conflito),
+#   queremos abortar com mensagem clara, nao seguir com estado
+#   indefinido.
 # ============================================================
 echo ">>> Atualizando pacotes do sistema..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
+apt-get update || {
+    echo ">>> AVISO: apt-get update retornou erro (repo com chave faltando? rede?)."
+    echo ">>>        Prosseguindo com o cache do apt."
+}
 apt-get -y upgrade
 
 # ============================================================
 # Pacotes base do sistema
+#
+# Notas sobre nomes:
+#   - dnsutils: no Ubuntu 24.04+ virou bind9-dnsutils, mas o apt
+#     resolve automaticamente via pacote virtual (mensagem "Nota,
+#     selecionando 'bind9-dnsutils' em vez de 'dnsutils'"). Pode
+#     deixar o nome antigo.
+#   - policykit-1: nome LEGADO, existe em Debian 11 / Ubuntu 20.04.
+#     Em Ubuntu 22.04+ foi renomeado para polkitd + pkexec. Listamos
+#     os tres; instalar_pacotes tenta cada um e ignora os ausentes.
+#   - apt-transport-https: virou virtual nas distros modernas, mas
+#     continua instalavel como transicional.
 # ============================================================
 echo ">>> Instalando pacotes base..."
 BASE_PACKAGES=(
@@ -125,7 +174,11 @@ BASE_PACKAGES=(
     cifs-utils
     nfs-common
     smbclient
+    # policykit-1 (legado) + polkitd + pkexec (moderno) - ver
+    # comentario acima. So um dos dois conjuntos vai existir.
     policykit-1
+    polkitd
+    pkexec
     udisks2
     gvfs-backends
     gvfs-fuse
@@ -139,16 +192,20 @@ BASE_PACKAGES=(
     fontconfig
 )
 
-apt-get install -y "${BASE_PACKAGES[@]}"
+instalar_pacotes "base" "${BASE_PACKAGES[@]}"
 
 # ============================================================
 # Garantir repositorio universe (necessario antes de auth e ocsinventory)
+#
+# add-apt-repository e' tolerante por natureza (`|| true`). O
+# apt-get update apos adicionar universe tambem: se falhar por rede
+# ou chave, seguimos.
 # ============================================================
 echo ">>> Garantindo repositorio universe..."
 if command -v add-apt-repository &>/dev/null; then
     add-apt-repository -y universe 2>/dev/null || true
 fi
-apt-get update -qq
+apt-get update -qq || true
 
 # ============================================================
 # Pacotes de autenticacao (AD/Kerberos/SSSD)
@@ -183,11 +240,6 @@ instalar_pacotes "auth" "${AUTH_PACKAGES[@]}"
 # Por padrao NAO instala DE. Somente instala se INSTALL_DESKTOP=true
 # e DESKTOP_ENV estiver definido. Caso contrario, usa o ambiente
 # grafico ja presente na estacao (detectado em DETECTED_DE).
-#
-# Cada DE instala pacote a pacote (instalar_pacotes) em vez de uma
-# unica chamada atomica: se um nome de pacote estiver errado/renomeado
-# numa versao mais nova da distro, avisa e continua os demais, em vez
-# de abortar o bundle inteiro.
 if [ "$INSTALL_DESKTOP" = "true" ] && [ -n "$DESKTOP_ENV" ] && [ "$DESKTOP_ENV" != "" ]; then
     echo ">>> Instalando ambiente grafico solicitado: $DESKTOP_ENV"
     case "$DESKTOP_ENV" in
@@ -218,9 +270,6 @@ if [ "$INSTALL_DESKTOP" = "true" ] && [ -n "$DESKTOP_ENV" ] && [ "$DESKTOP_ENV" 
             ;;
     esac
 
-    # Verificacao pos-instalacao: alerta se, mesmo apos o loop, o DE
-    # pedido continua ausente (ajuda a diagnosticar nomes de pacote
-    # desatualizados sem precisar vasculhar o log inteiro)
     case "$DESKTOP_ENV" in
         cinnamon) command -v cinnamon-session &>/dev/null || echo ">>> AVISO: cinnamon-session nao encontrado apos instalacao." ;;
         mate)     command -v mate-session &>/dev/null || echo ">>> AVISO: mate-session nao encontrado apos instalacao." ;;
@@ -362,6 +411,8 @@ else
 fi
 
 # Firefox ESR com fallback para firefox
+# Debian: firefox-esr. Ubuntu/Mint/Zorin: firefox.
+# Cada tentativa e' tolerante; se nenhuma funcionar, seguimos.
 apt-get install -y firefox-esr firefox-esr-l10n-pt-br 2>/dev/null || \
     apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
 
@@ -389,7 +440,7 @@ fi
 # ============================================================
 # Remover LibreOffice (opcional)
 # ============================================================
-if [ "{{REMOVER_LIBREOFFICE}}" = "true" ]; then
+if [ "false" = "true" ]; then
     echo ">>> Removendo LibreOffice..."
     apt-get remove --purge -y libreoffice* libreoffice-core libreoffice-common
 fi
@@ -399,7 +450,7 @@ fi
 # ============================================================
 echo ">>> Limpando cache do APT..."
 apt-get clean
-apt-get autoremove -y
+apt-get autoremove -y 2>/dev/null || true
 
 echo ">>> [03] Pacotes essenciais instalados!"
 echo "============================================================"
