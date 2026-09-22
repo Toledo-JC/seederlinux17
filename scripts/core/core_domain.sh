@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================================
-# Core Script: core_domain.sh (v4 - DNS swap incondicional + State Machine)
+# Core Script: core_domain.sh (v5 - DNS swap incondicional + resolv.conf imutavel)
 # SeederLinux Lite - Gerenciador de Estado do Active Directory
 # ============================================================================
 # Implementa uma máquina de estados para diagnosticar, classificar e
@@ -13,7 +13,9 @@
 # CONTRATO DE FASES DO BUNDLE (INVARIANTE):
 #   Fase 1 (scripts 01..05): DNS de internet ativo. apt/wget funcionam.
 #   Fase 2 (ESTE script, PRIMEIRA coisa): troca /etc/resolv.conf para
-#     apontar SOMENTE para DNS_PRIMARIO + DNS_SECUNDARIO do AD.
+#     apontar SOMENTE para DNS_PRIMARIO + DNS_SECUNDARIO do AD, e TRAVA
+#     o arquivo com chattr +i para o NetworkManager/dhclient nao
+#     sobrescreverem em lease renewal.
 #   Fase 3 (scripts 07..23): DNS do AD mantido, sem apt-get.
 #
 # Este script aplica a Fase 2 DE FORMA INCONDICIONAL - independente do
@@ -26,9 +28,16 @@
 # silenciosamente e nomes internos (ex: seederlinux.comara.intraer)
 # deixam de resolver apos o ingresso.
 #
+# O core_dns.sh (script 01) foi ajustado para comecar com
+# `chattr -i /etc/resolv.conf 2>/dev/null || true` - isso permite que
+# a Fase 1 da proxima execucao escreva no arquivo mesmo se ele estiver
+# travado por esta Fase 2. Por isso o `chattr +i` no fim da Fase 2
+# (abaixo) agora e' seguro: a trava e' levantada na proxima passagem
+# pelo script 01, antes de qualquer escrita.
+#
 # Os placeholders {{VARIAVEL}} sao substituidos automaticamente
 # pelo sistema na geracao do bundle. Variaveis sensiveis usam o
-# formato __VARIAVEL__ (substituicao separada, nunca em texto plano
+# formato  (substituicao separada, nunca em texto plano
 # no restante do bundle).
 # ============================================================================
 
@@ -159,18 +168,31 @@ rm -f /etc/resolv.conf
 echo ">>> /etc/resolv.conf agora:"
 sed 's/^/    /' /etc/resolv.conf
 
-# -- NOTA sobre imutabilidade (chattr +i):
-#    O ideal seria aplicar `chattr +i /etc/resolv.conf` aqui para
-#    impedir que NetworkManager/dhclient sobrescrevam o arquivo em
-#    eventos de rede (lease renewal). NAO fazemos isso nesta versao
-#    porque o core_dns.sh (script 01) atual faz `> /etc/resolv.conf`
-#    SEM remover a imutabilidade antes - o que faria o bundle abortar
-#    na proxima execucao (script 01 nao consegue escrever num arquivo
-#    imutavel sob `set -e`).
-#    TODO: quando o core_dns.sh for ajustado para comecar com
-#          `chattr -i /etc/resolv.conf 2>/dev/null || true`,
-#          descomentar a linha abaixo.
-# chattr +i /etc/resolv.conf 2>/dev/null || true
+# -- Travar /etc/resolv.conf com chattr +i.
+#
+#    Motivo: em estacoes com DHCP (NetworkManager), o arquivo e'
+#    reescrito a cada renovacao de lease. Sem a trava, o DNS do AD
+#    configurado aqui volta a ter o DNS do DHCP (que pode ser
+#    8.8.8.8 ou qualquer outro) sem bundle nenhum rodar - e a
+#    estacao ingressada comeca a falhar consultas internas
+#    silenciosamente.
+#
+#    Seguranca da trava: o core_dns.sh (script 01) foi ajustado para
+#    comecar com `chattr -i /etc/resolv.conf 2>/dev/null || true`
+#    antes de escrever. Ou seja, na proxima execucao do bundle, a
+#    Fase 1 consegue levantar a trava, escrever o DNS temporario, e
+#    a Fase 2 reaplica a trava no fim. Sem essa contrapartida, o
+#    `chattr +i` faria o bundle abortar sob `set -e` na proxima
+#    execucao.
+#
+#    Idempotente: chattr +i em arquivo ja imutavel e' no-op.
+chattr +i /etc/resolv.conf 2>/dev/null || true
+
+if lsattr /etc/resolv.conf 2>/dev/null | grep -q 'i'; then
+    echo ">>> /etc/resolv.conf travado (chattr +i) - NetworkManager nao pode sobrescrever"
+else
+    echo ">>> AVISO: chattr +i nao aplicou (filesystem sem suporte? ex: overlayfs em container)"
+fi
 
 # -- Gate: confirmar que o DNS do AD responde ao SRV do dominio
 #    antes de seguir. Melhor abortar aqui (erro claro) do que deixar
