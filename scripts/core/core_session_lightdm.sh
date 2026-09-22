@@ -7,7 +7,7 @@
 # e logoff que serao executados nas transicoes de sessao.
 #
 # Resolucao de DESKTOP_ENV/DISPLAY_MANAGER (nessa ordem):
-#   1) Valor injetado pela OM ({{DESKTOP_ENV}} / {{DISPLAY_MANAGER}})
+#   1) Valor injetado pela OM ( / )
 #   2) Valor ja persistido em /etc/seederlinux/config.env (escrito por
 #      este mesmo script em uma execucao anterior, ou por outro dos
 #      scripts de sessao no mesmo bundle)
@@ -18,7 +18,7 @@
 # demais scripts de sessao (gdm3/sddm) e as fases seguintes (branding,
 # logon, logoff) reaproveitem a mesma resposta sem redetectar.
 #
-# CORRECAO CRITICA: a versao anterior usava `return 0` dentro deste
+# CORRECAO CRITICA (v1): a versao anterior usava `return 0` dentro deste
 # subshell "( ... )", o que nao e uma funcao. Isso gera erro em
 # runtime ("return: can only `return' from a function or sourced
 # script"), o subshell termina com exit code != 0 e, como o bundle
@@ -26,8 +26,22 @@
 # em qualquer distro/DE. Este script usa `exit` (valido dentro do
 # subshell) em todos os pontos de saida antecipada.
 #
-# Os placeholders VARIAVEL são substituídos automaticamente
-# pelo sistema na geração do bundle.
+# CORRECAO CRITICA (v2, esta versao): o bloco final de "reiniciar
+# LightDM" foi REMOVIDO. Motivo:
+#   - A tentativa de guarda era: reiniciar so se estiver via TTY/cron
+#     (sem $DISPLAY) ou se vier por SSH ($SSH_CONNECTION), para nao
+#     matar sessao local.
+#   - O caso NAO pensado: o agente Python roda via cron, sem $DISPLAY
+#     e sem $SSH_CONNECTION. Cai exatamente na condicao que reinicia
+#     o LightDM -> mata a sessao do usuario logado, sem aviso.
+#   - Nao ha necessidade de reiniciar o DM para aplicar a config: ele
+#     le os arquivos quando sobe, no proximo boot. Reiniciar em
+#     runtime so serve para "aplicar agora", e isso nunca justifica
+#     matar sessao de usuario.
+#   - Regra do projeto: o bundle NAO reinicia display manager.
+#
+# Os placeholders VARIAVEL sao substituidos automaticamente
+# pelo sistema na geracao do bundle.
 # ============================================================================
 
 (
@@ -40,13 +54,13 @@ echo "============================================================"
 # ============================================================
 # Variáveis
 # ============================================================
-DISPLAY_MANAGER="{{DISPLAY_MANAGER}}"
-DESKTOP_ENV="{{DESKTOP_ENV}}"
-BASE_URL="{{BASE_URL}}"
-DOMINIO="{{DOMINIO}}"
-DOMINIO_NETBIOS="{{DOMINIO_NETBIOS}}"
-GRUPO_ADMIN_AD="{{GRUPO_ADMIN_AD}}"
-THEME="{{THEME}}"
+DISPLAY_MANAGER=""
+DESKTOP_ENV=""
+BASE_URL="https://seederlinux.comara.intraer"
+DOMINIO="comara.intraer"
+DOMINIO_NETBIOS="COMARA"
+GRUPO_ADMIN_AD="Dominio\ Admins"
+THEME="DEFAULT"
 
 CONFIG_FILE="/etc/seederlinux/config.env"
 
@@ -260,13 +274,23 @@ systemctl disable sddm 2>/dev/null || true
 # (ja escrito acima).
 
 # ============================================================
-# NAO reiniciar o DM daqui - mesmo via cron (sem $DISPLAY e sem
-# $SSH_CONNECTION), o systemctl restart mataria a sessao do
-# usuario que estiver logado na maquina. A configuracao ja foi
-# escrita nos arquivos corretos; ela passa a valer no proximo boot.
+# Aplicacao da config: NAO reiniciar o DM.
+#
+# Versao anterior tentava reiniciar "so quando seguro" usando
+# `[ -z "$DISPLAY" ] || [ -n "$SSH_CONNECTION" ]`. Isso FALHAVA
+# quando o bundle era invocado pelo agente Python (via cron):
+# cron nao tem $DISPLAY nem $SSH_CONNECTION, entao a condicao dava
+# verdadeiro, o restart acontecia e MATAVA A SESSAO DO USUARIO.
+#
+# Solucao: nao reiniciar nunca. A config do LightDM e' lida pelo
+# daemon quando ele sobe - no proximo boot a config ja vale. Nao
+# ha caso legitimo de "precisa aplicar agora" que justifique matar
+# sessao de usuario logado.
 # ============================================================
 echo ">>> Configuracao de LightDM sera aplicada no proximo boot."
-echo ">>> (reiniciar o DM daqui mataria a sessao de quem estiver logado)"
+echo ">>> (NAO reiniciamos o DM aqui: se o bundle rodar via cron/agente,"
+echo ">>>  ele nao tem \$DISPLAY nem \$SSH_CONNECTION - qualquer restart"
+echo ">>>  mataria a sessao do usuario logado.)"
 
 echo ">>> [14a] LightDM configurado!"
 echo "============================================================"
