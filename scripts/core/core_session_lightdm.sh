@@ -260,20 +260,13 @@ systemctl disable sddm 2>/dev/null || true
 # (ja escrito acima).
 
 # ============================================================
-# Reiniciar servico
-# CORRECAO: reiniciar o LightDM enquanto o bundle roda DENTRO de uma
-# sessao grafica ativa (console, nao SSH) mata a propria sessao que
-# esta executando o bundle. So reinicia se nao ha $DISPLAY (execucao
-# via TTY/cron) ou se veio por SSH (nao afeta sessao grafica local).
+# NAO reiniciar o DM daqui - mesmo via cron (sem $DISPLAY e sem
+# $SSH_CONNECTION), o systemctl restart mataria a sessao do
+# usuario que estiver logado na maquina. A configuracao ja foi
+# escrita nos arquivos corretos; ela passa a valer no proximo boot.
 # ============================================================
-if [ -z "$DISPLAY" ] || [ -n "$SSH_CONNECTION" ]; then
-    echo ">>> Reiniciando LightDM..."
-    systemctl restart lightdm 2>/dev/null || {
-        echo ">>> AVISO: LightDM sera iniciado no proximo boot."
-    }
-else
-    echo ">>> Rodando dentro da sessao grafica - LightDM sera aplicado no proximo boot."
-fi
+echo ">>> Configuracao de LightDM sera aplicada no proximo boot."
+echo ">>> (reiniciar o DM daqui mataria a sessao de quem estiver logado)"
 
 echo ">>> [14a] LightDM configurado!"
 echo "============================================================"
