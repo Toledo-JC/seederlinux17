@@ -941,7 +941,6 @@ function handleMirrorSaveOrgSettings($input) {
                 [$organizationId, $definition['id'], $value]
             );
         }
-        bumpOrgSerial($organizationId);
         Database::commit();
     } catch (Throwable $e) {
         Database::rollback();
@@ -1388,8 +1387,6 @@ function handleUpdateOrganization($id, $input) {
         [$name, $domain, $description, $id]
     );
 
-    bumpOrgSerial($id);
-
     log_audit('UPDATE', 'organizations', $id, ['name' => $name]);
     jsonSuccess(null, 'Organizacao atualizada');
 }
@@ -1504,7 +1501,6 @@ function handleUpdateVariables($input) {
             'username' => $_SESSION['username'] ?? 'system',
             'full_name' => $_SESSION['full_name'] ?? null
         ], $orgId);
-        bumpOrgSerial($orgId);
         jsonSuccess(null, 'Variaveis salvas com sucesso');
     } catch (PDOException $e) {
         http_response_code(500);
@@ -1927,7 +1923,6 @@ function handleSaveScriptOmVersion($input) {
         [$orgId, $scriptId, $effectiveContent, $targetOrder, $isActive ? TRUE : FALSE, $nextV, $_SESSION['user_id'] ?? null]
     );
 
-    bumpOrgSerial($orgId);
     log_audit('UPDATE', 'om_script_versions', $scriptId, [
         'action' => 'save_om_override',
         'organization_id' => $orgId,
@@ -1960,7 +1955,6 @@ function handleResetScriptOmDefault($input) {
         [$orgId, $scriptId]
     );
 
-    bumpOrgSerial($orgId);
     log_audit('UPDATE', 'om_script_versions', $scriptId, [
         'action' => 'reset_om_default',
         'organization_id' => $orgId,
@@ -2039,7 +2033,6 @@ function handleReactivateOmVersion($input) {
         [$versionId]
     );
 
-    bumpOrgSerial($orgId);
     log_audit('UPDATE', 'om_script_versions', $scriptId, [
         'action' => 'reactivate_om_version',
         'organization_id' => $orgId,
@@ -2073,7 +2066,6 @@ function handleDeleteOmVersion($input) {
         [$versionId]
     );
 
-    bumpOrgSerial($orgId);
     log_audit('DELETE', 'om_script_versions', $scriptId, [
         'action' => 'delete_om_version',
         'organization_id' => $orgId,
@@ -2264,9 +2256,7 @@ function handleCreateScriptVersion($input) {
         );
     }
 
-    if ($scope === 'om_specific') {
-        bumpOrgSerial($orgId);
-    }
+
 
     log_audit('UPDATE', 'script_versions', $scriptId, [
         'action' => 'save_' . $scope,
@@ -2427,8 +2417,15 @@ function handleGenerateBundle($input) {
     
     // Sanitizar URLs, NTP e prefixar imagens antes de exportar
     // $baseUrl vem do SEEDER_SERVER configurado pela OM; fallback apenas se vazio/invalido
+    $dominioRow = Database::fetchOne(
+        "SELECT ov.value FROM organization_variables ov
+         JOIN variable_definitions vd ON vd.id = ov.variable_id
+         WHERE ov.organization_id = ? AND vd.name = 'DOMINIO'",
+        [$orgId]
+    );
+    $dominio = strtolower(trim($dominioRow['value'] ?? ''));
     $sigla = strtolower($org['acronym'] ?? '');
-    $fallbackBaseUrl = "https://seederlinux.$sigla.intraer";
+    $fallbackBaseUrl = $dominio ? "https://seederlinux.$dominio" : "https://seederlinux.$sigla.intraer";
     if (empty($baseUrl) || strpos($baseUrl, 'om.local') !== false || strpos($baseUrl, 'softwarelivre') !== false) {
         $baseUrl = $fallbackBaseUrl;
     }
@@ -2605,9 +2602,7 @@ function handleGenerateBundle($input) {
         [$orgId, $bundleId]
     );
 
-    if (!empty($input['force_notify'])) {
-        bumpOrgSerial($orgId);
-    }
+    bumpOrgSerial($orgId);
 
         log_audit('GENERATE', 'bundles', $bundleId, [
             'organization' => $org['acronym'],
@@ -2930,7 +2925,7 @@ function handleStationCheckin($input) {
             'serial_config' => $orgSerial,
             'serial_aplicado' => $appliedSerial,
             'update_available' => ($orgSerial > $appliedSerial),
-            'latest_bundle_id' => $latestBundle['id'] ?? null,
+            'latest_bundle_id' => ($orgSerial > $appliedSerial) ? ($latestBundle['id'] ?? null) : null,
             'current_serial' => $appliedSerial,
             'latest_serial' => $orgSerial,
         ];
@@ -3179,7 +3174,6 @@ function handleUploadWallpaper() {
         [$wallpaperUrl, $orgId]
     );
 
-    bumpOrgSerial($orgId);
     log_audit('UPLOAD', 'wallpaper', null, ['organization_id' => $orgId, 'filename' => $filename]);
     jsonSuccess(['url' => $wallpaperUrl, 'filename' => $filename, 'thumbnail' => '/assets/wallpapers/thumbs/' . $filename], 'Wallpaper enviado');
 }
@@ -3237,7 +3231,6 @@ function handleUploadLogo() {
         [$logoUrl, $orgId]
     );
 
-    bumpOrgSerial($orgId);
     log_audit('UPLOAD', 'logo', null, ['organization_id' => $orgId, 'filename' => $filename]);
     jsonSuccess(['url' => $logoUrl, 'filename' => $filename], 'Logo enviado');
 }
@@ -3449,8 +3442,6 @@ function handleUploadAsset() {
          WHERE ov.organization_id = ? AND ov.variable_id = vd.id AND vd.name = ?",
         [$url, $orgId, $varName]
     );
-    bumpOrgSerial($orgId);
-
     log_audit('UPLOAD', 'asset', null, ['organization_id' => $orgId, 'var_name' => $varName, 'filename' => $filename]);
     jsonSuccess(['url' => $url, 'thumbnail' => $thumbUrl, 'filename' => $filename, 'var_name' => $varName], 'Asset enviado');
 }
@@ -3833,7 +3824,6 @@ function handleSetOmVersion($input) {
         [$orgId, $scriptId, $versionId, $version['content'], (int)($script['execution_order'] ?? 0), $nextV, $_SESSION['user_id'] ?? null]
     );
 
-    bumpOrgSerial($orgId);
     log_audit('UPDATE', 'om_script_versions', $scriptId, ['action' => 'activate_om_specific', 'version' => $version['version_number'], 'scope' => 'om_specific', 'organization_id' => $orgId, 'script_id' => $scriptId, 'author' => $_SESSION['username'] ?? 'system']);
     jsonSuccess(null, 'Versao da OM definida');
 }
@@ -3869,7 +3859,6 @@ function handleResetToFactory($input) {
             "UPDATE scripts SET current_version_id = ?, content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             [$factoryVersion['id'], $factoryVersion['content'], $scriptId]
         );
-        bumpOrgSerial($orgId);
         log_audit('UPDATE', 'script_versions', $scriptId, ['action' => 'revert_factory', 'scope' => 'om_specific', 'organization_id' => $orgId, 'version' => $factoryVersion['version_number'], 'script_id' => $scriptId, 'author' => $_SESSION['username'] ?? 'system']);
         jsonSuccess(['is_active' => false], 'OM revertida para versao de fabrica');
     } else {

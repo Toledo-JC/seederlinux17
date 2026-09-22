@@ -705,19 +705,182 @@ EOF
 }
 
 # ============================================================
-# MODULO: Conky - garante que esta rodando pras sessoes ativas
+# MODULO: Conky - regenera conky.conf a partir do CONKY_CONFIG e
+# reinicia o processo dos usuarios com sessao ativa se o arquivo
+# mudou. Antes esta funcao so verificava se o Conky estava rodando;
+# agora ela reescreve /etc/seederlinux/conky/conky.conf (mesmo
+# parsing JSON do core_conky.sh) e so reinicia se o hash mudou,
+# garantindo idempotencia.
 # ============================================================
 sync_conky() {
     echo "--- conky ---"
     [ -x /usr/local/bin/seederlinux-conky ] || return 0
-    case "$DESKTOP_ENV" in
-        cinnamon|mate)
-            for u in $(usuarios_com_sessao_grafica); do
-                pgrep -u "$u" conky &>/dev/null || \
+    [ -z "${CONKY_CONFIG:-}" ] && { echo "CONKY_CONFIG vazio, pulando"; return 0; }
+    command -v jq &>/dev/null || { echo "jq ausente, pulando conky"; return 0; }
+
+    _conky_parse_json() {
+        local key="$1"
+        local default="$2"
+        local val
+        val=$(echo "$CONKY_CONFIG" | jq -r "if has(\"${key}\") then .${key} else \"__UNSET__\" end" 2>/dev/null)
+        if [ -z "$val" ] || [ "$val" = "null" ] || [ "$val" = "__UNSET__" ]; then
+            echo "$default"
+        else
+            echo "$val"
+        fi
+    }
+
+    local CFG_POSITION CFG_TRANSPARENT CFG_COLOR_TEXT CFG_COLOR_BG
+    local CFG_FONT_SIZE CFG_GAP_X CFG_GAP_Y CFG_UPDATE_INTERVAL
+    local CFG_SHOW_CPU CFG_SHOW_RAM CFG_SHOW_DISK CFG_DISK_PARTITION
+    local CFG_SHOW_NETWORK CFG_NETWORK_IFACE CFG_SHOW_TOP
+    local CFG_SHOW_DATETIME CFG_SHOW_HOSTNAME CFG_HOSTNAME_FONT_SIZE
+
+    CFG_POSITION=$(_conky_parse_json position "top_right")
+    CFG_TRANSPARENT=$(_conky_parse_json transparent "true")
+    CFG_COLOR_TEXT=$(_conky_parse_json color_text "#FFFFFF")
+    CFG_COLOR_BG=$(_conky_parse_json color_bg "#000000")
+    CFG_FONT_SIZE=$(_conky_parse_json font_size "10")
+    CFG_GAP_X=$(_conky_parse_json gap_x "10")
+    CFG_GAP_Y=$(_conky_parse_json gap_y "40")
+    CFG_UPDATE_INTERVAL=$(_conky_parse_json update_interval "1.0")
+    CFG_SHOW_CPU=$(_conky_parse_json show_cpu "true")
+    CFG_SHOW_RAM=$(_conky_parse_json show_ram "true")
+    CFG_SHOW_DISK=$(_conky_parse_json show_disk "true")
+    CFG_DISK_PARTITION=$(_conky_parse_json disk_partition "/")
+    CFG_SHOW_NETWORK=$(_conky_parse_json show_network "true")
+    CFG_NETWORK_IFACE=$(_conky_parse_json network_interface "eth0")
+    CFG_SHOW_TOP=$(_conky_parse_json show_top_processes "true")
+    CFG_SHOW_DATETIME=$(_conky_parse_json show_datetime "true")
+    CFG_SHOW_HOSTNAME=$(_conky_parse_json show_hostname "true")
+    CFG_HOSTNAME_FONT_SIZE=$(_conky_parse_json font_size_hostname "14")
+
+    local COLOR_TEXT_LUA="${CFG_COLOR_TEXT#\#}"
+    local COLOR_BG_LUA="${CFG_COLOR_BG#\#}"
+    local OWN_TRANSPARENT OWN_ARGB_VALUE
+    if [ "$CFG_TRANSPARENT" = "true" ]; then
+        OWN_TRANSPARENT="true"
+        OWN_ARGB_VALUE="0"
+    else
+        OWN_TRANSPARENT="false"
+        OWN_ARGB_VALUE="200"
+    fi
+
+    mkdir -p /etc/seederlinux/conky
+
+    local CONKY_TEXT
+    if [ "$CFG_SHOW_HOSTNAME" = "true" ]; then
+        CONKY_TEXT="\${font DejaVu Sans Mono:size=${CFG_HOSTNAME_FONT_SIZE}}\${color ${COLOR_TEXT_LUA}}Host: \${nodename}
+\${font DejaVu Sans Mono:size=${CFG_FONT_SIZE}}
+\${color ${COLOR_TEXT_LUA}}${OM_ACRONYM:-} - ${OM_NAME:-}
+\${color ${COLOR_TEXT_LUA}}\${hr}"
+    else
+        CONKY_TEXT="\${color ${COLOR_TEXT_LUA}}${OM_ACRONYM:-} - ${OM_NAME:-}
+\${color ${COLOR_TEXT_LUA}}\${hr}"
+    fi
+
+    CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}Uptime: \${color grey}\${uptime}
+\${color ${COLOR_TEXT_LUA}}\${hr}"
+
+    if [ "$CFG_SHOW_CPU" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}CPU:  \${color grey}\${cpu}% \${cpubar 4}"
+    fi
+    if [ "$CFG_SHOW_RAM" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}RAM:  \${color grey}\${mem}/\${memmax} \${membar 4}
+\${color ${COLOR_TEXT_LUA}}SWAP: \${color grey}\${swap}/\${swapmax} \${swapbar 4}"
+    fi
+    if [ "$CFG_SHOW_DISK" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}Disco (${CFG_DISK_PARTITION}): \${color grey}\${fs_used ${CFG_DISK_PARTITION}}/\${fs_size ${CFG_DISK_PARTITION}} \${fs_bar 6 ${CFG_DISK_PARTITION}}"
+    fi
+    if [ "$CFG_SHOW_NETWORK" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}Rede (${CFG_NETWORK_IFACE}):
+\${color ${COLOR_TEXT_LUA}}IP:   \${color grey}\${addr ${CFG_NETWORK_IFACE}}
+\${color ${COLOR_TEXT_LUA}}Down: \${color grey}\${downspeed ${CFG_NETWORK_IFACE}}
+\${color ${COLOR_TEXT_LUA}}Up:   \${color grey}\${upspeed ${CFG_NETWORK_IFACE}}"
+    fi
+    if [ "$CFG_SHOW_TOP" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}\${hr}
+\${color ${COLOR_TEXT_LUA}}Top CPU:
+\${color grey}\${top name 1} \${top cpu 1}%
+\${color grey}\${top name 2} \${top cpu 2}%
+\${color grey}\${top name 3} \${top cpu 3}%"
+    fi
+    if [ "$CFG_SHOW_DATETIME" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}\${hr}
+\${color ${COLOR_TEXT_LUA}}\${time %A, %d/%m/%Y %H:%M:%S}"
+    fi
+
+    # Gerar em arquivo temporario e comparar hash com o atual
+    local TMP_CONF="/tmp/seederlinux-conky-sync.$"
+    cat > "$TMP_CONF" <<CONKYEOF
+-- Configuracao Conky - SeederLinux (gerada dinamicamente pelo seeder-sync)
+
+conky.config = {
+    alignment = '${CFG_POSITION}',
+    background = false,
+    border_width = 1,
+    cpu_avg_samples = 2,
+    default_color = '${COLOR_TEXT_LUA}',
+    double_buffer = true,
+    draw_borders = false,
+    draw_graph_borders = true,
+    font = 'DejaVu Sans Mono:size=${CFG_FONT_SIZE}',
+    gap_x = ${CFG_GAP_X},
+    gap_y = ${CFG_GAP_Y},
+    minimum_width = 200,
+    net_avg_samples = 2,
+    no_buffers = true,
+    own_window = true,
+    own_window_class = 'Conky',
+    own_window_type = 'desktop',
+    own_window_argb_visual = true,
+    own_window_argb_value = ${OWN_ARGB_VALUE},
+    own_window_transparent = ${OWN_TRANSPARENT},
+    own_window_colour = '${COLOR_BG_LUA}',
+    own_window_hints = 'undecorated,below,sticky,skip_taskbar,skip_pager',
+    update_interval = ${CFG_UPDATE_INTERVAL},
+    use_xft = true,
+}
+
+conky.text = [[
+${CONKY_TEXT}
+]]
+CONKYEOF
+
+    local CONKY_CONF="/etc/seederlinux/conky/conky.conf"
+    local HASH_FILE="/etc/seederlinux/conky/.last-hash"
+    local NEW_HASH OLD_HASH
+    NEW_HASH=$(sha256sum "$TMP_CONF" 2>/dev/null | awk '{print $1}')
+    OLD_HASH=$(cat "$HASH_FILE" 2>/dev/null)
+
+    if [ "$NEW_HASH" = "$OLD_HASH" ]; then
+        rm -f "$TMP_CONF"
+        echo "conky.conf inalterado - nada a fazer"
+    else
+        install -m 0644 "$TMP_CONF" "$CONKY_CONF"
+        rm -f "$TMP_CONF"
+        echo "$NEW_HASH" > "$HASH_FILE"
+        echo "conky.conf regenerado (hash mudou)"
+
+        case "$DESKTOP_ENV" in
+            cinnamon|mate|xfce|lxde|lxqt|gnome|kde)
+                for u in $(usuarios_com_sessao_grafica); do
+                    if pgrep -u "$u" conky &>/dev/null; then
+                        pkill -u "$u" conky 2>/dev/null || true
+                        sleep 0.5
+                    fi
                     su - "$u" -c "DISPLAY=:0 /usr/local/bin/seederlinux-conky" 2>/dev/null &
-            done
-            ;;
-    esac
+                done
+                ;;
+        esac
+    fi
 }
 
 # ============================================================

@@ -226,18 +226,13 @@ systemctl disable gdm3 2>/dev/null || true
 # ja feito via /etc/X11/default-display-manager acima.
 
 # ============================================================
-# Reiniciar servico
-# CORRECAO: mesmo guard do LightDM/GDM3 - reiniciar dentro de uma
-# sessao grafica ativa mataria a propria sessao rodando o bundle.
+# NAO reiniciar o DM daqui - mesmo via cron (sem $DISPLAY e sem
+# $SSH_CONNECTION), o systemctl restart mataria a sessao do
+# usuario que estiver logado na maquina. A configuracao ja foi
+# escrita nos arquivos corretos; ela passa a valer no proximo boot.
 # ============================================================
-if [ -z "$DISPLAY" ] || [ -n "$SSH_CONNECTION" ]; then
-    echo ">>> Reiniciando SDDM..."
-    systemctl restart sddm 2>/dev/null || {
-        echo ">>> AVISO: SDDM sera iniciado no proximo boot."
-    }
-else
-    echo ">>> Rodando dentro da sessao grafica - SDDM sera aplicado no proximo boot."
-fi
+echo ">>> Configuracao de SDDM sera aplicada no proximo boot."
+echo ">>> (reiniciar o DM daqui mataria a sessao de quem estiver logado)"
 
 echo ">>> [14c] SDDM configurado!"
 echo "============================================================"
