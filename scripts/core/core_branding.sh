@@ -5,6 +5,26 @@
 # ============================================================================
 # Aplica identidade visual da OM: wallpaper, logo, tema GTK e configuracoes
 # de aparencia. Varia conforme o ambiente grafico (DE).
+#
+# CORRECOES NESTA VERSAO:
+#   1. _baixar_ativo() usa `install -m 0644` em vez de `mv`. O `mv` de
+#      um arquivo criado por `mktemp` (0600) preserva o modo restritivo,
+#      o que fazia o greeter do LightDM (roda como usuario `lightdm`)
+#      nao conseguir ler os wallpapers -> tela preta no login.
+#   2. Validacao de MIME type alem do tamanho: se o servidor devolver
+#      uma pagina HTML de erro (404 estilizado, portal cativo), o
+#      arquivo tem bytes mas nao e imagem. `file --mime-type` detecta.
+#   3. Fallback wallpaper-login -> wallpaper.jpg quando o primeiro nao
+#      existe (seja por URL vazia, download falho, ou OM que so
+#      cadastrou WALLPAPER_URL).
+#   4. Diretorio /usr/share/backgrounds/seederlinux forcado a 0755 -
+#      sem isso, um bundle rodado com umask restritivo o cria como
+#      0700, e o greeter tambem nao consegue *entrar* no diretorio.
+#   5. `install -m 0644` tambem no caso GREETER_URL=imagem, que copiava
+#      via `cp` sem controle de modo.
+#   6. chmod 0644 explicito no lightdm-gtk-greeter.conf (lightdm le
+#      esse arquivo como usuario `lightdm`, nao como root).
+#
 # Os placeholders VARIAVEL são substituídos automaticamente
 # pelo sistema na geração do bundle.
 # ============================================================================
@@ -95,6 +115,14 @@ mkdir -p /usr/share/seederlinux/branding
 mkdir -p /usr/share/backgrounds/seederlinux
 mkdir -p /usr/share/pixmaps
 
+# CORRECAO: o diretorio precisa ser 0755 (world-readable + world-
+# executable). Um bundle rodado com umask 077 o criaria como 0700 -
+# o greeter do LightDM (usuario `lightdm`) nao conseguiria nem entrar
+# no diretorio, mesmo que o arquivo dentro fosse 0644. Este chmod e'
+# idempotente e cobre tanto criacao nova quanto bundle re-rodado.
+chmod 0755 /usr/share/backgrounds/seederlinux
+chmod 0755 /usr/share/pixmaps
+
 # ============================================================
 # Garantir perfil dconf "user" com o banco system-db:local incluido.
 # Sem isso, TUDO que escrevemos em /etc/dconf/db/local.d/ (GNOME,
@@ -115,28 +143,62 @@ elif ! grep -q "^system-db:local$" /etc/dconf/profile/user; then
 fi
 
 # ============================================================
-# Helper: baixar asset validando tamanho. Evita que um download
-# falho (wget -O cria arquivo vazio) sobrescreva o asset correto -
-# causa da tela preta (wallpaper zerado).
+# Helper: baixar asset validando TAMANHO e TIPO.
+#
+# CORRECAO (causa raiz da tela preta em teste real):
+#   - Antes: `mktemp` cria arquivo 0600; `wget -O` escreve nele; `mv`
+#     preserva o modo. O wallpaper resultante ficava 0600. O greeter
+#     do LightDM roda como usuario `lightdm`, tentava abrir, tomava
+#     EACCES e caia no fundo preto padrao. Solucao: `install -m 0644`
+#     (copia + define modo explicitamente, sem depender de umask).
+#   - Antes: so validava `-s` (tamanho > 0). Se o servidor devolvesse
+#     uma pagina HTML de erro (proxy 407, portal cativo, 404 estilizado),
+#     o arquivo tinha bytes e era aceito como wallpaper. Solucao: usar
+#     `file --mime-type` para exigir `image/*`.
+#
+# Em caso de falha, NUNCA apaga o destino - mantem o que ja estava
+# la (pode ser de bundle anterior). Apenas o tmp e' removido.
 # ============================================================
 _baixar_ativo() {
     local url="$1"
     local dest="$2"
     local tmp
     tmp="$(mktemp /tmp/seeder-asset.XXXXXX)"
-    if wget -q --no-check-certificate --no-proxy -O "$tmp" "$url" && [ -s "$tmp" ]; then
-        mv "$tmp" "$dest"
-        echo ">>> $(basename "$dest") instalado"
-        return 0
-    else
+
+    if ! wget -q --no-check-certificate --no-proxy --timeout=20 -O "$tmp" "$url"; then
         rm -f "$tmp"
-        echo ">>> AVISO: falha/arquivo vazio ao baixar $(basename "$dest") - mantendo o existente"
+        echo ">>> AVISO: falha de download de $(basename "$dest") ($url) - mantendo o existente"
         return 1
     fi
+
+    if [ ! -s "$tmp" ]; then
+        rm -f "$tmp"
+        echo ">>> AVISO: $(basename "$dest") baixou 0 bytes (404/proxy/DNS?) - mantendo o existente"
+        return 1
+    fi
+
+    # Validacao de tipo: aceita apenas image/*. Cobre jpg/png/gif/webp/
+    # bmp/svg - o que o usuario cadastrar como wallpaper, desde que
+    # seja imagem de verdade.
+    local mime
+    mime="$(file -b --mime-type "$tmp" 2>/dev/null || echo "application/octet-stream")"
+    if ! echo "$mime" | grep -q '^image/'; then
+        rm -f "$tmp"
+        echo ">>> AVISO: $(basename "$dest") baixou $mime (nao e imagem - HTML de erro?) - mantendo o existente"
+        return 1
+    fi
+
+    # `install -m 0644` - copia E define modo. Nao depende de umask
+    # herdado do bundle. Garante que greeter (usuario `lightdm`) e
+    # sessoes de usuario conseguem ler.
+    install -m 0644 "$tmp" "$dest"
+    rm -f "$tmp"
+    echo ">>> $(basename "$dest") instalado ($mime)"
+    return 0
 }
 
 # ============================================================
-# Baixar e instalar wallpaper
+# Baixar e instalar wallpaper (da sessao)
 # ============================================================
 echo ">>> Baixando wallpaper..."
 if [ -n "$WALLPAPER_URL" ] && [ "$WALLPAPER_URL" != "" ]; then
@@ -176,16 +238,12 @@ fi
 #
 # Deteccao por conteudo (MIME type via magic bytes), NAO por
 # extensao do arquivo - funciona com qualquer formato, mesmo que o
-# nome/extensao esteja errado. Corrige o achado em teste real (Linux
-# Mint Cinnamon): GREETER_URL apontando pra .jpg fazia `tar xzf`
-# falhar e, como este script nao estava em subshell, derrubava o
-# bundle inteiro. Agora, alem de nao travar mais nada, a imagem e
-# de fato aproveitada em vez de descartada.
+# nome/extensao esteja errado.
 # ============================================================
 echo ">>> Baixando greeter..."
 if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
     GREETER_TARBALL="/tmp/seederlinux-greeter.bin"
-    if wget -q --no-check-certificate --no-proxy -O "$GREETER_TARBALL" "$GREETER_URL" && [ -s "$GREETER_TARBALL" ]; then
+    if wget -q --no-check-certificate --no-proxy --timeout=20 -O "$GREETER_TARBALL" "$GREETER_URL" && [ -s "$GREETER_TARBALL" ]; then
         GREETER_MIME="$(file -b --mime-type "$GREETER_TARBALL" 2>/dev/null)"
         echo ">>> Greeter detectado como: ${GREETER_MIME:-desconhecido}"
 
@@ -231,7 +289,13 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
                     tiff) GREETER_EXT="tif" ;;
                 esac
                 GREETER_IMG="/usr/share/backgrounds/seederlinux/greeter.${GREETER_EXT}"
-                cp "$GREETER_TARBALL" "$GREETER_IMG"
+
+                # CORRECAO: `install -m 0644` em vez de `cp`. O `cp`
+                # sem -p herda o modo do arquivo de origem mascarado
+                # pelo umask corrente do bundle - que pode ser 077.
+                # O greeter precisa ler, entao modo tem que ser 0644
+                # explicito, sem depender de umask.
+                install -m 0644 "$GREETER_TARBALL" "$GREETER_IMG"
                 echo ">>> Greeter (imagem ${GREETER_EXT}) instalado: $GREETER_IMG"
 
                 # Se WALLPAPER_LOGIN_URL nao foi definido OU o arquivo
@@ -243,8 +307,8 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
                 # isso nao quebra a leitura. Ressalva: formatos menos
                 # comuns (webp, svg) dependem do loader gdk-pixbuf
                 # correspondente estar instalado na imagem do SO.
-                if [ -z "$WALLPAPER_LOGIN_URL" ] || [ ! -f /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
-                    cp "$GREETER_TARBALL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+                if [ -z "$WALLPAPER_LOGIN_URL" ] || [ ! -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
+                    install -m 0644 "$GREETER_TARBALL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
                     echo ">>> Greeter usado como wallpaper de login"
                 else
                     echo ">>> Wallpaper de login proprio ja instalado - greeter mantido apenas em $GREETER_IMG"
@@ -266,6 +330,24 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
 fi
 
 # ============================================================
+# FALLBACK: wallpaper de login
+#
+# Se por qualquer motivo (URL vazia, download falho, HTML de erro) o
+# wallpaper-login.jpg nao existe no disco mas o wallpaper.jpg existe,
+# copiamos o da sessao por cima. Isso evita que o greeter caia no
+# fundo preto padrao - que era exatamente o sintoma reportado.
+#
+# Tambem serve para OM que so cadastrou WALLPAPER_URL (caso comum:
+# a OM nao quer se preocupar em subir dois arquivos).
+# ============================================================
+LOGIN_WP="/usr/share/backgrounds/seederlinux/wallpaper-login.jpg"
+SESSION_WP="/usr/share/backgrounds/seederlinux/wallpaper.jpg"
+
+if [ ! -s "$LOGIN_WP" ] && [ -s "$SESSION_WP" ]; then
+    echo ">>> Wallpaper de login ausente - usando o da sessao como fallback"
+    install -m 0644 "$SESSION_WP" "$LOGIN_WP"
+fi
+
 # ============================================================
 # Aplicar tema GTK (SOMENTE se THEME foi definido explicitamente)
 # ============================================================
@@ -439,12 +521,18 @@ esac
 # Configurar wallpaper de login (greeter)
 # CORRECAO: theme-name=${THEME} incondicional removido do LightDM -
 # mesmo problema do THEME=DEFAULT explicado acima.
+#
+# CORRECAO de permissoes: o LightDM le lightdm-gtk-greeter.conf como
+# usuario `lightdm` (uid 113), nao como root. chmod 0644 garante
+# leitura. E o `background` aponta para wallpaper-login.jpg - que a
+# esta altura ja existe (download OK, fallback do greeter, ou
+# fallback do wallpaper da sessao).
 # ============================================================
 echo ">>> Configurando wallpaper de login..."
 case "$DISPLAY_MANAGER" in
     lightdm)
         mkdir -p /etc/lightdm
-        if [ -f /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
+        if [ -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
             cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
 [greeter]
 background=/usr/share/backgrounds/seederlinux/wallpaper-login.jpg
@@ -455,10 +543,15 @@ EOF
             if [ "$THEME_APLICAR" = "true" ]; then
                 echo "theme-name=${THEME}" >> /etc/lightdm/lightdm-gtk-greeter.conf
             fi
+            # lightdm le este arquivo como usuario `lightdm`.
+            chmod 0644 /etc/lightdm/lightdm-gtk-greeter.conf
+            echo ">>> lightdm-gtk-greeter.conf configurado (background=$LOGIN_WP)"
+        else
+            echo ">>> AVISO: wallpaper-login.jpg ausente - greeter mantem padrao do sistema"
         fi
         ;;
     gdm3)
-        if [ -f /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
+        if [ -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
             # GDM3 usa dconf para configuracao
             mkdir -p /etc/dconf/db/gdm.d
             cat > /etc/dconf/db/gdm.d/01-seederlinux-background <<EOF
@@ -467,10 +560,13 @@ picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper-login.jpg'
 picture-options='zoom'
 EOF
             dconf update 2>/dev/null || true
+            echo ">>> GDM3 background configurado"
+        else
+            echo ">>> AVISO: wallpaper-login.jpg ausente - GDM3 mantem padrao do sistema"
         fi
         ;;
     sddm)
-        if [ -f /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
+        if [ -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
             mkdir -p /etc/sddm.conf.d
             cat > /etc/sddm.conf.d/seederlinux.conf <<EOF
 [Theme]
@@ -478,9 +574,19 @@ ThemeDir=/usr/share/sddm/themes
 Current=seederlinux
 Background=/usr/share/backgrounds/seederlinux/wallpaper-login.jpg
 EOF
+            echo ">>> SDDM background configurado"
+        else
+            echo ">>> AVISO: wallpaper-login.jpg ausente - SDDM mantem padrao do sistema"
         fi
         ;;
 esac
+
+# ============================================================
+# Sumario final dos assets (observabilidade - facilita debug)
+# ============================================================
+echo ">>> Sumario dos assets instalados:"
+ls -la /usr/share/backgrounds/seederlinux/ 2>/dev/null | sed 's/^/    /'
+ls -la /usr/share/pixmaps/seederlinux-logo.png 2>/dev/null | sed 's/^/    /'
 
 echo ">>> [13] Identidade visual aplicada!"
 echo "============================================================"
