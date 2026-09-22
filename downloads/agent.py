@@ -16,10 +16,16 @@ DISTINCAO IMPORTANTE ENTRE PROVISIONAMENTO E ATUALIZACAO
   o serial novo. O seeder-sync reaplica as politicas (branding,
   navegadores, proxy, conky, impressoras) de forma idempotente.
 
-Motivo: o bundle completo reinicia display managers e reingressa no
-AD, o que mata a sessao do usuario logado quando roda via cron. Numa
-estacao em producao, mudancas de politica NAO devem re-provisionar -
-apenas reaplicar.
+BYPASS DE PROXY
+---------------
+O agente so fala com o SEEDER_SERVER. Este host esta sempre no
+NO_PROXY corporativo e nunca deve passar pelo proxy (que exige
+autenticacao e devolve 407). Por isso, run_agent() remove as
+variaveis http_proxy/https_proxy/all_proxy do ambiente do processo
+Python antes de qualquer request HTTP. O urllib do Python nao
+suporta wildcards no NO_PROXY (ex: *.intraer), entao depender so
+das variaveis de ambiente nao basta - e' preciso remover para o
+processo nao tentar usar o proxy.
 
 Uso:
     # Primeiro check-in (registra a estação na OM):
@@ -42,15 +48,7 @@ Logs:
 Cron (recomendado a cada 15 minutos):
     */15 * * * * root /usr/local/bin/seeder-agent >> /var/log/seeder/agent.log 2>&1
 """
-# No topo de run_agent(), antes de qualquer request HTTP:
-# O agente só fala com o Seeder. Este host está sempre no NO_PROXY
-# corporativo e não deve passar pelo proxy (que exige autenticação
-# e devolve 407). Desabilitamos o proxy para o processo inteiro -
-# o próprio agente não precisa dele para nada.
-for _k in ("http_proxy", "https_proxy", "all_proxy",
-           "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
-    os.environ.pop(_k, None)
-             
+
 import argparse
 import fcntl
 import json
@@ -88,12 +86,9 @@ class SingleInstanceLock:
     Impede que duas execucoes do agente rodem ao mesmo tempo.
 
     O cron dispara a cada 15min, mas execute_bundle() pode levar ate
-    30min (timeout=1800) rodando de forma sincrona - ou seja, o tempo
-    maximo permitido para uma execucao E MAIOR que o intervalo entre
-    execucoes. Sem essa trava, um bundle demorado (ex: instalacao de
-    pacotes lenta, ingresso AD com timeout de rede) pode ainda estar
-    rodando quando o proximo cron dispara, resultando em duas
-    execucoes do bundle simultaneas.
+    30min (timeout=1800) rodando de forma sincrona. Sem essa trava,
+    um bundle demorado pode ainda estar rodando quando o proximo cron
+    dispara, resultando em duas execucoes simultaneas.
 
     Usa fcntl.flock em vez de um PID-file simples: flock e liberado
     automaticamente pelo kernel quando o processo morre, entao nao ha
@@ -138,6 +133,33 @@ def log(message, level="INFO"):
             f.write(line + "\n")
     except (IOError, PermissionError):
         pass
+
+
+def disable_proxy_for_process():
+    """
+    Remove todas as variaveis de proxy do ambiente do processo.
+
+    Motivo: o agente so precisa falar com o SEEDER_SERVER, que esta
+    sempre no NO_PROXY corporativo. Mas o urllib do Python nao
+    suporta wildcards no NO_PROXY (ex: "*.intraer") - so entende
+    hostnames exatos. Sem essa remocao, requests para o Seeder passam
+    pelo proxy corporativo e recebem HTTP 407 Proxy Authentication
+    Required, que aborta o check-in.
+
+    Efeito: apenas este processo Python perde as variaveis. Nao afeta
+    o sistema, outros processos, nem o /etc/environment. O agente
+    nao usa proxy para nada, entao a remocao e' segura.
+
+    Chamado no inicio de run_agent(), antes de qualquer request HTTP.
+    """
+    removed = []
+    for _k in ("http_proxy", "https_proxy", "all_proxy",
+               "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        if _k in os.environ:
+            removed.append(_k)
+            os.environ.pop(_k, None)
+    if removed:
+        log(f"Proxy removido do processo: {', '.join(removed)}")
 
 
 def load_config(config_path=CONFIG_FILE):
@@ -386,9 +408,6 @@ def apply_incremental(bundle_path, remote_serial):
             log(f"seeder-sync retornou {result.returncode}", "WARNING")
             if result.stderr:
                 log(f"stderr: {result.stderr[:500]}", "WARNING")
-            # Mesmo com codigo != 0, o seeder-sync pode ter aplicado
-            # parcialmente. Consideramos "aplicado" para nao ficar em
-            # loop; se for persistente, aparece no log do sync.
             return True
     except subprocess.TimeoutExpired:
         log("seeder-sync excedeu 15 minutos", "ERROR")
@@ -612,6 +631,19 @@ Exemplos:
 def run_agent(args):
     log("=" * 60)
     log("SeederLinux Agent 1.3.0 - Iniciando")
+
+    # ------------------------------------------------------------------
+    # Bypass de proxy: o agente so fala com o SEEDER_SERVER, que esta
+    # sempre no NO_PROXY corporativo. O urllib do Python nao suporta
+    # wildcards tipo "*.intraer" - entao, mesmo com NO_PROXY configurado,
+    # ele tentaria usar o proxy corporativo e receberia HTTP 407 Proxy
+    # Authentication Required. Removemos as variaveis de proxy do
+    # ambiente DESTE processo antes de qualquer request.
+    #
+    # Esta chamada precisa acontecer DEPOIS dos imports (os ja esta
+    # disponivel) e ANTES de qualquer checkin()/download_bundle().
+    # ------------------------------------------------------------------
+    disable_proxy_for_process()
 
     config = load_config()
     server_url = args.server or config["url"]
