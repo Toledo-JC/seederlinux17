@@ -7,19 +7,26 @@
 # e logoff que serao executados nas transicoes de sessao.
 #
 # Resolucao de DESKTOP_ENV/DISPLAY_MANAGER (nessa ordem):
-#   1) Valor injetado pela OM ({{DESKTOP_ENV}} / {{DISPLAY_MANAGER}})
+#   1) Valor injetado pela OM ( / )
 #   2) Valor ja persistido em /etc/seederlinux/config.env (escrito pelo
 #      core_session_lightdm.sh ou por este mesmo script)
 #   3) Deteccao em runtime: DM ja ativo -> DM ja instalado -> padrao
 #      por DE (gnome->gdm3, kde->sddm, qualquer outro->lightdm)
 #
-# CORRECAO CRITICA: a versao anterior usava `return 0` dentro deste
+# CORRECAO CRITICA (v1): a versao anterior usava `return 0` dentro deste
 # subshell "( ... )", o que nao e uma funcao e gera erro em runtime,
 # abortando o BUNDLE INTEIRO sob `set -e`. Este script usa `exit`
 # em todos os pontos de saida antecipada.
 #
-# Os placeholders VARIAVEL são substituídos automaticamente
-# pelo sistema na geração do bundle.
+# CORRECAO CRITICA (v2, esta versao): o bloco final de "reiniciar
+# GDM3" foi REMOVIDO pelo mesmo motivo do LightDM: quando o bundle
+# roda via cron/agente, $DISPLAY e $SSH_CONNECTION nao existem, entao
+# o guard "so reinicia se nao estiver em sessao grafica" nao protegia
+# nada - reiniciava e matava a sessao do usuario. Regra do projeto:
+# o bundle NAO reinicia display manager.
+#
+# Os placeholders VARIAVEL sao substituidos automaticamente
+# pelo sistema na geracao do bundle.
 # ============================================================================
 
 (
@@ -32,12 +39,12 @@ echo "============================================================"
 # ============================================================
 # Variáveis
 # ============================================================
-DISPLAY_MANAGER="{{DISPLAY_MANAGER}}"
-DESKTOP_ENV="{{DESKTOP_ENV}}"
-BASE_URL="{{BASE_URL}}"
-DOMINIO="{{DOMINIO}}"
-DOMINIO_NETBIOS="{{DOMINIO_NETBIOS}}"
-GRUPO_ADMIN_AD="{{GRUPO_ADMIN_AD}}"
+DISPLAY_MANAGER=""
+DESKTOP_ENV=""
+BASE_URL="https://seederlinux.comara.intraer"
+DOMINIO="comara.intraer"
+DOMINIO_NETBIOS="COMARA"
+GRUPO_ADMIN_AD="Dominio\ Admins"
 
 CONFIG_FILE="/etc/seederlinux/config.env"
 
@@ -222,13 +229,13 @@ systemctl disable sddm 2>/dev/null || true
 # ja feito via /etc/X11/default-display-manager acima.
 
 # ============================================================
-# NAO reiniciar o DM daqui - mesmo via cron (sem $DISPLAY e sem
-# $SSH_CONNECTION), o systemctl restart mataria a sessao do
-# usuario que estiver logado na maquina. A configuracao ja foi
-# escrita nos arquivos corretos; ela passa a valer no proximo boot.
+# Aplicacao da config: NAO reiniciar o DM.
+# Mesmo motivo do core_session_lightdm.sh - o guard baseado em
+# $DISPLAY/$SSH_CONNECTION falha quando o bundle roda via cron
+# (agente Python), matando a sessao do usuario logado.
 # ============================================================
 echo ">>> Configuracao de GDM3 sera aplicada no proximo boot."
-echo ">>> (reiniciar o DM daqui mataria a sessao de quem estiver logado)"
+echo ">>> (NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
 
 echo ">>> [14b] GDM3 configurado!"
 echo "============================================================"
