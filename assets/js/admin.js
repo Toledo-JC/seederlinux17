@@ -161,13 +161,11 @@ const groupLabels = {
 };
 
 const variableOptions = {
-    'PROXY_MODE': ['NONE', 'MANUAL', 'PAC'],
     'APT_POLICY': ['DIRECT', 'PROXY_NO_AUTH', 'PROXY_WITH_AUTH', 'MIRROR_LOCAL_SEEDER', 'MIRROR_LOCAL_OM', 'MIRROR_OFFICIAL'],
     'CLI_POLICY': ['DIRECT', 'PROXY_NO_AUTH', 'PROXY_WITH_AUTH', 'PAC'],
     'BROWSER_POLICY': ['DIRECT', 'PROXY_NO_AUTH', 'PROXY_WITH_AUTH', 'PAC', 'SYSTEM'],
     'REPOSITORY_MODE': ['PUBLIC', 'MIRROR', 'HYBRID', 'CUSTOM'],
     'REMOTE_METHOD': ['ssh', 'xrdp', 'anydesk', 'rustdesk'],
-    'PROXY_PORTA': ['80', '8080', '3128', '8888'],
     'DESKTOP_ENV': ['', 'cinnamon', 'mate', 'gnome', 'xfce', 'kde', 'lxde'],
     'DISPLAY_MANAGER': ['', 'lightdm', 'gdm3', 'sddm'],
     'AUTH_METHOD': ['sssd', 'winbind', 'both'],
@@ -1261,6 +1259,7 @@ function renderVariables(vars) {
 
     vars.forEach(v => {
         if (hiddenNames.has(v.name)) return;
+        if (deprecatedVariables.includes(v.name)) return;
         const sc = variableSuperOverride[v.name] || categoryToSuper[v.category || 'generic'] || 'estacoes_perifericos';
         superBuckets[sc].push(v);
     });
