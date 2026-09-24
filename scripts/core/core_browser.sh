@@ -8,24 +8,51 @@
 #
 # POLÍTICAS SUPORTADAS (BROWSER_POLICY):
 #   DIRECT          -> sem proxy (default)
-#   PROXY_NO_AUTH   -> via proxy sem autenticação
-#   PROXY_WITH_AUTH -> via proxy com user/senha (Chrome aceita user:pass
-#                      embutido; Firefox NÃO - ver limitação abaixo)
-#   PAC             -> via PAC (suportado por ambos)
+#   PROXY           -> via proxy (host:port, sem credencial embutida)
+#   PROXY_NO_AUTH   -> alias legado de PROXY (retrocompatibilidade)
+#   PROXY_WITH_AUTH -> alias legado de PROXY (retrocompatibilidade)
+#   PAC             -> via PAC
 #   SYSTEM          -> herda proxy do sistema (libproxy)
+#
+# IMPORTANTE — BROWSER NUNCA RECEBE CREDENCIAL DE PROXY
+# ====================================================
+# A autenticação de proxy para navegadores é SEMPRE do usuário, não da
+# estação. Isso vale para os 3 mecanismos possíveis:
+#
+#   1. Popup interativo: o browser exibe um diálogo pedindo user/senha
+#      na primeira navegação. O usuário digita, o browser guarda no
+#      keyring do usuário. Nada disso passa pelo bundle.
+#
+#   2. SSO/Kerberos: o proxy aceita Negociate/NTLM usando o ticket
+#      Kerberos da sessão do usuário (que existe porque a estação
+#      está ingressada no AD). Nada a configurar.
+#
+#   3. Proxy transparente: o proxy não pede auth, o browser só usa.
+#
+# Por isso NUNCA embutimos user:pass na URL do proxy configurada no
+# navegador. Duas razões técnicas, além da conceitual:
+#
+#   - Chrome/Chromium: o campo "ProxyServer" da policy aceita apenas
+#     o formato "scheme=host:port". Se vier com user:pass@, o Chrome
+#     IGNORA a policy de proxy (bug silencioso — o browser fica sem
+#     proxy sem avisar).
+#
+#   - Firefox: o enterprise policy "Proxy.HTTPProxy" aceita
+#     user:pass@host:port na sintaxe, mas expõe a credencial no
+#     arquivo /usr/lib/firefox-esr/distribution/policies.json (modo
+#     644, legível por qualquer usuário). Além de inseguro, se o
+#     operador trocar a senha dele, o arquivo fica desatualizado
+#     silenciosamente. O Firefox também pede a senha no primeiro
+#     acesso se o proxy exigir Basic auth — comportamento melhor
+#     que credencial estática.
+#
+# CONCLUSÃO: browser recebe apenas host:port + lista de exceções.
+# Credenciais para APT/CLI continuam no cadastro do proxy, mas o
+# core_browser.sh as ignora completamente.
 #
 # MÚLTIPLOS PROXIES:
 #   BROWSER_PROXY_NAME aponta para um dos proxies nomeados da OM; se
 #   vazio, usa PROXY_DEFAULT_NAME.
-#
-# LIMITAÇÃO CONHECIDA - Firefox + proxy autenticado:
-#   O enterprise policy "Proxy" do Firefox NÃO aceita credenciais
-#   embutidas na URL (HTTPProxy=user:pass@host NÃO funciona). Se o
-#   proxy exigir Basic auth, o Firefox vai pedir a senha no primeiro
-#   acesso (comportamento esperado, sem alternativa limpa). Para NTLM/
-#   Kerberos, use BROWSER_POLICY=SYSTEM (herda do SO).
-#   Já o Chrome/Chromium aceitam "http=user:pass@host:port" direto no
-#   JSON de política, então essa limitação não os afeta.
 #
 # Os placeholders VARIAVEL são substituídos automaticamente
 # pelo sistema na geração do bundle.
@@ -40,14 +67,14 @@ echo "============================================================"
 # ============================================================
 # Variáveis (substituídas no bundle)
 # ============================================================
-HOMEPAGE="{{HOMEPAGE}}"
-BROWSER_POLICY="{{BROWSER_POLICY}}"
-BROWSER_PROXY_NAME="{{BROWSER_PROXY_NAME}}"
-DOMINIO="{{DOMINIO}}"
-OM_ACRONYM="{{OM_ACRONYM}}"
-SEEDER_SERVER="{{SEEDER_SERVER}}"
-DC_IP="{{DC_IP}}"
-DC_IP_LIST="{{DC_IP_LIST}}"
+HOMEPAGE="www.om.local"
+BROWSER_POLICY="DIRECT"
+BROWSER_PROXY_NAME=""
+DOMINIO="om.local"
+OM_ACRONYM="OM"
+SEEDER_SERVER="https://seederlinux.om.local"
+DC_IP="10.0.0.1"
+DC_IP_LIST="10.0.0.1,10.0.0.2"
 
 # Múltiplos proxies
 PROXY_COUNT="${PROXY_COUNT:-0}"
@@ -59,19 +86,19 @@ PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
 echo ">>> Homepage: $HOMEPAGE"
 echo ">>> BROWSER_POLICY: $BROWSER_POLICY"
 echo ">>> BROWSER_PROXY_NAME: ${BROWSER_PROXY_NAME:-<default>}"
+echo ">>> Proxies cadastrados: $PROXY_COUNT"
 
 # ============================================================
-# Helper: resolver proxy por nome
+# Helper: resolver proxy por nome -> host:port (SEMPRE sem credencial)
 # ============================================================
-# Retorna "HOST_PORT" (sem user:pass, formato do policy Firefox) ou
-# "user:pass@host:port" (formato que o Chrome aceita). A função recebe
-# o formato desejado como $2.
+# Uso neste script: SOMENTE formato "plain" (host:port).
+# A variante "auth" existe em outros scripts (core_proxy.sh,
+# core_repositories.sh) para APT/CLI, que precisam de user:pass
+# quando o proxy exige auth estática. Aqui NÃO.
 #
-# $2 = "plain"  -> host:port
-# $2 = "auth"   -> user:pass@host:port (se houver credencial)
-_resolver_proxy() {
+# Retorna vazio se o proxy não existir, ou se a URL for inválida.
+_resolver_proxy_hostport() {
     local name="$1"
-    local fmt="${2:-plain}"
     [ -z "$name" ] && return 1
     [ "$PROXY_COUNT" -lt 1 ] 2>/dev/null && return 1
 
@@ -80,35 +107,13 @@ _resolver_proxy() {
         local v_name="PROXY_${i}_NAME"
         if [ "${!v_name}" = "$name" ]; then
             local v_url="PROXY_${i}_URL"
-            local v_user="PROXY_${i}_USER"
-            local v_pass_b64="PROXY_${i}_PASS_B64"
             local url="${!v_url}"
-            local user="${!v_user}"
-            local pass_b64="${!v_pass_b64}"
-
             [ -z "$url" ] && return 1
 
-            # Extrai só o host:port da URL (tira http:// ou https://)
-            local hostport
-            hostport="$(echo "$url" | sed -E 's|^https?://||' | sed 's|/$||')"
-
-            if [ "$fmt" = "plain" ] || [ -z "$user" ]; then
-                echo "$hostport"
-                return 0
-            fi
-
-            # Formato com auth
-            local pass=""
-            if [ -n "$pass_b64" ]; then
-                pass="$(printf '%s' "$pass_b64" | base64 -d 2>/dev/null)" || pass=""
-            fi
-
-            local user_esc="${user//@/%40}"
-            user_esc="${user_esc//:/%3A}"
-            local pass_esc="${pass//@/%40}"
-            pass_esc="${pass_esc//:/%3A}"
-
-            echo "${user_esc}:${pass_esc}@${hostport}"
+            # Extrai só host:port — remove http:// ou https:// e barra
+            # final. Ignora PROXY_${i}_USER e PROXY_${i}_PASS_B64 de
+            # propósito (ver cabeçalho para o motivo).
+            echo "$url" | sed -E 's|^https?://||' | sed 's|/$||'
             return 0
         fi
         i=$((i+1))
@@ -117,19 +122,59 @@ _resolver_proxy() {
 }
 
 # ============================================================
-# Helper: NO_PROXY para browsers
+# Helper: retorna o PAC_URL do proxy nomeado (usado se policy=PAC)
 # ============================================================
-# Formato aceito por Firefox e Chrome:
-#   - hostnames exatos: host1,host2
-#   - sufixo de domínio: .dominio.com (Firefox aceita, Chrome aceita)
-#   - IPs e CIDR
+_resolver_proxy_pac() {
+    local name="$1"
+    [ -z "$name" ] && return 1
+    [ "$PROXY_COUNT" -lt 1 ] 2>/dev/null && return 1
+
+    local i=1
+    while [ "$i" -le "$PROXY_COUNT" ]; do
+        local v_name="PROXY_${i}_NAME"
+        if [ "${!v_name}" = "$name" ]; then
+            local v="PROXY_${i}_PAC_URL"
+            echo "${!v}"
+            return 0
+        fi
+        i=$((i+1))
+    done
+    return 1
+}
+
+# ============================================================
+# Helper: NO_PROXY específico de um proxy
+# ============================================================
+_resolver_proxy_no_proxy() {
+    local name="$1"
+    [ -z "$name" ] && return 1
+    [ "$PROXY_COUNT" -lt 1 ] 2>/dev/null && return 1
+
+    local i=1
+    while [ "$i" -le "$PROXY_COUNT" ]; do
+        local v_name="PROXY_${i}_NAME"
+        if [ "${!v_name}" = "$name" ]; then
+            local v="PROXY_${i}_NO_PROXY"
+            echo "${!v}"
+            return 0
+        fi
+        i=$((i+1))
+    done
+    return 1
+}
+
+# ============================================================
+# Helper: montar lista de exceções (Passthrough / ProxyBypassList)
+# ============================================================
+# A lista inclui automaticamente:
+#   - localhost e 127.0.0.1 (sempre)
+#   - hostname e IP do SEEDER_SERVER (DNS resolvido em runtime)
+#   - o domínio AD (sufixo .dominio — Firefox e Chrome aceitam)
+#   - DC principal e todos os DCs adicionais
+#   - o no_proxy específico do proxy escolhido (se houver)
 #
-# Monta uma lista com:
-#   - sempre localhost, 127.0.0.1
-#   - seeder hostname + IP
-#   - domínio (.dominio)
-#   - DC principal + secundários
-#   - no_proxy específico do proxy
+# Formato: lista separada por vírgula. Firefox e Chrome aceitam
+# hostname, IP, CIDR e sufixo .dominio.
 _build_no_proxy_browser() {
     local extra="$1"
     local base="localhost,127.0.0.1"
@@ -170,6 +215,9 @@ _build_no_proxy_browser() {
     echo "$base"
 }
 
+# ============================================================
+# Helper: nome efetivo do proxy conforme a policy
+# ============================================================
 _resolver_proxy_nome_efetivo() {
     if [ -n "$BROWSER_PROXY_NAME" ]; then
         echo "$BROWSER_PROXY_NAME"
@@ -181,6 +229,12 @@ _resolver_proxy_nome_efetivo() {
 # ============================================================
 # Resolver URL de proxy e NO_PROXY conforme a policy
 # ============================================================
+# Estados possíveis:
+#   FF_PROXY_MODE    / CHROME_PROXY_MODE
+#     none           / direct
+#     manual         / fixed_servers
+#     autoConfig     / pac_script
+#     system         / system
 FF_PROXY_MODE="none"
 FF_PROXY_HTTP=""
 FF_PROXY_SSL=""
@@ -198,72 +252,50 @@ case "$BROWSER_POLICY" in
         CHROME_PROXY_MODE="direct"
         ;;
 
-    PROXY_NO_AUTH)
+    # PROXY, PROXY_NO_AUTH e PROXY_WITH_AUTH fazem a mesma coisa para
+    # browser: aplicam o proxy sem credencial. Os nomes "NO_AUTH" e
+    # "WITH_AUTH" são legados do modelo single-proxy e não têm mais
+    # significado distinto para navegadores.
+    PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
         NOME="$(_resolver_proxy_nome_efetivo)"
-        HOSTPORT="$(_resolver_proxy "$NOME" plain)" || HOSTPORT=""
+        HOSTPORT="$(_resolver_proxy_hostport "$NOME")" || HOSTPORT=""
         if [ -z "$HOSTPORT" ]; then
-            echo ">>> AVISO: BROWSER_POLICY=$BROWSER_POLICY mas proxy nao encontrado. Aplicando DIRECT."
+            echo ">>> AVISO: BROWSER_POLICY=$BROWSER_POLICY mas proxy '${NOME:-<nenhum>}' nao encontrado."
+            echo ">>>        Aplicando DIRECT para os navegadores."
             FF_PROXY_MODE="none"
             CHROME_PROXY_MODE="direct"
         else
+            FF_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
+            CHROME_NO_PROXY="$FF_NO_PROXY"
+
+            # --- Firefox: manual com host:port e passthrough ---
             FF_PROXY_MODE="manual"
             FF_PROXY_HTTP="$HOSTPORT"
             FF_PROXY_SSL="$HOSTPORT"
+
+            # --- Chrome: fixed_servers com host:port e bypass list ---
+            # Formato OBRIGATÓRIO: "scheme=host:port;scheme=host:port".
+            # Se vier user:pass@, o Chrome ignora a policy.
             CHROME_PROXY_MODE="fixed_servers"
             CHROME_PROXY_SERVER="http=${HOSTPORT};https=${HOSTPORT}"
-            FF_NO_PROXY="$(_build_no_proxy_browser "")"
-            CHROME_NO_PROXY="$FF_NO_PROXY"
-        fi
-        ;;
 
-    PROXY_WITH_AUTH)
-        NOME="$(_resolver_proxy_nome_efetivo)"
-        HOSTPORT="$(_resolver_proxy "$NOME" plain)" || HOSTPORT=""
-        AUTHPORT="$(_resolver_proxy "$NOME" auth)" || AUTHPORT=""
-        if [ -z "$HOSTPORT" ]; then
-            echo ">>> AVISO: BROWSER_POLICY=$BROWSER_POLICY mas proxy nao encontrado. Aplicando DIRECT."
-            FF_PROXY_MODE="none"
-            CHROME_PROXY_MODE="direct"
-        else
-            # Firefox: sem credenciais (limitação conhecida - ver topo)
-            FF_PROXY_MODE="manual"
-            FF_PROXY_HTTP="$HOSTPORT"
-            FF_PROXY_SSL="$HOSTPORT"
-            # Chrome: com credenciais embutidas (funciona)
-            CHROME_PROXY_MODE="fixed_servers"
-            CHROME_PROXY_SERVER="http=${AUTHPORT};https=${AUTHPORT}"
-            FF_NO_PROXY="$(_build_no_proxy_browser "")"
-            CHROME_NO_PROXY="$FF_NO_PROXY"
-            echo ">>> AVISO: Firefox nao aceita credencial embutida no policy de proxy."
-            echo ">>>        Se o proxy exigir Basic auth, o usuario digitara a senha 1x."
-            echo ">>>        Chrome/Chromium receberam as credenciais embutidas."
+            echo ">>> Proxy aplicado aos navegadores: $HOSTPORT"
+            echo ">>> Autenticacao de proxy sera feita pelo usuario (popup ou SSO)."
         fi
         ;;
 
     PAC)
         NOME="$(_resolver_proxy_nome_efetivo)"
-        PAC_URL="$(_resolver_proxy "$NOME" plain)" || PAC_URL=""
-        # Fallback: tentar variável PAC_URL do proxy direto
-        if [ "$PROXY_COUNT" -ge 1 ]; then
-            i=1
-            while [ "$i" -le "$PROXY_COUNT" ]; do
-                v_name="PROXY_${i}_NAME"
-                if [ "${!v_name}" = "$NOME" ]; then
-                    v_pac="PROXY_${i}_PAC_URL"
-                    PAC_URL="${!v_pac}"
-                    break
-                fi
-                i=$((i+1))
-            done
-        fi
-
+        PAC_URL="$(_resolver_proxy_pac "$NOME")" || PAC_URL=""
         if [ -z "$PAC_URL" ]; then
-            echo ">>> AVISO: BROWSER_POLICY=PAC mas PAC_URL vazio. Aplicando DIRECT."
+            echo ">>> AVISO: BROWSER_POLICY=PAC mas PAC_URL vazio para o proxy '${NOME:-<nenhum>}'."
+            echo ">>>        Aplicando DIRECT para os navegadores."
             FF_PROXY_MODE="none"
             CHROME_PROXY_MODE="direct"
         else
             FF_PROXY_MODE="autoConfig"
             FF_PROXY_PAC="$PAC_URL"
+            FF_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
             CHROME_PROXY_MODE="pac_script"
             CHROME_PROXY_PAC="$PAC_URL"
         fi
@@ -357,7 +389,8 @@ cat > /usr/lib/firefox-esr/distribution/policies.json <<EOF
 }
 EOF
 
-# Caminho canônico Debian (firefox-esr) e fallback Ubuntu (firefox)
+# Caminho canônico Debian (firefox-esr) e fallback Ubuntu (firefox).
+# Copia para os dois se ambos existirem — em instalações mistas.
 for DIR in /usr/lib/firefox-esr /usr/lib/firefox; do
     [ -d "$DIR" ] || continue
     mkdir -p "$DIR/distribution"
@@ -372,7 +405,7 @@ for DIR in /etc/firefox/policies /etc/firefox-esr/policies; do
     cp /usr/lib/firefox-esr/distribution/policies.json "$DIR/policies.json" 2>/dev/null || true
 done
 
-echo ">>> Firefox configurado (policy: $FF_PROXY_MODE)"
+echo ">>> Firefox configurado (policy de proxy: $FF_PROXY_MODE)"
 
 # ============================================================
 # Chrome / Chromium
@@ -381,6 +414,8 @@ echo ">>> Configurando politicas do Chrome/Chromium..."
 
 case "$CHROME_PROXY_MODE" in
     fixed_servers)
+        # Formato: "scheme=host:port;scheme=host:port"
+        # SEM user:pass@ — o Chrome não aceita e ignora a policy.
         CHROME_PROXY_JSON=", \"ProxyMode\": \"fixed_servers\", \"ProxyServer\": \"${CHROME_PROXY_SERVER}\""
         if [ -n "$CHROME_NO_PROXY" ]; then
             CHROME_PROXY_JSON="${CHROME_PROXY_JSON}, \"ProxyBypassList\": \"${CHROME_NO_PROXY}\""
@@ -426,7 +461,7 @@ for DIR in /etc/opt/chrome/policies/managed \
     chmod 644 "$DIR/seederlinux.json"
 done
 
-echo ">>> Chrome/Chromium configurado (policy: $CHROME_PROXY_MODE)"
+echo ">>> Chrome/Chromium configurado (policy de proxy: $CHROME_PROXY_MODE)"
 
 echo ">>> [06] Politicas de navegadores configuradas!"
 echo "============================================================"
