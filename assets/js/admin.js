@@ -1317,6 +1317,10 @@ function renderVariables(vars) {
         html += renderVarsWithGroups(sectionVars, searchTerm);
     });
 
+    if (activeCategory === 'rede_proxy') {
+        html += renderOmProxiesSection();
+    }
+
     if (leftover.length) {
         html += `<div class="var-section-header" ${searchTerm && !leftover.some(v => matchesVariableSearch(v, searchTerm)) ? 'style="display:none;"' : ''}><h4 class="var-section-title">Outras Variáveis</h4></div>`;
         html += renderVarsWithGroups(leftover, searchTerm);
@@ -1324,7 +1328,23 @@ function renderVariables(vars) {
 
     html += '</div>';
     el.innerHTML = html;
+    if (activeCategory === 'rede_proxy') {
+        loadOmProxies(currentOrgId);
+    }
     updateVariableSearchCount();
+}
+
+function renderOmProxiesSection() {
+    return `
+        <div class="var-section-header"><h4 class="var-section-title">Proxies cadastrados</h4></div>
+        <div class="p-4 bg-slate-900 rounded-lg border border-slate-700">
+            <div class="flex items-center justify-between mb-3">
+                <p class="text-slate-400 text-sm">Os proxies cadastrados ficam disponíveis para serem referenciados nas políticas acima pelo campo de nome.</p>
+                <button class="btn btn-primary btn-sm" onclick="openOmProxyModal()">+ Novo Proxy</button>
+            </div>
+            <div id="om-proxies-list" class="space-y-2"></div>
+        </div>
+    `;
 }
 
 // ===== Layout especial: Repositorios por distribuicao =====
@@ -1994,7 +2014,6 @@ function switchTab(tabName) {
 
     if (tabName === 'scripts') loadOrgScripts(currentOrgId);
     if (tabName === 'variables') loadVariables(currentOrgId);
-    if (tabName === 'proxies') loadOmProxies(currentOrgId);
 }
 window.switchTab = switchTab;
 
