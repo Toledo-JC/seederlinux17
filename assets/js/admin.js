@@ -82,7 +82,11 @@ const superCategorySections = {
     ],
     'rede_proxy': [
         { title: 'Rede', vars: ['BASE_URL', 'SEEDER_SERVER', 'PRINT_SERVER', 'DNS_PRIMARIO', 'DNS_SECUNDARIO', 'DNS_INTERNET', 'NTP_SERVER'] },
-        { title: 'Proxy', vars: ['PROXY_MODE', 'PROXY_HTTP', 'PROXY_PORTA', 'PROXY_URL', 'PAC_URL', 'NO_PROXY'] }
+        { title: 'APT (repositórios de pacotes)', vars: ['APT_POLICY', 'MIRROR_LOCAL_SEEDER_PATH', 'MIRROR_LOCAL_OM_URL'] },
+        { title: 'CLI (wget/curl/git)', vars: ['CLI_POLICY'] },
+        { title: 'Browsers (Firefox/Chrome/Chromium)', vars: ['BROWSER_POLICY'] },
+        { title: 'Detalhes do proxy (compartilhado)', vars: ['PROXY_URL', 'PROXY_USER', 'PROXY_PASSWORD_B64', 'PAC_URL', 'NO_PROXY'] },
+        { title: 'Proxy (legado)', vars: ['PROXY_MODE', 'PROXY_HTTP', 'PROXY_PORTA'] }
     ],
     'dominio_ad': [
         { title: 'Domínio', vars: ['DOMINIO', 'DOMINIO_NETBIOS', 'OU_PADRAO'] },
@@ -120,6 +124,16 @@ const variableSuperOverride = {
     'NO_PROXY': 'rede_proxy',
     'PAC_URL': 'rede_proxy',
     'PROXY_MODE': 'rede_proxy',
+    'PROXY_HTTP': 'rede_proxy',
+    'PROXY_PORTA': 'rede_proxy',
+    'PROXY_URL': 'rede_proxy',
+    'PROXY_USER': 'rede_proxy',
+    'PROXY_PASSWORD_B64': 'rede_proxy',
+    'APT_POLICY': 'rede_proxy',
+    'CLI_POLICY': 'rede_proxy',
+    'BROWSER_POLICY': 'rede_proxy',
+    'MIRROR_LOCAL_SEEDER_PATH': 'rede_proxy',
+    'MIRROR_LOCAL_OM_URL': 'rede_proxy',
     'NTP_SERVER': 'rede_proxy',
     'HOMEPAGE': 'aplicacoes_nav',
     'CERTIFICATE_BUNDLE': 'seguranca_agente',
@@ -149,6 +163,9 @@ const groupLabels = {
 
 const variableOptions = {
     'PROXY_MODE': ['NONE', 'MANUAL', 'PAC'],
+    'APT_POLICY': ['DIRECT', 'PROXY_NO_AUTH', 'PROXY_WITH_AUTH', 'MIRROR_LOCAL_SEEDER', 'MIRROR_LOCAL_OM', 'MIRROR_OFFICIAL'],
+    'CLI_POLICY': ['DIRECT', 'PROXY_NO_AUTH', 'PROXY_WITH_AUTH', 'PAC'],
+    'BROWSER_POLICY': ['DIRECT', 'PROXY_NO_AUTH', 'PROXY_WITH_AUTH', 'PAC', 'SYSTEM'],
     'REPOSITORY_MODE': ['PUBLIC', 'MIRROR', 'HYBRID', 'CUSTOM'],
     'REMOTE_METHOD': ['ssh', 'xrdp', 'anydesk', 'rustdesk'],
     'PROXY_PORTA': ['80', '8080', '3128', '8888'],
@@ -1978,6 +1995,7 @@ function switchTab(tabName) {
 
     if (tabName === 'scripts') loadOrgScripts(currentOrgId);
     if (tabName === 'variables') loadVariables(currentOrgId);
+    if (tabName === 'proxies') loadOmProxies(currentOrgId);
 }
 window.switchTab = switchTab;
 
@@ -3587,4 +3605,119 @@ window.openImageGallery = openImageGallery;
 window.loadGalleryImages = loadGalleryImages;
 window.selectGalleryImage = selectGalleryImage;
 window.deleteGalleryImage = deleteGalleryImage;
+
+// ============ OM PROXIES ============
+
+async function loadOmProxies(orgId) {
+    if (!orgId) orgId = currentOrgId;
+    try {
+        const res = await API.get('om-proxies', { organization_id: orgId });
+        if (!res.success) { Toast.error(res.error || 'Erro ao carregar proxies'); return; }
+        const proxies = res.data || [];
+        const el = document.getElementById('om-proxies-list');
+        if (!el) return;
+        if (!proxies.length) {
+            el.innerHTML = '<p class="text-slate-500 text-sm py-4">Nenhum proxy cadastrado para esta OM.</p>';
+            return;
+        }
+        el.innerHTML = proxies.map(p => `
+            <div class="p-4 bg-slate-900 rounded-lg border border-slate-700 flex justify-between items-center">
+                <div>
+                    <span class="font-medium text-white">${Utils.escapeHtml(p.name)}</span>
+                    ${p.is_default ? '<span class="badge badge-success ml-2">Padrão</span>' : ''}
+                    <span class="text-slate-500 text-sm ml-2">${Utils.escapeHtml(p.url || '')}</span>
+                    ${p.username ? '<span class="text-slate-600 text-xs ml-2">user: ' + Utils.escapeHtml(p.username) + '</span>' : ''}
+                    ${p.pac_url ? '<span class="text-slate-600 text-xs ml-2">PAC: ' + Utils.escapeHtml(p.pac_url) + '</span>' : ''}
+                </div>
+                <div class="flex gap-2">
+                    <button class="btn btn-secondary btn-sm" onclick="editOmProxy(${p.id})">Editar</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteOmProxy(${p.id})">Excluir</button>
+                </div>
+            </div>
+        `).join('');
+    } catch (e) {
+        Toast.error('Erro ao carregar proxies: ' + e.message);
+    }
+}
+window.loadOmProxies = loadOmProxies;
+
+function openOmProxyModal(proxyId = null) {
+    const modal = document.getElementById('modal-om-proxy');
+    const form = document.getElementById('om-proxy-form');
+    if (form) form.reset();
+    document.getElementById('om-proxy-id').value = proxyId || '';
+    document.getElementById('om-proxy-title').textContent = proxyId ? 'Editar Proxy' : 'Novo Proxy';
+    if (modal) modal.classList.remove('hidden');
+}
+window.openOmProxyModal = openOmProxyModal;
+
+async function saveOmProxy() {
+    const id = document.getElementById('om-proxy-id').value;
+    const name = document.getElementById('om-proxy-name').value.trim();
+    const url = document.getElementById('om-proxy-url').value.trim();
+    const username = document.getElementById('om-proxy-username').value.trim();
+    const password = document.getElementById('om-proxy-password').value;
+    const pacUrl = document.getElementById('om-proxy-pac-url').value.trim();
+    const noProxy = document.getElementById('om-proxy-no-proxy').value.trim();
+    const isDefault = document.getElementById('om-proxy-default').checked;
+
+    if (!name) { Toast.error('Nome do proxy é obrigatório'); return; }
+
+    const payload = { organization_id: currentOrgId, name, url, username, pac_url: pacUrl, no_proxy: noProxy, is_default: isDefault };
+    if (password) payload.password = password;
+
+    try {
+        const res = id
+            ? await API.request('om-proxy', 'PUT', payload, { id })
+            : await API.post('om-proxies', payload);
+        if (res.success) {
+            Toast.success(id ? 'Proxy atualizado' : 'Proxy criado');
+            document.getElementById('modal-om-proxy')?.classList.add('hidden');
+            loadOmProxies(currentOrgId);
+        } else {
+            Toast.error(res.error || 'Erro ao salvar proxy');
+        }
+    } catch (e) {
+        Toast.error('Erro: ' + e.message);
+    }
+}
+window.saveOmProxy = saveOmProxy;
+
+async function editOmProxy(id) {
+    try {
+        const res = await API.get('om-proxies', { organization_id: currentOrgId });
+        if (!res.success) return;
+        const proxy = (res.data || []).find(p => p.id === id);
+        if (!proxy) { Toast.error('Proxy não encontrado'); return; }
+        document.getElementById('om-proxy-id').value = proxy.id;
+        document.getElementById('om-proxy-name').value = proxy.name || '';
+        document.getElementById('om-proxy-url').value = proxy.url || '';
+        document.getElementById('om-proxy-username').value = proxy.username || '';
+        document.getElementById('om-proxy-password').value = '';
+        document.getElementById('om-proxy-pac-url').value = proxy.pac_url || '';
+        document.getElementById('om-proxy-no-proxy').value = proxy.no_proxy || '';
+        document.getElementById('om-proxy-default').checked = !!proxy.is_default;
+        document.getElementById('om-proxy-title').textContent = 'Editar Proxy';
+        document.getElementById('modal-om-proxy')?.classList.remove('hidden');
+    } catch (e) {
+        Toast.error('Erro ao carregar proxy: ' + e.message);
+    }
+}
+window.editOmProxy = editOmProxy;
+
+async function deleteOmProxy(id) {
+    if (!confirm('Tem certeza que deseja excluir este proxy?')) return;
+    try {
+        const res = await API.request('om-proxy', 'DELETE', null, { id });
+        if (res.success) {
+            Toast.success('Proxy excluído');
+            loadOmProxies(currentOrgId);
+        } else {
+            Toast.error(res.error || 'Erro ao excluir proxy');
+        }
+    } catch (e) {
+        Toast.error('Erro: ' + e.message);
+    }
+}
+window.deleteOmProxy = deleteOmProxy;
 

@@ -350,6 +350,7 @@
                         <div class="tabs">
                             <button class="tab-btn active" data-tab="variables" onclick="switchTab('variables')">Variaveis</button>
                             <button class="tab-btn" data-tab="scripts" onclick="switchTab('scripts')">Scripts</button>
+                            <button class="tab-btn" data-tab="proxies" onclick="switchTab('proxies')">Proxies da OM</button>
                             <button class="tab-btn" data-tab="bundle" onclick="switchTab('bundle')">Gerar Bundle</button>
                         </div>
 
@@ -383,6 +384,20 @@
                                         <button class="btn btn-sm btn-secondary script-tab-btn" data-script-tab="Custom" onclick="switchScriptTab('Custom')">Custom</button>
                                     </div>
                                     <div id="org-scripts-list"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Proxies Tab -->
+                        <div id="tab-proxies" class="tab-content hidden">
+                            <div class="card">
+                                <div class="card-header">
+                                    <h3 class="card-title">Proxies da OM</h3>
+                                    <button class="btn btn-primary btn-sm" onclick="openOmProxyModal()">+ Novo Proxy</button>
+                                </div>
+                                <div class="card-body">
+                                    <p class="text-slate-400 text-sm mb-4">Cadastre múltiplos proxies nomeados para esta OM (ex: internet, intranet, backup). Cada proxy pode ser referenciado pelas policies de APT, CLI e Browser.</p>
+                                    <div id="om-proxies-list" class="space-y-2"></div>
                                 </div>
                             </div>
                         </div>
@@ -917,6 +932,58 @@
                 </button>
                 <button type="button" class="btn btn-secondary" onclick="closeModal('modal-image-gallery')">Fechar</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Modal: OM Proxy -->
+    <div id="modal-om-proxy" class="modal hidden">
+        <div class="modal-backdrop" onclick="closeModal('modal-om-proxy')"></div>
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <h3 class="modal-title" id="om-proxy-title">Novo Proxy</h3>
+                <button class="modal-close" onclick="closeModal('modal-om-proxy')">&times;</button>
+            </div>
+            <form id="om-proxy-form" onsubmit="event.preventDefault(); saveOmProxy()">
+                <div class="modal-body">
+                    <input type="hidden" id="om-proxy-id" value="">
+                    <div class="form-group">
+                        <label class="form-label">Nome *</label>
+                        <input type="text" id="om-proxy-name" class="form-input" required placeholder="ex: internet, intranet, backup">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">URL do Proxy</label>
+                        <input type="text" id="om-proxy-url" class="form-input" placeholder="http://10.108.88.4:8080">
+                    </div>
+                    <div class="grid gap-4" style="grid-template-columns: 1fr 1fr;">
+                        <div class="form-group">
+                            <label class="form-label">Usuario</label>
+                            <input type="text" id="om-proxy-username" class="form-input">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Senha</label>
+                            <input type="password" id="om-proxy-password" class="form-input" placeholder="deixe vazio para nao alterar">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">PAC URL</label>
+                        <input type="text" id="om-proxy-pac-url" class="form-input" placeholder="http://proxy.pac">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">No Proxy (bypass)</label>
+                        <input type="text" id="om-proxy-no-proxy" class="form-input" placeholder="127.0.0.1, 10.0.0.0/8, .local">
+                    </div>
+                    <div class="form-group">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" id="om-proxy-default" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-600 focus:ring-blue-500">
+                            <span class="text-slate-300 font-medium">Definir como proxy padrao</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('modal-om-proxy')">Cancelar</button>
+                    <button type="submit" class="btn btn-primary">Salvar</button>
+                </div>
+            </form>
         </div>
     </div>
 

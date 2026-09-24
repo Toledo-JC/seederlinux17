@@ -397,6 +397,21 @@ try {
             handleDeleteScriptVersion($input);
             break;
 
+        // OM Proxies (multiplos proxies nomeados por OM)
+        case 'om-proxies':
+            requireAuth();
+            if ($method === 'GET') handleGetOmProxies($orgId);
+            elseif ($method === 'POST') handleCreateOmProxy($input);
+            else jsonError('Method not allowed', 405);
+            break;
+        case 'om-proxy':
+            requireAuth();
+            if (!$id) jsonError('ID required', 400);
+            if ($method === 'PUT') handleUpdateOmProxy($id, $input);
+            elseif ($method === 'DELETE') handleDeleteOmProxy($id);
+            else jsonError('Method not allowed', 405);
+            break;
+
         default:
             jsonError('Endpoint invalido: ' . $action, 404);
     }
@@ -1480,6 +1495,61 @@ function handleUpdateVariables($input) {
             $definitionNamesById[(int)$definition['id']] = $definition['name'];
         }
 
+        // Validar politicas de proxy
+        $newValues = [];
+        foreach ($variables as $varId => $value) {
+            $varName = $definitionNamesById[(int)$varId] ?? '';
+            if ($varName) $newValues[$varName] = $value;
+        }
+        // Buscar valores atuais das variaveis de policy para validacao
+        $policyNames = ['APT_POLICY', 'CLI_POLICY', 'BROWSER_POLICY', 'PROXY_URL', 'PROXY_USER', 'PROXY_PASSWORD_B64', 'PAC_URL', 'MIRROR_LOCAL_SEEDER_PATH', 'MIRROR_LOCAL_OM_URL'];
+        $currentPolicyValues = [];
+        foreach ($policyNames as $pn) {
+            if (isset($newValues[$pn])) {
+                $currentPolicyValues[$pn] = $newValues[$pn];
+            } else {
+                $row = Database::fetchOne(
+                    "SELECT ov.value FROM organization_variables ov
+                     JOIN variable_definitions vd ON vd.id = ov.variable_id
+                     WHERE ov.organization_id = ? AND vd.name = ?",
+                    [$orgId, $pn]
+                );
+                $currentPolicyValues[$pn] = $row['value'] ?? '';
+            }
+        }
+        $aptPolicy = $currentPolicyValues['APT_POLICY'] ?? 'DIRECT';
+        $cliPolicy = $currentPolicyValues['CLI_POLICY'] ?? 'DIRECT';
+        $browserPolicy = $currentPolicyValues['BROWSER_POLICY'] ?? 'DIRECT';
+        $proxyUrl = $currentPolicyValues['PROXY_URL'] ?? '';
+        $proxyUser = $currentPolicyValues['PROXY_USER'] ?? '';
+        $proxyPass = $currentPolicyValues['PROXY_PASSWORD_B64'] ?? '';
+        $pacUrl = $currentPolicyValues['PAC_URL'] ?? '';
+        $mirrorPath = $currentPolicyValues['MIRROR_LOCAL_SEEDER_PATH'] ?? '/mirror/';
+        $mirrorOmUrl = $currentPolicyValues['MIRROR_LOCAL_OM_URL'] ?? '';
+
+        $proxyPolicies = [$aptPolicy, $cliPolicy, $browserPolicy];
+        $needsProxyUrl = false;
+        $needsAuth = false;
+        $needsPac = false;
+        foreach ($proxyPolicies as $p) {
+            if (in_array($p, ['PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) $needsProxyUrl = true;
+            if ($p === 'PROXY_WITH_AUTH') $needsAuth = true;
+            if ($p === 'PAC') $needsPac = true;
+        }
+        if ($aptPolicy === 'MIRROR_LOCAL_OM') $needsProxyUrl = false;
+        if ($aptPolicy === 'MIRROR_LOCAL_SEEDER' || $aptPolicy === 'MIRROR_OFFICIAL') $needsProxyUrl = false;
+
+        if ($needsProxyUrl && $proxyUrl === '') jsonError('PROXY_URL e obrigatorio quando alguma policy usa proxy', 400);
+        if ($needsAuth && $proxyUser === '') jsonError('PROXY_USER e obrigatorio quando alguma policy = PROXY_WITH_AUTH', 400);
+        if ($needsAuth && $proxyPass === '') jsonError('PROXY_PASSWORD_B64 e obrigatorio quando alguma policy = PROXY_WITH_AUTH', 400);
+        if ($needsPac && $pacUrl === '') jsonError('PAC_URL e obrigatorio quando alguma policy = PAC', 400);
+        if ($aptPolicy === 'MIRROR_LOCAL_OM' && $mirrorOmUrl === '') jsonError('MIRROR_LOCAL_OM_URL e obrigatorio quando APT_POLICY = MIRROR_LOCAL_OM', 400);
+        if ($aptPolicy === 'MIRROR_LOCAL_SEEDER') {
+            if ($mirrorPath === '' || $mirrorPath[0] !== '/' || substr($mirrorPath, -1) !== '/') {
+                jsonError('MIRROR_LOCAL_SEEDER_PATH deve comecar e terminar com /', 400);
+            }
+        }
+
         foreach ($variables as $varId => $value) {
             if (in_array($definitionNamesById[(int)$varId] ?? '', $repositoryBooleanNames, true)) {
                 $normalized = mirrorInputBoolean(['value' => $value], 'value');
@@ -1493,11 +1563,15 @@ function handleUpdateVariables($input) {
             );
         }
 
+        // Nao logar PROXY_PASSWORD_B64 em audit_events
+        $safeChanged = array_values(array_filter($changedVariables, function($n) {
+            return $n !== 'PROXY_PASSWORD_B64';
+        }));
         log_audit('UPDATE', 'variables', null, [
             'organization_id' => $orgId,
             'organization_acronym' => $organization['acronym'] ?? null,
             'count' => count($variables),
-            'changed_variables' => $changedVariables,
+            'changed_variables' => $safeChanged,
             'username' => $_SESSION['username'] ?? 'system',
             'full_name' => $_SESSION['full_name'] ?? null
         ], $orgId);
@@ -1510,6 +1584,179 @@ function handleUpdateVariables($input) {
             'file' => basename(__FILE__),
             'line' => __LINE__ - 8
         ]);
+        return;
+    }
+}
+
+// OM PROXIES (multiplos proxies nomeados por OM)
+function getOrgIdForProxyScope() {
+    $userOrgId = getUserOrgId();
+    if ($userOrgId !== null && !isAdminGap()) return $userOrgId;
+    return null;
+}
+
+function resolveProxyOrgId($input, $fallback = null) {
+    $explicit = (int)($input['organization_id'] ?? 0);
+    if ($explicit) {
+        $userOrgId = getUserOrgId();
+        if ($userOrgId !== null && !isAdminGap() && $explicit !== $userOrgId) {
+            jsonError('Sem permissao', 403);
+        }
+        return $explicit;
+    }
+    if ($fallback) return (int)$fallback;
+    $userOrgId = getUserOrgId();
+    if ($userOrgId !== null) return $userOrgId;
+    jsonError('organization_id obrigatorio', 400);
+}
+
+function handleGetOmProxies($orgId) {
+    $resolvedOrgId = resolveProxyOrgId([], $orgId);
+    try {
+        $proxies = Database::fetchAll(
+            "SELECT id, organization_id, name, url, username, pac_url, no_proxy, is_default, created_at
+             FROM om_proxies WHERE organization_id = ? ORDER BY is_default DESC, name ASC",
+            [$resolvedOrgId]
+        );
+        jsonSuccess($proxies);
+    } catch (PDOException $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Erro ao buscar proxies: ' . $e->getMessage()]);
+        return;
+    }
+}
+
+function handleCreateOmProxy($input) {
+    $orgId = resolveProxyOrgId($input);
+    $name = trim($input['name'] ?? '');
+    $url = trim($input['url'] ?? '');
+    $username = trim($input['username'] ?? '');
+    $password = $input['password'] ?? '';
+    $pacUrl = trim($input['pac_url'] ?? '');
+    $noProxy = trim($input['no_proxy'] ?? '');
+    $isDefault = !empty($input['is_default']);
+
+    if ($name === '') jsonError('Nome do proxy e obrigatorio', 400);
+
+    $existing = Database::fetchOne(
+        "SELECT id FROM om_proxies WHERE organization_id = ? AND name = ?",
+        [$orgId, $name]
+    );
+    if ($existing) jsonError('Ja existe um proxy com este nome nesta OM', 400);
+
+    $passwordEnc = '';
+    if ($password !== '') {
+        $passwordEnc = base64_encode($password);
+    }
+
+    try {
+        if ($isDefault) {
+            Database::execute("UPDATE om_proxies SET is_default = false WHERE organization_id = ?", [$orgId]);
+        }
+        Database::execute(
+            "INSERT INTO om_proxies (organization_id, name, url, username, password_enc, pac_url, no_proxy, is_default)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [$orgId, $name, $url, $username, $passwordEnc, $pacUrl, $noProxy, $isDefault]
+        );
+        $proxyId = (int)Database::lastInsertId();
+        log_audit('CREATE', 'om_proxies', $proxyId, [
+            'organization_id' => $orgId,
+            'name' => $name,
+            'username' => $_SESSION['username'] ?? 'system'
+        ], $orgId);
+        jsonSuccess(['id' => $proxyId], 'Proxy criado com sucesso');
+    } catch (PDOException $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Erro ao criar proxy: ' . $e->getMessage()]);
+        return;
+    }
+}
+
+function handleUpdateOmProxy($id, $input) {
+    $proxy = Database::fetchOne("SELECT * FROM om_proxies WHERE id = ?", [$id]);
+    if (!$proxy) jsonError('Proxy nao encontrado', 404);
+
+    $userOrgId = getUserOrgId();
+    if ($userOrgId !== null && !isAdminGap() && (int)$proxy['organization_id'] !== $userOrgId) {
+        jsonError('Sem permissao', 403);
+    }
+
+    $name = trim($input['name'] ?? $proxy['name']);
+    $url = trim($input['url'] ?? $proxy['url']);
+    $username = trim($input['username'] ?? $proxy['username']);
+    $pacUrl = trim($input['pac_url'] ?? $proxy['pac_url']);
+    $noProxy = trim($input['no_proxy'] ?? $proxy['no_proxy']);
+    $isDefault = isset($input['is_default']) ? !empty($input['is_default']) : (bool)$proxy['is_default'];
+
+    if ($name === '') jsonError('Nome do proxy e obrigatorio', 400);
+
+    $conflict = Database::fetchOne(
+        "SELECT id FROM om_proxies WHERE organization_id = ? AND name = ? AND id != ?",
+        [$proxy['organization_id'], $name, $id]
+    );
+    if ($conflict) jsonError('Ja existe um proxy com este nome nesta OM', 400);
+
+    $passwordEnc = $proxy['password_enc'];
+    if (array_key_exists('password', $input) && $input['password'] !== '') {
+        $passwordEnc = base64_encode($input['password']);
+    }
+
+    try {
+        if ($isDefault && !(bool)$proxy['is_default']) {
+            Database::execute("UPDATE om_proxies SET is_default = false WHERE organization_id = ?", [$proxy['organization_id']]);
+        }
+        Database::execute(
+            "UPDATE om_proxies SET name = ?, url = ?, username = ?, password_enc = ?, pac_url = ?, no_proxy = ?, is_default = ? WHERE id = ?",
+            [$name, $url, $username, $passwordEnc, $pacUrl, $noProxy, $isDefault, $id]
+        );
+        log_audit('UPDATE', 'om_proxies', $id, [
+            'organization_id' => $proxy['organization_id'],
+            'name' => $name,
+            'username' => $_SESSION['username'] ?? 'system'
+        ], $proxy['organization_id']);
+        jsonSuccess(null, 'Proxy atualizado com sucesso');
+    } catch (PDOException $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Erro ao atualizar proxy: ' . $e->getMessage()]);
+        return;
+    }
+}
+
+function handleDeleteOmProxy($id) {
+    $proxy = Database::fetchOne("SELECT * FROM om_proxies WHERE id = ?", [$id]);
+    if (!$proxy) jsonError('Proxy nao encontrado', 404);
+
+    $userOrgId = getUserOrgId();
+    if ($userOrgId !== null && !isAdminGap() && (int)$proxy['organization_id'] !== $userOrgId) {
+        jsonError('Sem permissao', 403);
+    }
+
+    // Bloquear exclusao se proxy esta em uso por alguma policy
+    $proxyName = $proxy['name'];
+    $policyVars = Database::fetchAll(
+        "SELECT vd.name, ov.value
+         FROM organization_variables ov
+         JOIN variable_definitions vd ON vd.id = ov.variable_id
+         WHERE ov.organization_id = ? AND vd.name IN ('APT_PROXY_NAME', 'CLI_PROXY_NAME', 'BROWSER_PROXY_NAME')",
+        [$proxy['organization_id']]
+    );
+    foreach ($policyVars as $pv) {
+        if ($pv['value'] === $proxyName) {
+            jsonError('Proxy em uso pela policy ' . $pv['name'] . '. Altere a policy antes de excluir.', 400);
+        }
+    }
+
+    try {
+        Database::execute("DELETE FROM om_proxies WHERE id = ?", [$id]);
+        log_audit('DELETE', 'om_proxies', $id, [
+            'organization_id' => $proxy['organization_id'],
+            'name' => $proxyName,
+            'username' => $_SESSION['username'] ?? 'system'
+        ], $proxy['organization_id']);
+        jsonSuccess(null, 'Proxy excluido com sucesso');
+    } catch (PDOException $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => 'Erro ao excluir proxy: ' . $e->getMessage()]);
         return;
     }
 }
@@ -2526,6 +2773,8 @@ function handleGenerateBundle($input) {
     }
     $bundle .= "# ============================================\n\n";
     $bundle .= "export NON_INTERACTIVE=true\n";
+    // Export PROXY_PASSWORD_B64 with placeholder (type=password is skipped by the loop)
+    $bundle .= "export PROXY_PASSWORD_B64='__PROXY_PASSWORD_B64__'\n";
     foreach ($vars as $v) {
         if (in_array($v['type'], $skipExportTypes, true)) continue;
         if (in_array($v['name'], $skipExportNames, true)) continue;
@@ -2559,13 +2808,55 @@ function handleGenerateBundle($input) {
     );
     $vncPwdEncoded = $vncPwdRow['value'] ?? '';
 
+    // Inject the stored base64 value for proxy password
+    $proxyPwdRow = Database::fetchOne(
+        "SELECT ov.value FROM organization_variables ov
+         JOIN variable_definitions vd ON vd.id = ov.variable_id
+         WHERE ov.organization_id = ? AND vd.name = 'PROXY_PASSWORD_B64'",
+        [$orgId]
+    );
+    $proxyPwdEncoded = $proxyPwdRow['value'] ?? '';
+
+    // Fetch named proxies for this OM (om_proxies table)
+    $omProxies = Database::fetchAll(
+        "SELECT name, url, username, password_enc, pac_url, no_proxy, is_default
+         FROM om_proxies WHERE organization_id = ? ORDER BY is_default DESC, name ASC",
+        [$orgId]
+    );
+
+    // Export proxy list in the header
+    $bundle .= "export PROXY_COUNT='" . count($omProxies) . "'\n";
+    $defaultProxyName = '';
+    foreach ($omProxies as $p) {
+        if ($p['is_default']) { $defaultProxyName = $p['name']; break; }
+    }
+    $bundle .= "export PROXY_DEFAULT_NAME='" . str_replace("'", "'\\''", $defaultProxyName) . "'\n";
+    $proxyIdx = 1;
+    foreach ($omProxies as $p) {
+        $bundle .= "export PROXY_{$proxyIdx}_NAME='" . str_replace("'", "'\\''", $p['name']) . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_URL='" . str_replace("'", "'\\''", $p['url'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_USER='" . str_replace("'", "'\\''", $p['username'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_PASS_B64='__PROXY_{$proxyIdx}_PASS_B64__'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_PAC_URL='" . str_replace("'", "'\\''", $p['pac_url'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_NO_PROXY='" . str_replace("'", "'\\''", $p['no_proxy'] ?? '') . "'\n";
+        $proxyIdx++;
+    }
+    $bundle .= "\n";
+
     foreach ($scripts as $s) {
         $rawContent = getScriptContent((int)$s['id'], $orgId);
         $scriptContent = substituir_placeholders($rawContent, $orgId);
         $scriptContent = str_replace('__ADMIN_PASSWORD_B64__', $adminPwdEncoded, $scriptContent);
         $scriptContent = str_replace('__VNC_PASSWORD_B64__', $vncPwdEncoded, $scriptContent);
+        $scriptContent = str_replace('__PROXY_PASSWORD_B64__', $proxyPwdEncoded, $scriptContent);
+        // Substitute per-proxy password placeholders
+        $pi = 1;
+        foreach ($omProxies as $p) {
+            $scriptContent = str_replace("__PROXY_{$pi}_PASS_B64__", $p['password_enc'] ?? '', $scriptContent);
+            $pi++;
+        }
         // Clean up any remaining __*__ placeholders that weren't resolved
-        $scriptContent = preg_replace('/__[A-Z_]+__/', '', $scriptContent);
+        $scriptContent = preg_replace('/__[A-Z_0-9]+__/', '', $scriptContent);
         $bundle .= "# --- {$s['name']} ({$s['filename']}) ---\n";
         $bundle .= $scriptContent . "\n\n";
         $scriptIds[] = $s['id'];
