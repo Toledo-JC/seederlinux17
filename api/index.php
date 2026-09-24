@@ -1534,7 +1534,7 @@ function handleUpdateVariables($input) {
         $needsProxyUrl = false;
         $needsPac = false;
         foreach ($proxyPolicies as $p) {
-            if (in_array($p, ['PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) $needsProxyUrl = true;
+            if (in_array($p, ['PROXY', 'PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) $needsProxyUrl = true;
             if ($p === 'PAC') $needsPac = true;
         }
         if ($aptPolicy === 'MIRROR_LOCAL_OM') $needsProxyUrl = false;
@@ -1542,26 +1542,6 @@ function handleUpdateVariables($input) {
 
         if ($needsPac && $pacUrl === '') jsonError('PAC_URL e obrigatorio quando alguma policy = PAC', 400);
 
-        // Validação multi-proxy: se alguma policy usar PROXY_WITH_AUTH, precisa
-        // existir ao menos 1 proxy cadastrado para a OM com username e password
-        // preenchidos (senão o bundle não conseguirá montar a URL com credenciais).
-        $needsAuth = in_array('PROXY_WITH_AUTH', [
-            $values['APT_POLICY'] ?? $aptPolicy,
-            $values['CLI_POLICY'] ?? $cliPolicy,
-            $values['BROWSER_POLICY'] ?? $browserPolicy
-        ], true);
-        if ($needsAuth) {
-            $authRow = Database::fetchOne(
-                "SELECT COUNT(*) AS n FROM om_proxies
-                 WHERE organization_id = ?
-                   AND username IS NOT NULL AND username <> ''
-                   AND password_enc IS NOT NULL AND password_enc <> ''",
-                [$orgId]
-            );
-            if ((int)($authRow['n'] ?? 0) === 0) {
-                jsonError('Alguma policy usa PROXY_WITH_AUTH, mas nenhum proxy da OM tem usuario e senha cadastrados. Cadastre um proxy autenticado antes de salvar.', 400);
-            }
-        }
         if ($aptPolicy === 'MIRROR_LOCAL_OM' && $mirrorOmUrl === '') jsonError('MIRROR_LOCAL_OM_URL e obrigatorio quando APT_POLICY = MIRROR_LOCAL_OM', 400);
         if ($aptPolicy === 'MIRROR_LOCAL_SEEDER') {
             if ($mirrorPath === '' || $mirrorPath[0] !== '/' || substr($mirrorPath, -1) !== '/') {
@@ -1569,8 +1549,13 @@ function handleUpdateVariables($input) {
             }
         }
 
+        $policyVarNames = ['APT_POLICY', 'CLI_POLICY', 'BROWSER_POLICY'];
         foreach ($variables as $varId => $value) {
-            if (in_array($definitionNamesById[(int)$varId] ?? '', $repositoryBooleanNames, true)) {
+            $varName = $definitionNamesById[(int)$varId] ?? '';
+            if (in_array($varName, $policyVarNames, true) && in_array($value, ['PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) {
+                $value = 'PROXY';
+            }
+            if (in_array($varName, $repositoryBooleanNames, true)) {
                 $normalized = mirrorInputBoolean(['value' => $value], 'value');
                 if ($normalized === null) jsonError('Valor booleano invalido para ' . $definitionNamesById[(int)$varId]);
                 $value = mirrorDatabaseBoolean($normalized);
