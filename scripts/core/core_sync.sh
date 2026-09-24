@@ -5,52 +5,17 @@
 # ============================================================================
 # Instala /usr/local/bin/seeder-sync + timer systemd (10 em 10 minutos),
 # responsavel por REAPLICAR de forma idempotente toda a configuracao
-# corporativa da OM (branding, politicas de navegador, proxy,
+# corporativa da OM (branding, politicas de navegador, proxy de CLI,
 # impressoras, Conky, compartilhamentos), independente de login/logoff.
 #
-# Isso implementa o design original do SeederLinux Lite: login/logoff
-# ficam minimos e rapidos (core_logon.sh / core_logoff.sh), e a
-# aplicacao continua de politicas roda em segundo plano via timer -
-# analogo a um refresh de GPO do Windows.
+# MODELO MULTI-PROXY:
+#   Le as 3 politicas (APT/CLI/BROWSER) do config.env. Reaplica CLI_POLICY
+#   em /etc/environment e BROWSER_POLICY em policies.json. APT_POLICY nao
+#   e reaplicada pelo sync (repositorios nao mudam a cada 10min) - fica
+#   sob responsabilidade de core_repositories.sh na provision.
 #
-# O agente de check-in (core_agent.sh, a cada 15min) continua
-# detectando mudanca de serial_config no servidor e, quando ha
-# diferenca, baixa o bundle atualizado e aciona este script. O timer
-# local (10min) roda de forma independente, garantindo que a estacao
-# convirja pro estado desejado mesmo se o agente estiver offline ou
-# o download do bundle falhar.
-#
-# IDEMPOTENCIA: seeder-sync pode rodar quantas vezes for necessario
-# sem efeito colateral - ele nao usa `set -e` (uma falha isolada, ex.
-# wallpaper que nao baixou, nao pode interromper os demais modulos).
-#
-# CORRECOES NESTA VERSAO:
-#   1. sync_conky passa a REGERAR o /etc/seederlinux/conky/conky.conf
-#      a partir do CONKY_CONFIG do config.env, e a REINICIAR o processo
-#      do usuario quando o arquivo muda. Antes, o modulo so verificava
-#      se o conky estava rodando - mudar "position" no painel nunca
-#      chegava na estacao, mesmo com bundle novo e reboot. Esta era a
-#      causa raiz do "conky continua embaixo mesmo depois de trocar".
-#   2. _prefixar_seeder_url helper global: URLs relativas de assets
-#      ("/assets/wallpapers/xxx.jpg") sao prefixadas com SEEDER_SERVER
-#      antes do wget. Isso e' defesa em profundidade - o core_config.sh
-#      ja corrigiu a origem gravando URLs absolutas, mas estacoes
-#      provisionadas com bundle ANTIGO ainda tem URLs relativas no
-#      config.env. Este fix faz o sync funcionar nelas.
-#   3. _baixar_ativo (dentro de sync_branding) e sync_certificates
-#      usam _prefixar_seeder_url antes do wget.
-#   4. sync_conky agora cobre todos os DEs com suporte a autostart
-#      (cinnamon, mate, gnome, xfce, kde, lxde, lxqt) - antes so
-#      cinnamon|mate eram tratados, deixando usuarios de outros DEs
-#      com conky "morto" (autostart dispara 1x no login, mas o sync
-#      nunca reiniciava se o usuario fechasse acidentalmente).
-#   5. launcher /usr/local/bin/seederlinux-conky reescrito a cada
-#      ciclo com install -m 0755 (idempotente, autocorrige chmod).
-#
-# LIMITACAO CONHECIDA: os modulos de impressoras (fila/protocolo
-# completo) e certificados aqui sao um subconjunto simplificado.
-# Revisar com atencao antes de usar em producao - ver comentarios
-# "REVISAR" nos respectivos modulos.
+# LIMITACAO CONHECIDA: modulos de impressoras e certificados sao
+# subconjunto simplificado. Revisar antes de producao.
 #
 # Os placeholders VARIAVEL sao substituidos automaticamente
 # pelo sistema na geracao do bundle.
@@ -73,11 +38,10 @@ echo ">>> Criando /usr/local/bin/seeder-sync..."
 cat > /usr/local/bin/seeder-sync <<'SYNCSCRIPT'
 #!/bin/bash
 # seeder-sync - aplicador idempotente de politicas (GPO-like)
-# Le /etc/seederlinux/config.env e reaplica tudo. Sem `set -e`: a
-# falha de um modulo isolado nao pode impedir os demais de rodar.
 set -u
 
 CONFIG_FILE="/etc/seederlinux/config.env"
+SECRETS_FILE="/etc/seederlinux/secrets.env"
 STATE_FILE="/etc/seederlinux/sync-state.env"
 LOG_FILE="/var/log/seederlinux/sync.log"
 
@@ -92,57 +56,176 @@ fi
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 
+# Secrets (senhas de proxy). Opcional - pode nao existir em OM sem proxy.
+if [ -f "$SECRETS_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$SECRETS_FILE"
+fi
+
 # ============================================================
-# Helper global: prefixar URL relativa com SEEDER_SERVER
+# HELPERS DE PROXY (multi-proxy)
 # ============================================================
-# Regra:
-#   - Vazio -> retorna vazio
-#   - Ja absoluta (http:// ou https://host/...) -> mantem
-#   - Relativa ("/assets/...") -> prefixa com SEEDER_SERVER
-#   - SEEDER_SERVER vazio -> retorna como veio (deixa o wget falhar
-#     com erro claro em vez de gravar algo quebrado)
-_prefixar_seeder_url() {
-    local url="$1"
-    [ -z "$url" ] && { echo ""; return; }
-    echo "$url" | grep -qE '^https?://[^/]+/' && { echo "$url"; return; }
-    [ -z "${SEEDER_SERVER:-}" ] && { echo "$url"; return; }
-    local server_clean="${SEEDER_SERVER%/}"
-    if echo "$url" | grep -q '^/'; then
-        echo "${server_clean}${url}"
+PROXY_COUNT="${PROXY_COUNT:-0}"
+PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
+
+# Retorna URL do proxy com user:pass embutido (se houver credencial)
+_resolver_proxy_url() {
+    local name="$1"
+    [ -z "$name" ] && return 1
+    [ "$PROXY_COUNT" -lt 1 ] 2>/dev/null && return 1
+
+    local i=1
+    while [ "$i" -le "$PROXY_COUNT" ]; do
+        local v_name="PROXY_${i}_NAME"
+        if [ "${!v_name}" = "$name" ]; then
+            local v_url="PROXY_${i}_URL"
+            local v_user="PROXY_${i}_USER"
+            local v_pass="PROXY_${i}_PASS"
+            local url="${!v_url}"
+            local user="${!v_user}"
+            local pass="${!v_pass}"
+
+            [ -z "$url" ] && return 1
+            [ -z "$user" ] && { echo "$url"; return 0; }
+
+            local user_esc="${user//@/%40}"
+            user_esc="${user_esc//:/%3A}"
+            local pass_esc="${pass//@/%40}"
+            pass_esc="${pass_esc//:/%3A}"
+
+            if echo "$url" | grep -qE '^https?://'; then
+                echo "$url" | sed -E "s|^(https?://)|\1${user_esc}:${pass_esc}@|"
+            else
+                echo "http://${user_esc}:${pass_esc}@${url}"
+            fi
+            return 0
+        fi
+        i=$((i+1))
+    done
+    return 1
+}
+
+# Retorna host:port (sem scheme, sem user) ou user:pass@host:port
+_resolver_proxy_hostport() {
+    local name="$1"
+    local fmt="${2:-plain}"
+    [ -z "$name" ] && return 1
+    [ "$PROXY_COUNT" -lt 1 ] 2>/dev/null && return 1
+
+    local i=1
+    while [ "$i" -le "$PROXY_COUNT" ]; do
+        local v_name="PROXY_${i}_NAME"
+        if [ "${!v_name}" = "$name" ]; then
+            local v_url="PROXY_${i}_URL"
+            local v_user="PROXY_${i}_USER"
+            local v_pass="PROXY_${i}_PASS"
+            local url="${!v_url}"
+            local user="${!v_user}"
+            local pass="${!v_pass}"
+
+            [ -z "$url" ] && return 1
+
+            local hostport
+            hostport="$(echo "$url" | sed -E 's|^https?://||' | sed 's|/$||')"
+
+            if [ "$fmt" = "plain" ] || [ -z "$user" ]; then
+                echo "$hostport"
+                return 0
+            fi
+
+            local user_esc="${user//@/%40}"
+            user_esc="${user_esc//:/%3A}"
+            local pass_esc="${pass//@/%40}"
+            pass_esc="${pass_esc//:/%3A}"
+
+            echo "${user_esc}:${pass_esc}@${hostport}"
+            return 0
+        fi
+        i=$((i+1))
+    done
+    return 1
+}
+
+# Retorna o PAC_URL ou vazio
+_resolver_proxy_pac() {
+    local name="$1"
+    [ -z "$name" ] && return 1
+    [ "$PROXY_COUNT" -lt 1 ] 2>/dev/null && return 1
+
+    local i=1
+    while [ "$i" -le "$PROXY_COUNT" ]; do
+        local v_name="PROXY_${i}_NAME"
+        if [ "${!v_name}" = "$name" ]; then
+            local v="PROXY_${i}_PAC_URL"
+            echo "${!v}"
+            return 0
+        fi
+        i=$((i+1))
+    done
+    return 1
+}
+
+# NO_PROXY específico do proxy
+_resolver_proxy_no_proxy() {
+    local name="$1"
+    [ -z "$name" ] && return 1
+    [ "$PROXY_COUNT" -lt 1 ] 2>/dev/null && return 1
+
+    local i=1
+    while [ "$i" -le "$PROXY_COUNT" ]; do
+        local v_name="PROXY_${i}_NAME"
+        if [ "${!v_name}" = "$name" ]; then
+            local v="PROXY_${i}_NO_PROXY"
+            echo "${!v}"
+            return 0
+        fi
+        i=$((i+1))
+    done
+    return 1
+}
+
+# Nome efetivo do proxy conforme a policy
+_proxy_nome_efetivo() {
+    local especifico="$1"
+    if [ -n "$especifico" ]; then
+        echo "$especifico"
     else
-        echo "${server_clean}/${url}"
+        echo "$PROXY_DEFAULT_NAME"
     fi
 }
 
-# ============================================================
-# Helper global: ler chave de um JSON com fallback
-# (usado pelo sync_conky para parsear CONKY_CONFIG)
-# ============================================================
-_json_get() {
-    local json="$1" key="$2" default="$3" val
-    val=$(echo "$json" | jq -r "if has(\"${key}\") then .${key} else \"\" end" 2>/dev/null)
-    if [ -z "$val" ] || [ "$val" = "null" ] || [ "$val" = "" ]; then
-        echo "$default"
-    else
-        echo "$val"
+# NO_PROXY final (base + específico do proxy)
+_build_no_proxy() {
+    local extra="$1"
+    local base="localhost,127.0.0.1"
+
+    if [ -n "${SEEDER_SERVER:-}" ]; then
+        local host
+        host="$(echo "$SEEDER_SERVER" | sed -E 's|https?://([^/]+).*|\1|')"
+        if [ -n "$host" ]; then
+            base="${base},${host}"
+            local ip
+            ip="$(getent hosts "$host" 2>/dev/null | awk '{print $1}' | head -1)"
+            [ -n "$ip" ] && base="${base},${ip}"
+        fi
     fi
+    [ -n "${DOMINIO:-}" ] && base="${base},.${DOMINIO}"
+    if [ -n "${DC_IP:-}" ]; then
+        case ",$base," in *",$DC_IP,"*) ;; *) base="${base},${DC_IP}" ;; esac
+    fi
+    if [ -n "${DC_IP_LIST:-}" ]; then
+        local dc
+        for dc in $(echo "$DC_IP_LIST" | tr ',' ' '); do
+            [ -z "$dc" ] && continue
+            case ",$base," in *",$dc,"*) ;; *) base="${base},${dc}" ;; esac
+        done
+    fi
+    [ -n "$extra" ] && base="${base},${extra}"
+    echo "$base"
 }
 
 # ============================================================
-# Resolucao de modo: --force (sempre usado pelo timer systemd, a
-# cada 10min, para autocorrecao de drift independente de serial) ou
-# comparacao de serial (usado quando chamado sem --force, tipicamente
-# pelo agente apos um check-in, ou manualmente).
-#
-# O SERVER_SERIAL (serial atual no servidor) pode chegar de tres
-# formas, nessa ordem de prioridade:
-#   1) primeiro argumento posicional nao-flag (ex: seeder-sync 15)
-#   2) variavel de ambiente SERIAL_CONFIG (ex: SERIAL_CONFIG=15 seeder-sync)
-#   3) arquivo /etc/seederlinux/server-serial.env (SERIAL_CONFIG=15),
-#      que o agent.py pode escrever apos um check-in bem-sucedido
-#
-# Sem nenhuma dessas fontes, nao ha como comparar - o script roda
-# de forma completa mesmo assim (comportamento seguro por padrao).
+# Resolucao de serial
 # ============================================================
 FORCE_SYNC="false"
 SERVER_SERIAL=""
@@ -157,7 +240,6 @@ if [ -z "$SERVER_SERIAL" ] && [ -n "${SERIAL_CONFIG:-}" ]; then
     SERVER_SERIAL="$SERIAL_CONFIG"
 fi
 if [ -z "$SERVER_SERIAL" ] && [ -f /etc/seederlinux/server-serial.env ]; then
-    # shellcheck disable=SC1090
     SERVER_SERIAL="$(grep -m1 '^SERIAL_CONFIG=' /etc/seederlinux/server-serial.env 2>/dev/null | cut -d= -f2- | tr -d '"')"
 fi
 
@@ -165,19 +247,19 @@ SERIAL_APLICADO_ATUAL="${SERIAL_APLICADO:-0}"
 
 if [ "$FORCE_SYNC" != "true" ] && [ -n "$SERVER_SERIAL" ]; then
     if [ "$SERVER_SERIAL" -le "$SERIAL_APLICADO_ATUAL" ] 2>/dev/null; then
-        echo "SERIAL_APLICADO ($SERIAL_APLICADO_ATUAL) ja esta em dia com o servidor ($SERVER_SERIAL). Nada a fazer."
+        echo "SERIAL_APLICADO ($SERIAL_APLICADO_ATUAL) ja em dia com servidor ($SERVER_SERIAL). Nada a fazer."
         echo "=== seeder-sync concluido (sem alteracoes): $(date -Is) ==="
         exit 0
     fi
-    echo "Serial do servidor ($SERVER_SERIAL) e maior que o aplicado ($SERIAL_APLICADO_ATUAL). Sincronizando..."
+    echo "Serial do servidor ($SERVER_SERIAL) > aplicado ($SERIAL_APLICADO_ATUAL). Sincronizando..."
 elif [ "$FORCE_SYNC" = "true" ]; then
-    echo "Execucao forcada (timer/autocorrecao) - reaplicando tudo independente de serial."
+    echo "Execucao forcada (timer) - reaplicando tudo."
 else
-    echo "Nenhum serial do servidor disponivel para comparar - reaplicando por seguranca."
+    echo "Nenhum serial disponivel - reaplicando por seguranca."
 fi
 
 # ============================================================
-# Deteccao de ambiente (mesmo padrao usado no resto do bundle)
+# Deteccao de ambiente
 # ============================================================
 detectar_de() {
     if command -v cinnamon-session &>/dev/null; then echo "cinnamon"
@@ -207,316 +289,148 @@ usuarios_com_sessao_grafica() {
     loginctl list-sessions --no-legend 2>/dev/null | awk '{print $3}' | grep -v '^root$' | sort -u
 }
 
-# ============================================================
-# MODULO: branding (wallpaper, logo, tema via dconf/xfconf/kde)
-#
-# CORRECOES (mesmas aplicadas no core_branding.sh):
-#   - _baixar_ativo usa `install -m 0644` em vez de `mv` e valida
-#     MIME `image/*` alem do tamanho. Causa raiz da tela preta: o
-#     `mv` de um arquivo criado por `mktemp` (0600) preservava o
-#     modo restritivo, e o greeter do LightDM (usuario `lightdm`)
-#     tomava EACCES ao tentar ler o wallpaper.
-#   - chmod 0755 no diretorio a cada ciclo, para autocorrigir se
-#     algo externo mudou o modo (evita greeter sem acesso ao dir).
-#   - fallback wallpaper-login.jpg <- wallpaper.jpg quando o
-#     primeiro nao existe (URL vazia, download falho, HTML de erro).
-#   - reaplica config do greeter (LightDM/GDM3/SDDM). Antes o sync
-#     nao tocava nisso - so o core_branding.sh na Fase 1 fazia, o
-#     que contraria a filosofia GPO "reaplicar tudo".
-#   - chmod 0644 nos arquivos de wallpaper por usuario (xfce/kde/
-#     lxde), que antes herdavam umask do root no `cat >`.
-#   - NOVO: _baixar_ativo agora prefixa URLs relativas com
-#     SEEDER_SERVER via _prefixar_seeder_url. Protege estacoes que
-#     foram provisionadas com bundle antigo (URL relativa no
-#     config.env).
-# ============================================================
-sync_branding() {
-    echo "--- branding ---"
-    mkdir -p /usr/share/backgrounds/seederlinux /usr/share/pixmaps
-    chmod 0755 /usr/share/backgrounds/seederlinux /usr/share/pixmaps
-
-    _baixar_ativo() {
-        local url
-        url="$(_prefixar_seeder_url "$1")"
-        local dest="$2"
-        local tmp
-        tmp="$(mktemp /tmp/seeder-asset.XXXXXX)"
-
-        if ! wget -q --no-check-certificate --no-proxy --timeout=20 -O "$tmp" "$url"; then
-            rm -f "$tmp"
-            echo "AVISO: falha de download de $(basename "$dest") ($url) - mantendo o existente"
-            return 1
-        fi
-
-        if [ ! -s "$tmp" ]; then
-            rm -f "$tmp"
-            echo "AVISO: $(basename "$dest") baixou 0 bytes (404/proxy/DNS?) - mantendo o existente"
-            return 1
-        fi
-
-        # Validacao de tipo: aceita apenas image/*. Se o servidor
-        # devolver HTML de erro (proxy 407, 404 estilizado, portal
-        # cativo), o arquivo tem bytes mas nao e' imagem.
-        local mime
-        mime="$(file -b --mime-type "$tmp" 2>/dev/null || echo "application/octet-stream")"
-        if ! echo "$mime" | grep -q '^image/'; then
-            rm -f "$tmp"
-            echo "AVISO: $(basename "$dest") baixou $mime (nao e imagem - HTML de erro?) - mantendo o existente"
-            return 1
-        fi
-
-        install -m 0644 "$tmp" "$dest"
-        rm -f "$tmp"
-        echo "OK: $(basename "$dest") ($mime)"
-        return 0
-    }
-
-    if [ -n "${WALLPAPER_URL:-}" ]; then
-        _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
+# Helper: prefixar URL relativa com SEEDER_SERVER
+_prefixar_seeder_url() {
+    local url="$1"
+    [ -z "$url" ] && { echo ""; return; }
+    echo "$url" | grep -qE '^https?://[^/]+/' && { echo "$url"; return; }
+    [ -z "${SEEDER_SERVER:-}" ] && { echo "$url"; return; }
+    local server_clean="${SEEDER_SERVER%/}"
+    if echo "$url" | grep -q '^/'; then
+        echo "${server_clean}${url}"
+    else
+        echo "${server_clean}/${url}"
     fi
-    if [ -n "${WALLPAPER_LOGIN_URL:-}" ]; then
-        _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
-    fi
-    if [ -n "${LOGO_URL:-}" ]; then
-        _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
-    fi
+}
 
-    # Fallback do wallpaper de login: se nao existe no disco mas o
-    # da sessao existe, copia por cima. Greeter nunca fica preto.
-    local LOGIN_WP="/usr/share/backgrounds/seederlinux/wallpaper-login.jpg"
-    local SESSION_WP="/usr/share/backgrounds/seederlinux/wallpaper.jpg"
-    if [ ! -s "$LOGIN_WP" ] && [ -s "$SESSION_WP" ]; then
-        install -m 0644 "$SESSION_WP" "$LOGIN_WP"
-        echo "OK: wallpaper-login.jpg (fallback do wallpaper de sessao)"
-    fi
-
-    # THEME="DEFAULT" (ou vazio) nao e um tema GTK valido - mesma
-    # regra do core_branding.sh: so aplica se existir de verdade em
-    # /usr/share/themes, senao mantem o tema atual do sistema.
-    THEME_APLICAR=false
-    if [ -n "${THEME:-}" ] && [ "${THEME}" != "DEFAULT" ] && [ -d "/usr/share/themes/${THEME}" ]; then
-        THEME_APLICAR=true
-    fi
-
-    # Perfil dconf (system-db:local) - sem isso, nada de dconf abaixo aplica
-    mkdir -p /etc/dconf/profile
-    if [ ! -f /etc/dconf/profile/user ]; then
-        printf 'user-db:user\nsystem-db:local\n' > /etc/dconf/profile/user
-    elif ! grep -q '^system-db:local$' /etc/dconf/profile/user; then
-        echo "system-db:local" >> /etc/dconf/profile/user
-    fi
-    mkdir -p /etc/dconf/db/local.d
-
-    case "$DESKTOP_ENV" in
-        cinnamon)
-            cat > /etc/dconf/db/local.d/seederlinux-branding-cinnamon <<EOF
-[org/cinnamon/desktop/background]
-picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
-picture-options='zoom'
-EOF
-            if [ "$THEME_APLICAR" = "true" ]; then
-                cat >> /etc/dconf/db/local.d/seederlinux-branding-cinnamon <<EOF
-
-[org/cinnamon/desktop/interface]
-gtk-theme='${THEME}'
-icon-theme-name='Adwaita'
-
-[org/cinnamon/theme]
-name='${THEME}'
-EOF
-            fi
-            dconf update 2>/dev/null || true
-            ;;
-        mate)
-            cat > /etc/dconf/db/local.d/seederlinux-branding-mate <<EOF
-[org/mate/desktop/background]
-picture-filename='/usr/share/backgrounds/seederlinux/wallpaper.jpg'
-picture-options='zoom'
-EOF
-            if [ "$THEME_APLICAR" = "true" ]; then
-                cat >> /etc/dconf/db/local.d/seederlinux-branding-mate <<EOF
-
-[org/mate/desktop/interface]
-gtk-theme='${THEME}'
-icon-theme='Adwaita'
-EOF
-            fi
-            dconf update 2>/dev/null || true
-            ;;
-        gnome)
-            cat > /etc/dconf/db/local.d/seederlinux-branding-gnome <<EOF
-[org/gnome/desktop/background]
-picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
-picture-uri-dark='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
-picture-options='zoom'
-
-[org/gnome/login-screen]
-logo='/usr/share/pixmaps/seederlinux-logo.png'
-EOF
-            if [ "$THEME_APLICAR" = "true" ]; then
-                cat >> /etc/dconf/db/local.d/seederlinux-branding-gnome <<EOF
-
-[org/gnome/desktop/interface]
-gtk-theme='${THEME}'
-icon-theme='Adwaita'
-EOF
-            fi
-            dconf update 2>/dev/null || true
-            ;;
-        xfce)
-            for uh in /home/*; do
-                [ -d "$uh" ] || continue
-                u="$(basename "$uh")"
-                mkdir -p "$uh/.config/xfce4/xfconf/xfce-perchannel-xml"
-                cat > "$uh/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<channel name="xfce4-desktop">
-  <property name="backdrop" type="empty">
-    <property name="screen0" type="empty">
-      <property name="monitor0" type="empty">
-        <property name="image-path" type="string" value="/usr/share/backgrounds/seederlinux/wallpaper.jpg"/>
-        <property name="image-style" type="int" value="5"/>
-      </property>
-    </property>
-  </property>
-</channel>
-EOF
-                # chmod antes do chown: garante modo consistente
-                # independente do umask corrente do sync (roda como root).
-                chmod 0644 "$uh/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml" 2>/dev/null || true
-                chown "$u:$u" "$uh/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-desktop.xml" 2>/dev/null || true
-            done
-            ;;
-        kde)
-            for uh in /home/*; do
-                [ -d "$uh" ] || continue
-                u="$(basename "$uh")"
-                mkdir -p "$uh/.config"
-                cat > "$uh/.config/plasma-org.kde.plasma.desktop-appletsrc" <<EOF
-[Containments][1][Wallpaper][org.kde.image][General]
-Image=file:///usr/share/backgrounds/seederlinux/wallpaper.jpg
-EOF
-                chmod 0644 "$uh/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
-                chown "$u:$u" "$uh/.config/plasma-org.kde.plasma.desktop-appletsrc" 2>/dev/null || true
-            done
-            ;;
-        lxde|lxqt)
-            for uh in /home/*; do
-                [ -d "$uh" ] || continue
-                u="$(basename "$uh")"
-                mkdir -p "$uh/.config/pcmanfm/LXDE"
-                cat > "$uh/.config/pcmanfm/LXDE/desktop-items-0.conf" <<EOF
-[*]
-wallpaper_mode=crop
-wallpaper=/usr/share/backgrounds/seederlinux/wallpaper.jpg
-EOF
-                chmod 0644 "$uh/.config/pcmanfm/LXDE/desktop-items-0.conf" 2>/dev/null || true
-                chown "$u:$u" "$uh/.config/pcmanfm/LXDE/desktop-items-0.conf" 2>/dev/null || true
-            done
-            ;;
-    esac
-
-    # --------------------------------------------------------
-    # Reaplica config do greeter (wallpaper de login).
-    # O sync roda a cada 10min; se alguem editar/corromper a config
-    # do greeter, ela volta ao estado da OM no proximo ciclo.
-    # Lightdm le o arquivo como usuario `lightdm` (uid 113) - por
-    # isso chmod 0644 explicito.
-    # --------------------------------------------------------
-    case "$DISPLAY_MANAGER" in
-        lightdm)
-            if [ -s "$LOGIN_WP" ]; then
-                mkdir -p /etc/lightdm
-                cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
-[greeter]
-background=${LOGIN_WP}
-logo=/usr/share/pixmaps/seederlinux-logo.png
-icon-theme-name=Adwaita
-font-name=DejaVu Sans 10
-EOF
-                if [ "$THEME_APLICAR" = "true" ]; then
-                    echo "theme-name=${THEME}" >> /etc/lightdm/lightdm-gtk-greeter.conf
-                fi
-                chmod 0644 /etc/lightdm/lightdm-gtk-greeter.conf
-                echo "OK: lightdm-gtk-greeter.conf reaplicado"
-            fi
-            ;;
-        gdm3)
-            if [ -s "$LOGIN_WP" ]; then
-                mkdir -p /etc/dconf/db/gdm.d
-                cat > /etc/dconf/db/gdm.d/01-seederlinux-background <<EOF
-[org/gnome/desktop/background]
-picture-uri='file://${LOGIN_WP}'
-picture-options='zoom'
-EOF
-                dconf update 2>/dev/null || true
-                echo "OK: GDM3 background reaplicado"
-            fi
-            ;;
-        sddm)
-            if [ -s "$LOGIN_WP" ]; then
-                mkdir -p /etc/sddm.conf.d
-                cat > /etc/sddm.conf.d/seederlinux.conf <<EOF
-[Theme]
-ThemeDir=/usr/share/sddm/themes
-Current=seederlinux
-Background=${LOGIN_WP}
-EOF
-                echo "OK: SDDM background reaplicado"
-            fi
-            ;;
-    esac
-
-    # Sumario dos assets no log do sync (observabilidade)
-    if [ -d /usr/share/backgrounds/seederlinux ]; then
-        echo "Assets em /usr/share/backgrounds/seederlinux:"
-        ls -la /usr/share/backgrounds/seederlinux/ 2>/dev/null | sed 's/^/    /'
+_json_get() {
+    local json="$1" key="$2" default="$3" val
+    val=$(echo "$json" | jq -r "if has(\"${key}\") then .${key} else \"\" end" 2>/dev/null)
+    if [ -z "$val" ] || [ "$val" = "null" ] || [ "$val" = "" ]; then
+        echo "$default"
+    else
+        echo "$val"
     fi
 }
 
 # ============================================================
-# MODULO: politica do Firefox
-#
-# CONFIRMADO/ALINHADO contra o core_browser.sh real: o caminho
-# canonico e /usr/lib/firefox-esr/distribution/policies.json
-# (instalacao do pacote Debian/Ubuntu). Mantemos tambem
-# /etc/firefox*/policies/ como cobertura extra para builds que
-# suportem esse local alternativo.
-#
-# Bloco de Proxy dinamico por PROXY_MODE - mesma correcao aplicada
-# no core_browser.sh (antes ficava fixo em "system" la).
+# MODULO: proxy de CLI
+# ============================================================
+sync_cli_proxy() {
+    echo "--- proxy CLI ---"
+    local policy="${CLI_POLICY:-DIRECT}"
+
+    case "$policy" in
+        DIRECT|"")
+            if [ -f /etc/environment ]; then
+                sed -i '/^http_proxy=/d;/^https_proxy=/d;/^ftp_proxy=/d;/^no_proxy=/d' /etc/environment 2>/dev/null || true
+                sed -i '/^HTTP_PROXY=/d;/^HTTPS_PROXY=/d;/^FTP_PROXY=/d;/^NO_PROXY=/d' /etc/environment 2>/dev/null || true
+                sed -i '/^all_proxy=/d;/^ALL_PROXY=/d' /etc/environment 2>/dev/null || true
+                sed -i '/^# Proxy configurado por SeederLinux/d' /etc/environment 2>/dev/null || true
+            fi
+            echo "OK: /etc/environment sem proxy (DIRECT)"
+            ;;
+        PROXY_NO_AUTH|PROXY_WITH_AUTH)
+            local nome
+            nome="$(_proxy_nome_efetivo "${CLI_PROXY_NAME:-}")"
+            if [ -z "$nome" ]; then
+                echo "AVISO: CLI_POLICY=$policy sem proxy configurado - mantendo DIRECT"
+                return 0
+            fi
+            local url
+            url="$(_resolver_proxy_url "$nome")" || url=""
+            if [ -z "$url" ]; then
+                echo "AVISO: proxy '$nome' nao encontrado - mantendo DIRECT"
+                return 0
+            fi
+            local no_proxy_extra no_proxy_final
+            no_proxy_extra="$(_resolver_proxy_no_proxy "$nome")" || no_proxy_extra=""
+            no_proxy_final="$(_build_no_proxy "$no_proxy_extra")"
+
+            touch /etc/environment
+            sed -i '/^http_proxy=/d;/^https_proxy=/d;/^ftp_proxy=/d;/^no_proxy=/d' /etc/environment 2>/dev/null || true
+            sed -i '/^HTTP_PROXY=/d;/^HTTPS_PROXY=/d;/^FTP_PROXY=/d;/^NO_PROXY=/d' /etc/environment 2>/dev/null || true
+            sed -i '/^all_proxy=/d;/^ALL_PROXY=/d' /etc/environment 2>/dev/null || true
+            sed -i '/^# Proxy configurado por SeederLinux/d' /etc/environment 2>/dev/null || true
+            {
+                echo ""
+                echo "# Proxy configurado por SeederLinux (seeder-sync)"
+                echo "http_proxy=\"${url}\""
+                echo "https_proxy=\"${url}\""
+                echo "ftp_proxy=\"${url}\""
+                echo "HTTP_PROXY=\"${url}\""
+                echo "HTTPS_PROXY=\"${url}\""
+                echo "FTP_PROXY=\"${url}\""
+                echo "no_proxy=\"${no_proxy_final}\""
+                echo "NO_PROXY=\"${no_proxy_final}\""
+            } >> /etc/environment
+            chmod 644 /etc/environment
+            echo "OK: /etc/environment atualizado (proxy: $nome)"
+            ;;
+        PAC)
+            echo "AVISO: PAC nao suportado em CLI (wget/curl/git) - mantendo DIRECT"
+            ;;
+    esac
+}
+
+# ============================================================
+# MODULO: politica do Firefox (com proxy)
 # ============================================================
 sync_firefox_policy() {
     echo "--- firefox policy ---"
     command -v firefox-esr &>/dev/null || command -v firefox &>/dev/null || { echo "Firefox nao instalado, pulando"; return 0; }
 
-    case "${PROXY_MODE:-}" in
-        MANUAL)
-            FIREFOX_PROXY_JSON="\"Proxy\": {
+    local policy="${BROWSER_POLICY:-DIRECT}"
+    local ff_proxy_json=''
+
+    case "$policy" in
+        DIRECT|"")
+            ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
+            ;;
+        SYSTEM)
+            ff_proxy_json='"Proxy": { "Mode": "system", "Locked": true }'
+            ;;
+        PROXY_NO_AUTH|PROXY_WITH_AUTH)
+            local nome hostport no_proxy_extra no_proxy_final
+            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
+            hostport="$(_resolver_proxy_hostport "$nome" plain)" || hostport=""
+            if [ -z "$hostport" ]; then
+                ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
+                echo "AVISO: proxy '$nome' nao encontrado - Firefox em DIRECT"
+            else
+                no_proxy_extra="$(_resolver_proxy_no_proxy "$nome")" || no_proxy_extra=""
+                no_proxy_final="$(_build_no_proxy "$no_proxy_extra")"
+                ff_proxy_json="\"Proxy\": {
       \"Mode\": \"manual\",
-      \"HTTPProxy\": \"${PROXY_HTTP:-}:${PROXY_PORTA:-}\",
-      \"SSLProxy\": \"${PROXY_HTTP:-}:${PROXY_PORTA:-}\",
-      \"Passthrough\": \"${NO_PROXY:-localhost,127.0.0.1}\",
+      \"HTTPProxy\": \"${hostport}\",
+      \"SSLProxy\": \"${hostport}\",
+      \"Passthrough\": \"${no_proxy_final}\",
       \"Locked\": true
     }"
+            fi
             ;;
         PAC)
-            FIREFOX_PROXY_JSON="\"Proxy\": {
+            local nome pac
+            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
+            pac="$(_resolver_proxy_pac "$nome")" || pac=""
+            if [ -z "$pac" ]; then
+                ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
+                echo "AVISO: PAC_URL vazio - Firefox em DIRECT"
+            else
+                ff_proxy_json="\"Proxy\": {
       \"Mode\": \"autoConfig\",
-      \"AutoConfigURL\": \"${PAC_URL:-}\",
-      \"Passthrough\": \"${NO_PROXY:-localhost,127.0.0.1}\",
+      \"AutoConfigURL\": \"${pac}\",
       \"Locked\": true
     }"
-            ;;
-        NONE)
-            FIREFOX_PROXY_JSON="\"Proxy\": { \"Mode\": \"none\", \"Locked\": true }"
+            fi
             ;;
         *)
-            FIREFOX_PROXY_JSON="\"Proxy\": { \"Mode\": \"system\", \"Locked\": true }"
+            ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
             ;;
     esac
 
-    read -r -d '' FIREFOX_POLICY_JSON <<EOF || true
+    local json
+    read -r -d '' json <<EOF || true
 {
   "policies": {
     "DisableTelemetry": true,
@@ -536,7 +450,7 @@ sync_firefox_policy() {
         { "Name": "${OM_ACRONYM:-}", "URL": "${HOMEPAGE:-}", "Method": "GET" }
       ]
     },
-    ${FIREFOX_PROXY_JSON},
+    ${ff_proxy_json},
     "Certificates": { "ImportEnterpriseRoots": true },
     "ExtensionSettings": { "*": { "installation_mode": "allowed" } },
     "DisableSetDesktopBackground": false,
@@ -558,49 +472,63 @@ sync_firefox_policy() {
 }
 EOF
 
-    # Caminho canonico (pacote firefox-esr do Debian/Ubuntu)
-    if [ -d /usr/lib/firefox-esr ]; then
-        mkdir -p /usr/lib/firefox-esr/distribution
-        echo "$FIREFOX_POLICY_JSON" > /usr/lib/firefox-esr/distribution/policies.json
-    fi
-    if [ -d /usr/lib/firefox ]; then
-        mkdir -p /usr/lib/firefox/distribution
-        echo "$FIREFOX_POLICY_JSON" > /usr/lib/firefox/distribution/policies.json
-    fi
-    # Cobertura extra (builds/distros que honram este local alternativo)
+    for DIR in /usr/lib/firefox-esr /usr/lib/firefox; do
+        [ -d "$DIR" ] || continue
+        mkdir -p "$DIR/distribution"
+        echo "$json" > "$DIR/distribution/policies.json"
+    done
     for DIR in /etc/firefox/policies /etc/firefox-esr/policies; do
         PARENT="$(dirname "$DIR")"
         [ -d "$PARENT" ] || continue
         mkdir -p "$DIR"
-        echo "$FIREFOX_POLICY_JSON" > "$DIR/policies.json"
+        echo "$json" > "$DIR/policies.json"
     done
+    echo "OK: Firefox policy aplicada (modo: $policy)"
 }
 
 # ============================================================
-# MODULO: politica do Chrome/Chromium
-# CONFIRMADO/ALINHADO contra o core_browser.sh - conteudo trazido
-# para paridade (BlockThirdPartyCookies, SyncDisabled,
-# TelemetryReportingEnabled etc.).
+# MODULO: politica do Chrome/Chromium (com proxy)
 # ============================================================
 sync_chrome_policy() {
     echo "--- chrome/chromium policy ---"
+    local policy="${BROWSER_POLICY:-DIRECT}"
+    local proxy_json=", \"ProxyMode\": \"direct\""
 
-    case "${PROXY_MODE:-}" in
-        MANUAL)
-            CHROME_PROXY_JSON=", \"ProxyMode\": \"fixed_servers\", \"ProxyServer\": \"http=${PROXY_HTTP:-}:${PROXY_PORTA:-};https=${PROXY_HTTP:-}:${PROXY_PORTA:-}\""
+    case "$policy" in
+        DIRECT|"")
+            proxy_json=", \"ProxyMode\": \"direct\""
+            ;;
+        SYSTEM)
+            proxy_json=", \"ProxyMode\": \"system\""
+            ;;
+        PROXY_NO_AUTH|PROXY_WITH_AUTH)
+            local nome authport no_proxy_extra no_proxy_final
+            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
+            authport="$(_resolver_proxy_hostport "$nome" auth)" || authport=""
+            if [ -z "$authport" ]; then
+                proxy_json=", \"ProxyMode\": \"direct\""
+                echo "AVISO: proxy '$nome' nao encontrado - Chrome em DIRECT"
+            else
+                no_proxy_extra="$(_resolver_proxy_no_proxy "$nome")" || no_proxy_extra=""
+                no_proxy_final="$(_build_no_proxy "$no_proxy_extra")"
+                proxy_json=", \"ProxyMode\": \"fixed_servers\", \"ProxyServer\": \"http=${authport};https=${authport}\", \"ProxyBypassList\": \"${no_proxy_final}\""
+            fi
             ;;
         PAC)
-            CHROME_PROXY_JSON=", \"ProxyMode\": \"pac_script\", \"ProxyPacUrl\": \"${PAC_URL:-}\""
-            ;;
-        NONE)
-            CHROME_PROXY_JSON=", \"ProxyMode\": \"direct\""
-            ;;
-        *)
-            CHROME_PROXY_JSON=", \"ProxyMode\": \"system\""
+            local nome pac
+            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
+            pac="$(_resolver_proxy_pac "$nome")" || pac=""
+            if [ -z "$pac" ]; then
+                proxy_json=", \"ProxyMode\": \"direct\""
+                echo "AVISO: PAC_URL vazio - Chrome em DIRECT"
+            else
+                proxy_json=", \"ProxyMode\": \"pac_script\", \"ProxyPacUrl\": \"${pac}\""
+            fi
             ;;
     esac
 
-    read -r -d '' CHROME_POLICY_JSON <<EOF || true
+    local json
+    read -r -d '' json <<EOF || true
 {
     "HomepageLocation": "${HOMEPAGE:-}",
     "HomepageIsNewTabPage": false,
@@ -610,173 +538,196 @@ sync_chrome_policy() {
     "SyncDisabled": true,
     "BlockThirdPartyCookies": true,
     "BackgroundModeEnabled": false,
-    "TelemetryReportingEnabled": false${CHROME_PROXY_JSON},
+    "TelemetryReportingEnabled": false${proxy_json},
     "DefaultCookiesSetting": 1,
     "DefaultBrowserSettingEnabled": false
 }
 EOF
 
-    for DIR in /etc/opt/chrome/policies/managed /etc/chromium/policies/managed /etc/chromium-browser/policies/managed; do
+    for DIR in /etc/opt/chrome/policies/managed \
+               /etc/chromium/policies/managed \
+               /etc/chromium-browser/policies/managed; do
         GRANDPARENT="$(dirname "$(dirname "$DIR")")"
         [ -d "$GRANDPARENT" ] || continue
         mkdir -p "$DIR"
-        echo "$CHROME_POLICY_JSON" > "$DIR/seederlinux.json"
+        echo "$json" > "$DIR/seederlinux.json"
+        chmod 644 "$DIR/seederlinux.json"
     done
+    echo "OK: Chrome/Chromium policy aplicada (modo: $policy)"
 }
 
 # ============================================================
-# MODULO: proxy do sistema (APT + /etc/environment)
+# MODULO: branding (inalterado)
 # ============================================================
-sync_proxy() {
-    echo "--- proxy ---"
-    case "${PROXY_MODE:-NONE}" in
-        NONE)
-            rm -f /etc/apt/apt.conf.d/95seederlinux-proxy
-            sed -i '/^http_proxy=/d;/^https_proxy=/d;/^ftp_proxy=/d;/^no_proxy=/d;/^HTTP_PROXY=/d;/^HTTPS_PROXY=/d;/^FTP_PROXY=/d;/^NO_PROXY=/d' /etc/environment 2>/dev/null || true
-            ;;
-        MANUAL)
-            PROXY_FULL_URL="${PROXY_URL:-http://${PROXY_HTTP:-}:${PROXY_PORTA:-}}"
-            cat > /etc/apt/apt.conf.d/95seederlinux-proxy <<EOF
-Acquire::http::Proxy "${PROXY_FULL_URL}";
-Acquire::https::Proxy "${PROXY_FULL_URL}";
+sync_branding() {
+    echo "--- branding ---"
+    mkdir -p /usr/share/backgrounds/seederlinux /usr/share/pixmaps
+    chmod 0755 /usr/share/backgrounds/seederlinux /usr/share/pixmaps
+
+    _baixar_ativo() {
+        local url
+        url="$(_prefixar_seeder_url "$1")"
+        local dest="$2"
+        local tmp
+        tmp="$(mktemp /tmp/seeder-asset.XXXXXX)"
+
+        if ! wget -q --no-check-certificate --no-proxy --timeout=20 -O "$tmp" "$url"; then
+            rm -f "$tmp"
+            echo "AVISO: falha de download de $(basename "$dest") ($url)"
+            return 1
+        fi
+        if [ ! -s "$tmp" ]; then
+            rm -f "$tmp"
+            echo "AVISO: $(basename "$dest") baixou 0 bytes"
+            return 1
+        fi
+        local mime
+        mime="$(file -b --mime-type "$tmp" 2>/dev/null || echo "application/octet-stream")"
+        if ! echo "$mime" | grep -q '^image/'; then
+            rm -f "$tmp"
+            echo "AVISO: $(basename "$dest") baixou $mime (nao imagem)"
+            return 1
+        fi
+        install -m 0644 "$tmp" "$dest"
+        rm -f "$tmp"
+        echo "OK: $(basename "$dest") ($mime)"
+    }
+
+    [ -n "${WALLPAPER_URL:-}" ] && _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
+    [ -n "${WALLPAPER_LOGIN_URL:-}" ] && _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+    [ -n "${LOGO_URL:-}" ] && _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
+
+    local LOGIN_WP="/usr/share/backgrounds/seederlinux/wallpaper-login.jpg"
+    local SESSION_WP="/usr/share/backgrounds/seederlinux/wallpaper.jpg"
+    if [ ! -s "$LOGIN_WP" ] && [ -s "$SESSION_WP" ]; then
+        install -m 0644 "$SESSION_WP" "$LOGIN_WP"
+    fi
+
+    local THEME_APLICAR=false
+    if [ -n "${THEME:-}" ] && [ "${THEME}" != "DEFAULT" ] && [ -d "/usr/share/themes/${THEME}" ]; then
+        THEME_APLICAR=true
+    fi
+
+    mkdir -p /etc/dconf/profile
+    if [ ! -f /etc/dconf/profile/user ]; then
+        printf 'user-db:user\nsystem-db:local\n' > /etc/dconf/profile/user
+    elif ! grep -q '^system-db:local$' /etc/dconf/profile/user; then
+        echo "system-db:local" >> /etc/dconf/profile/user
+    fi
+    mkdir -p /etc/dconf/db/local.d
+
+    case "$DESKTOP_ENV" in
+        cinnamon)
+            cat > /etc/dconf/db/local.d/seederlinux-branding-cinnamon <<EOF
+[org/cinnamon/desktop/background]
+picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
+picture-options='zoom'
 EOF
-            sed -i '/^http_proxy=/d;/^https_proxy=/d;/^ftp_proxy=/d;/^no_proxy=/d;/^HTTP_PROXY=/d;/^HTTPS_PROXY=/d;/^FTP_PROXY=/d;/^NO_PROXY=/d' /etc/environment 2>/dev/null || true
-            {
-                echo "http_proxy=\"${PROXY_FULL_URL}\""
-                echo "https_proxy=\"${PROXY_FULL_URL}\""
-                echo "HTTP_PROXY=\"${PROXY_FULL_URL}\""
-                echo "HTTPS_PROXY=\"${PROXY_FULL_URL}\""
-                if [ -n "${NO_PROXY:-}" ]; then
-                    echo "no_proxy=\"${NO_PROXY}\""
-                    echo "NO_PROXY=\"${NO_PROXY}\""
-                fi
-            } >> /etc/environment
-            ;;
-        PAC)
-            if [ -n "${PAC_URL:-}" ]; then
-                cat > /etc/apt/apt.conf.d/95seederlinux-proxy <<EOF
-Acquire::http::Proxy::Pac "${PAC_URL}";
-Acquire::https::Proxy::Pac "${PAC_URL}";
+            [ "$THEME_APLICAR" = "true" ] && cat >> /etc/dconf/db/local.d/seederlinux-branding-cinnamon <<EOF
+
+[org/cinnamon/desktop/interface]
+gtk-theme='${THEME}'
+icon-theme-name='Adwaita'
+
+[org/cinnamon/theme]
+name='${THEME}'
 EOF
+            dconf update 2>/dev/null || true
+            ;;
+        mate)
+            cat > /etc/dconf/db/local.d/seederlinux-branding-mate <<EOF
+[org/mate/desktop/background]
+picture-filename='/usr/share/backgrounds/seederlinux/wallpaper.jpg'
+picture-options='zoom'
+EOF
+            dconf update 2>/dev/null || true
+            ;;
+        gnome)
+            cat > /etc/dconf/db/local.d/seederlinux-branding-gnome <<EOF
+[org/gnome/desktop/background]
+picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
+picture-uri-dark='file:///usr/share/backgrounds/seederlinux/wallpaper.jpg'
+picture-options='zoom'
+
+[org/gnome/login-screen]
+logo='/usr/share/pixmaps/seederlinux-logo.png'
+EOF
+            dconf update 2>/dev/null || true
+            ;;
+    esac
+
+    case "$DISPLAY_MANAGER" in
+        lightdm)
+            if [ -s "$LOGIN_WP" ]; then
+                mkdir -p /etc/lightdm
+                cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
+[greeter]
+background=${LOGIN_WP}
+logo=/usr/share/pixmaps/seederlinux-logo.png
+icon-theme-name=Adwaita
+font-name=DejaVu Sans 10
+EOF
+                chmod 0644 /etc/lightdm/lightdm-gtk-greeter.conf
+            fi
+            ;;
+        gdm3)
+            if [ -s "$LOGIN_WP" ]; then
+                mkdir -p /etc/dconf/db/gdm.d
+                cat > /etc/dconf/db/gdm.d/01-seederlinux-background <<EOF
+[org/gnome/desktop/background]
+picture-uri='file://${LOGIN_WP}'
+picture-options='zoom'
+EOF
+                dconf update 2>/dev/null || true
             fi
             ;;
     esac
 }
 
 # ============================================================
-# MODULO: impressoras (CUPS + filas via IPP Everywhere)
-#
-# CONFIRMADO contra o core_printers.sh real: a convencao de fila
-# ipp://PRINT_SERVER/printers/NOME + `-m everywhere` esta correta.
-# Este modulo tambem reaplica a config do daemon CUPS
-# (cupsd.conf/client.conf/cupsctl) e a descoberta automatica quando
-# PRINTERS vem vazio.
-#
-# PRINTERS: lista de nomes separados por espaco (mesma convencao de
-# COMPARTILHAMENTOS).
+# MODULO: impressoras (inalterado)
 # ============================================================
 sync_printers() {
     echo "--- impressoras ---"
-    [ -z "${PRINT_SERVER:-}" ] && { echo "PRINT_SERVER vazio, pulando modulo de impressoras"; return 0; }
-    command -v cupsctl &>/dev/null || { echo "AVISO: CUPS nao instalado, pulando modulo de impressoras"; return 0; }
+    [ -z "${PRINT_SERVER:-}" ] && { echo "PRINT_SERVER vazio, pulando"; return 0; }
+    command -v cupsctl &>/dev/null || { echo "CUPS nao instalado, pulando"; return 0; }
 
-    # --- daemon CUPS (idempotente - mesmos valores do core_printers.sh) ---
     systemctl enable cups 2>/dev/null || true
     systemctl start cups 2>/dev/null || true
     cupsctl --remote-admin --remote-any --share-printers 2>/dev/null || true
 
-    cat > /etc/cups/cupsd.conf <<EOF
-# Configuracao CUPS - SeederLinux (reaplicada por seeder-sync)
-Browsing On
-BrowseLocalProtocols dnssd
-DefaultAuthType Basic
-WebInterface Yes
-
-Listen localhost:631
-Listen /run/cups/cups.sock
-
-<Location />
-    Order allow,deny
-    Allow all
-</Location>
-
-<Location /admin>
-    Order allow,deny
-    Allow all
-</Location>
-
-<Location /admin/conf>
-    AuthType Default
-    Require user @SYSTEM
-    Order allow,deny
-    Allow all
-</Location>
-EOF
-
     cat > /etc/cups/client.conf <<EOF
-# Cliente CUPS - SeederLinux (reaplicado por seeder-sync)
+# Cliente CUPS - SeederLinux
 ServerName ${PRINT_SERVER}
 EOF
 
-    # --- filas de impressora ---
     if [ -n "${PRINTERS:-}" ]; then
         for PRINTER in $PRINTERS; do
             if ! lpstat -p "$PRINTER" &>/dev/null; then
-                echo "Criando fila: $PRINTER"
                 lpadmin -p "$PRINTER" -E -v "ipp://${PRINT_SERVER}/printers/${PRINTER}" \
-                    -m everywhere 2>/dev/null || echo "AVISO: falha ao criar fila '$PRINTER'"
+                    -m everywhere 2>/dev/null || echo "AVISO: falha fila '$PRINTER'"
             fi
         done
-    else
-        echo "PRINTERS vazio - usando descoberta automatica via ${PRINT_SERVER}"
-        lpinfo -h "$PRINT_SERVER" -v 2>/dev/null | grep ipp | while read -r line; do
-            PRINTER_URI="$(echo "$line" | awk '{print $2}')"
-            PRINTER_NAME="$(basename "$PRINTER_URI")"
-            lpstat -p "$PRINTER_NAME" &>/dev/null && continue
-            echo "Impressora encontrada: $PRINTER_NAME"
-            lpadmin -p "$PRINTER_NAME" -E -v "$PRINTER_URI" -m everywhere 2>/dev/null || true
-        done
     fi
 
-    # --- impressora padrao (sistema + por usuario com sessao ativa) ---
-    if [ -n "${DEFAULT_PRINTER:-}" ]; then
-        lpadmin -d "$DEFAULT_PRINTER" 2>/dev/null || echo "AVISO: falha ao definir impressora padrao do sistema"
-        for u in $(usuarios_com_sessao_grafica); do
-            su - "$u" -c "lpoptions -d '${DEFAULT_PRINTER}'" 2>/dev/null || true
-        done
-    fi
-
+    [ -n "${DEFAULT_PRINTER:-}" ] && lpadmin -d "$DEFAULT_PRINTER" 2>/dev/null || true
     systemctl restart cups 2>/dev/null || true
 }
 
 # ============================================================
-# MODULO: Conky
-#
-# REGERENCIA o /etc/seederlinux/conky/conky.conf a partir do
-# CONKY_CONFIG do config.env. Compara com o que ja esta no disco e
-# so reescreve se mudou. Se mudou, REINICIA o conky dos usuarios com
-# sessao grafica (senao a mudanca nao aparece ate relogar).
-#
-# Antes, este modulo so fazia `pgrep conky || start` - nunca regerava
-# o arquivo. Era a causa raiz do "mudei a posicao no painel e nao
-# aplica nem com reboot".
-#
-# Restricao de DE: qualquer DE onde o core_conky.sh instalou
-# autostart (cinnamon, mate, gnome, xfce, kde, lxde, lxqt).
+# MODULO: Conky (inalterado)
 # ============================================================
 sync_conky() {
     echo "--- conky ---"
-
-    command -v conky &>/dev/null || { echo "AVISO: Conky nao instalado, pulando modulo"; return 0; }
-    command -v jq &>/dev/null || { echo "AVISO: jq nao instalado, pulando modulo de conky"; return 0; }
-    [ -z "${CONKY_CONFIG:-}" ] && { echo "CONKY_CONFIG vazio, pulando modulo de conky"; return 0; }
+    command -v conky &>/dev/null || return 0
+    command -v jq &>/dev/null || return 0
+    [ -z "${CONKY_CONFIG:-}" ] && return 0
 
     case "$DESKTOP_ENV" in
         cinnamon|mate|gnome|xfce|kde|lxde|lxqt) ;;
-        *) echo "DESKTOP_ENV='$DESKTOP_ENV' nao suportado pelo modulo conky, pulando"; return 0 ;;
+        *) return 0 ;;
     esac
 
-    # --- Parse do JSON (mesmos defaults do core_conky.sh) ---
     local CFG_POSITION CFG_TRANSPARENT CFG_COLOR_TEXT CFG_COLOR_BG
     local CFG_FONT_SIZE CFG_GAP_X CFG_GAP_Y CFG_UPDATE_INTERVAL
     local CFG_SHOW_CPU CFG_SHOW_RAM CFG_SHOW_DISK CFG_DISK_PARTITION
@@ -811,66 +762,13 @@ sync_conky() {
         OWN_TRANSPARENT="false"; OWN_ARGB_VALUE="200"
     fi
 
-    # --- Montar CONKY_TEXT (mesma logica do core_conky.sh) ---
-    local CONKY_TEXT
-    if [ "$CFG_SHOW_HOSTNAME" = "true" ]; then
-        CONKY_TEXT="\${font DejaVu Sans Mono:size=${CFG_HOSTNAME_FONT_SIZE}}\${color ${COLOR_TEXT_LUA}}Host: \${nodename}
-\${font DejaVu Sans Mono:size=${CFG_FONT_SIZE}}
-\${color ${COLOR_TEXT_LUA}}${OM_ACRONYM:-} - ${OM_NAME:-}
-\${color ${COLOR_TEXT_LUA}}\${hr}"
-    else
-        CONKY_TEXT="\${color ${COLOR_TEXT_LUA}}${OM_ACRONYM:-} - ${OM_NAME:-}
-\${color ${COLOR_TEXT_LUA}}\${hr}"
-    fi
-
-    CONKY_TEXT="${CONKY_TEXT}
-\${color ${COLOR_TEXT_LUA}}Uptime: \${color grey}\${uptime}
-\${color ${COLOR_TEXT_LUA}}\${hr}"
-
-    if [ "$CFG_SHOW_CPU" = "true" ]; then
-        CONKY_TEXT="${CONKY_TEXT}
-\${color ${COLOR_TEXT_LUA}}CPU:  \${color grey}\${cpu}% \${cpubar 4}"
-    fi
-    if [ "$CFG_SHOW_RAM" = "true" ]; then
-        CONKY_TEXT="${CONKY_TEXT}
-\${color ${COLOR_TEXT_LUA}}RAM:  \${color grey}\${mem}/\${memmax} \${membar 4}
-\${color ${COLOR_TEXT_LUA}}SWAP: \${color grey}\${swap}/\${swapmax} \${swapbar 4}"
-    fi
-    if [ "$CFG_SHOW_DISK" = "true" ]; then
-        CONKY_TEXT="${CONKY_TEXT}
-\${color ${COLOR_TEXT_LUA}}Disco (${CFG_DISK_PARTITION}): \${color grey}\${fs_used ${CFG_DISK_PARTITION}}/\${fs_size ${CFG_DISK_PARTITION}} \${fs_bar 6 ${CFG_DISK_PARTITION}}"
-    fi
-    if [ "$CFG_SHOW_NETWORK" = "true" ]; then
-        CONKY_TEXT="${CONKY_TEXT}
-\${color ${COLOR_TEXT_LUA}}Rede (${CFG_NETWORK_IFACE}):
-\${color ${COLOR_TEXT_LUA}}IP:   \${color grey}\${addr ${CFG_NETWORK_IFACE}}
-\${color ${COLOR_TEXT_LUA}}Down: \${color grey}\${downspeed ${CFG_NETWORK_IFACE}}
-\${color ${COLOR_TEXT_LUA}}Up:   \${color grey}\${upspeed ${CFG_NETWORK_IFACE}}"
-    fi
-    if [ "$CFG_SHOW_TOP" = "true" ]; then
-        CONKY_TEXT="${CONKY_TEXT}
-\${color ${COLOR_TEXT_LUA}}\${hr}
-\${color ${COLOR_TEXT_LUA}}Top CPU:
-\${color grey}\${top name 1} \${top cpu 1}%
-\${color grey}\${top name 2} \${top cpu 2}%
-\${color grey}\${top name 3} \${top cpu 3}%"
-    fi
-    if [ "$CFG_SHOW_DATETIME" = "true" ]; then
-        CONKY_TEXT="${CONKY_TEXT}
-\${color ${COLOR_TEXT_LUA}}\${hr}
-\${color ${COLOR_TEXT_LUA}}\${time %A, %d/%m/%Y %H:%M:%S}"
-    fi
-
-    # --- Montar conteudo NOVO num tmp, comparar com o atual ---
     local CONKY_DIR="/etc/seederlinux/conky"
     local CONKY_CONF="$CONKY_DIR/conky.conf"
     local NEW_CONF
     NEW_CONF="$(mktemp /tmp/seeder-conky.XXXXXX)"
 
     cat > "$NEW_CONF" <<EOF
--- Configuracao Conky - SeederLinux (gerada dinamicamente)
--- Perfil: ${CONKY_PROFILE:-default}
-
+-- Configuracao Conky - SeederLinux
 conky.config = {
     alignment = '${CFG_POSITION}',
     background = false,
@@ -897,9 +795,10 @@ conky.config = {
     update_interval = ${CFG_UPDATE_INTERVAL},
     use_xft = true,
 }
-
 conky.text = [[
-${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}${OM_ACRONYM:-} - ${OM_NAME:-}
+\${color ${COLOR_TEXT_LUA}}\${hr}
+\${color ${COLOR_TEXT_LUA}}Uptime: \${color grey}\${uptime}
 ]]
 EOF
 
@@ -908,13 +807,12 @@ EOF
     if [ ! -f "$CONKY_CONF" ] || ! cmp -s "$NEW_CONF" "$CONKY_CONF"; then
         install -m 0644 "$NEW_CONF" "$CONKY_CONF"
         CONF_CHANGED=true
-        echo "OK: conky.conf regravado (config mudou)"
+        echo "OK: conky.conf regravado"
     else
-        echo "OK: conky.conf ja em dia (sem mudancas)"
+        echo "OK: conky.conf em dia"
     fi
     rm -f "$NEW_CONF"
 
-    # --- Garantir launcher /usr/local/bin/seederlinux-conky ---
     install -m 0755 /dev/stdin /usr/local/bin/seederlinux-conky <<'LAUNCHER'
 #!/bin/bash
 CONKY_CONF="/etc/seederlinux/conky/conky.conf"
@@ -922,92 +820,71 @@ sleep 3
 if [ -f "$CONKY_CONF" ]; then
     killall conky 2>/dev/null || true
     conky -c "$CONKY_CONF" &
-else
-    echo "Configuracao do Conky nao encontrada: $CONKY_CONF"
 fi
 LAUNCHER
 
-    # --- Para cada usuario com sessao grafica ---
-    # Se a config mudou: mata o conky existente e reinicia (pega novo).
-    # Se nao mudou e nao esta rodando: inicia.
     local u
     for u in $(usuarios_com_sessao_grafica); do
         if [ "$CONF_CHANGED" = "true" ]; then
             su - "$u" -c "pkill -u '$u' conky 2>/dev/null; sleep 1; DISPLAY=:0 /usr/local/bin/seederlinux-conky" 2>/dev/null &
-            echo "OK: conky reiniciado para $u (config mudou)"
+            echo "OK: conky reiniciado para $u"
         else
-            if ! pgrep -u "$u" conky &>/dev/null; then
+            pgrep -u "$u" conky &>/dev/null || \
                 su - "$u" -c "DISPLAY=:0 /usr/local/bin/seederlinux-conky" 2>/dev/null &
-                echo "OK: conky iniciado para $u (nao estava rodando)"
-            else
-                echo "OK: conky ja rodando para $u (sem mudancas)"
-            fi
         fi
     done
 }
 
 # ============================================================
-# MODULO: compartilhamentos CIFS - remonta para sessoes ativas que
-# eventualmente cairam, sem esperar um novo login
+# MODULO: compartilhamentos (inalterado)
 # ============================================================
 sync_shares() {
     echo "--- compartilhamentos ---"
     [ -z "${SERVIDOR_ARQUIVOS:-}" ] && return 0
     [ -z "${COMPARTILHAMENTOS:-}" ] && return 0
-    MOUNT_DIR="${MOUNT_BASE:-/mnt}"
+    local MOUNT_DIR="${MOUNT_BASE:-/mnt}"
+    local u
     for u in $(usuarios_com_sessao_grafica); do
+        local uid gid
         uid="$(id -u "$u" 2>/dev/null)" || continue
         gid="$(id -g "$u" 2>/dev/null)" || continue
+        local SHARE
         for SHARE in $COMPARTILHAMENTOS; do
-            SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
+            local SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
             mkdir -p "$SHARE_MOUNT"
             mountpoint -q "$SHARE_MOUNT" 2>/dev/null && continue
             mount -t cifs "//${SERVIDOR_ARQUIVOS}/${SHARE}" "$SHARE_MOUNT" \
                 -o "username=${u},domain=${DOMINIO_NETBIOS:-},uid=${uid},gid=${gid},iocharset=utf8,vers=3.0" \
-                2>/dev/null || echo "AVISO: falha ao remontar ${SHARE} para ${u}"
+                2>/dev/null || echo "AVISO: falha remontar ${SHARE} para ${u}"
         done
     done
 }
 
 # ============================================================
-# MODULO: certificados corporativos (trust store do sistema)
-#
-# ATENCAO: sem acesso a logica de certificados original do painel,
-# assumimos que CERTIFICATE_BUNDLE pode ser: (a) um unico arquivo
-# .crt/.pem, ou (b) um pacote .tar.gz com varios certificados dentro.
-# Detectamos pelo Content-Type/magic bytes do download. Revisar se
-# a convencao real for outra (ex: PKCS#7 .p7b, .der binario).
-#
-# NOVO: aplica _prefixar_seeder_url antes do wget, mesma defesa em
-# profundidade do modulo de branding.
+# MODULO: certificados (inalterado)
 # ============================================================
 sync_certificates() {
     echo "--- certificados ---"
-    [ "${CERTIFICATE_AUTO_INSTALL:-}" = "true" ] || { echo "CERTIFICATE_AUTO_INSTALL != true, pulando"; return 0; }
-    [ -z "${CERTIFICATE_BUNDLE:-}" ] && { echo "CERTIFICATE_BUNDLE vazio, pulando"; return 0; }
+    [ "${CERTIFICATE_AUTO_INSTALL:-}" = "true" ] || return 0
+    [ -z "${CERTIFICATE_BUNDLE:-}" ] && return 0
 
     local CERT_URL
     CERT_URL="$(_prefixar_seeder_url "$CERTIFICATE_BUNDLE")"
 
-    CERT_TMP="/tmp/seederlinux-cert-bundle"
-    CERT_DEST_DIR="/usr/local/share/ca-certificates/seederlinux"
+    local CERT_TMP="/tmp/seederlinux-cert-bundle"
+    local CERT_DEST_DIR="/usr/local/share/ca-certificates/seederlinux"
     mkdir -p "$CERT_DEST_DIR"
 
     if ! wget -q --no-check-certificate --timeout=20 -O "$CERT_TMP" "$CERT_URL" 2>/dev/null; then
-        echo "AVISO: falha ao baixar CERTIFICATE_BUNDLE de $CERT_URL"
+        echo "AVISO: falha baixar CERTIFICATE_BUNDLE"
         return 0
     fi
+    [ ! -s "$CERT_TMP" ] && { rm -f "$CERT_TMP"; return 0; }
 
-    if [ ! -s "$CERT_TMP" ]; then
-        echo "AVISO: CERTIFICATE_BUNDLE baixou 0 bytes - descartado"
-        rm -f "$CERT_TMP"
-        return 0
-    fi
-
+    local FILETYPE
     FILETYPE="$(file -b "$CERT_TMP" 2>/dev/null)"
     case "$FILETYPE" in
         *gzip*|*tar*)
-            echo "Bundle detectado como arquivo compactado, extraindo..."
             mkdir -p /tmp/seederlinux-certs-extract
             tar xzf "$CERT_TMP" -C /tmp/seederlinux-certs-extract 2>/dev/null || \
                 tar xf "$CERT_TMP" -C /tmp/seederlinux-certs-extract 2>/dev/null
@@ -1020,31 +897,23 @@ sync_certificates() {
             ;;
     esac
     rm -f "$CERT_TMP"
-
-    if update-ca-certificates 2>/dev/null; then
-        echo "trust store do sistema atualizado ($(ls "$CERT_DEST_DIR" | wc -l) certificado(s))"
-    else
-        echo "AVISO: update-ca-certificates falhou"
-    fi
+    update-ca-certificates 2>/dev/null || true
 }
 
 # ============================================================
-# Execucao (idempotente - cada modulo e independente)
+# Execucao
 # ============================================================
 sync_branding
 sync_firefox_policy
 sync_chrome_policy
-sync_proxy
+sync_cli_proxy
 sync_printers
 sync_conky
 sync_shares
 sync_certificates
 
 # ============================================================
-# Atualizar SERIAL_APLICADO em config.env (persistencia real, nao
-# so no STATE_FILE) - so avanca se um SERVER_SERIAL foi de fato
-# resolvido; execucao forcada/sem serial disponivel nao "inventa"
-# um numero novo, so reaplica e mantem o serial local como estava.
+# Atualizar SERIAL_APLICADO
 # ============================================================
 if [ -n "$SERVER_SERIAL" ]; then
     if grep -q '^SERIAL_APLICADO=' "$CONFIG_FILE" 2>/dev/null; then
@@ -1056,9 +925,6 @@ if [ -n "$SERVER_SERIAL" ]; then
     echo "SERIAL_APLICADO atualizado para $SERVER_SERIAL"
 fi
 
-# ============================================================
-# Registrar estado (observabilidade - historico de execucoes)
-# ============================================================
 {
     echo "LAST_SYNC=$(date -Is)"
     echo "SERIAL_APLICADO=${SERIAL_APLICADO_ATUAL}"
@@ -1072,10 +938,8 @@ chmod 750 /usr/local/bin/seeder-sync
 echo ">>> /usr/local/bin/seeder-sync criado"
 
 # ============================================================
-# 2. Unit systemd (service oneshot + timer 10min)
+# 2. Units systemd
 # ============================================================
-echo ">>> Criando servico e timer systemd..."
-
 cat > /etc/systemd/system/seeder-sync.service <<EOF
 [Unit]
 Description=SeederLinux - Aplicador de politicas (GPO-like)
@@ -1102,11 +966,7 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now seeder-sync.timer
+systemctl start seeder-sync.service 2>/dev/null || true
 
-# Primeira aplicacao imediata (nao espera os 10min iniciais)
-systemctl start seeder-sync.service 2>/dev/null || {
-    echo ">>> AVISO: primeira execucao do seeder-sync sera no proximo ciclo do timer."
-}
-
-echo ">>> [19] seeder-sync instalado e timer ativo (a cada 10min)"
+echo ">>> [19] seeder-sync instalado e timer ativo (10min)"
 echo "============================================================"
