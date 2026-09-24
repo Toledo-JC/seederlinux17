@@ -1532,20 +1532,36 @@ function handleUpdateVariables($input) {
 
         $proxyPolicies = [$aptPolicy, $cliPolicy, $browserPolicy];
         $needsProxyUrl = false;
-        $needsAuth = false;
         $needsPac = false;
         foreach ($proxyPolicies as $p) {
             if (in_array($p, ['PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) $needsProxyUrl = true;
-            if ($p === 'PROXY_WITH_AUTH') $needsAuth = true;
             if ($p === 'PAC') $needsPac = true;
         }
         if ($aptPolicy === 'MIRROR_LOCAL_OM') $needsProxyUrl = false;
         if ($aptPolicy === 'MIRROR_LOCAL_SEEDER' || $aptPolicy === 'MIRROR_OFFICIAL') $needsProxyUrl = false;
 
-        if ($needsProxyUrl && $proxyUrl === '') jsonError('PROXY_URL e obrigatorio quando alguma policy usa proxy', 400);
-        if ($needsAuth && $proxyUser === '') jsonError('PROXY_USER e obrigatorio quando alguma policy = PROXY_WITH_AUTH', 400);
-        if ($needsAuth && $proxyPass === '') jsonError('PROXY_PASSWORD_B64 e obrigatorio quando alguma policy = PROXY_WITH_AUTH', 400);
         if ($needsPac && $pacUrl === '') jsonError('PAC_URL e obrigatorio quando alguma policy = PAC', 400);
+
+        // Validação multi-proxy: se alguma policy usar PROXY_WITH_AUTH, precisa
+        // existir ao menos 1 proxy cadastrado para a OM com username e password
+        // preenchidos (senão o bundle não conseguirá montar a URL com credenciais).
+        $needsAuth = in_array('PROXY_WITH_AUTH', [
+            $values['APT_POLICY'] ?? $aptPolicy,
+            $values['CLI_POLICY'] ?? $cliPolicy,
+            $values['BROWSER_POLICY'] ?? $browserPolicy
+        ], true);
+        if ($needsAuth) {
+            $authRow = Database::fetchOne(
+                "SELECT COUNT(*) AS n FROM om_proxies
+                 WHERE organization_id = ?
+                   AND username IS NOT NULL AND username <> ''
+                   AND password_enc IS NOT NULL AND password_enc <> ''",
+                [$orgId]
+            );
+            if ((int)($authRow['n'] ?? 0) === 0) {
+                jsonError('Alguma policy usa PROXY_WITH_AUTH, mas nenhum proxy da OM tem usuario e senha cadastrados. Cadastre um proxy autenticado antes de salvar.', 400);
+            }
+        }
         if ($aptPolicy === 'MIRROR_LOCAL_OM' && $mirrorOmUrl === '') jsonError('MIRROR_LOCAL_OM_URL e obrigatorio quando APT_POLICY = MIRROR_LOCAL_OM', 400);
         if ($aptPolicy === 'MIRROR_LOCAL_SEEDER') {
             if ($mirrorPath === '' || $mirrorPath[0] !== '/' || substr($mirrorPath, -1) !== '/') {
