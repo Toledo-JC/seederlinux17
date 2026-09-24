@@ -82,11 +82,9 @@ const superCategorySections = {
     ],
     'rede_proxy': [
         { title: 'Rede', vars: ['BASE_URL', 'SEEDER_SERVER', 'PRINT_SERVER', 'DNS_PRIMARIO', 'DNS_SECUNDARIO', 'DNS_INTERNET', 'NTP_SERVER'] },
-        { title: 'APT (repositórios de pacotes)', vars: ['APT_POLICY', 'MIRROR_LOCAL_SEEDER_PATH', 'MIRROR_LOCAL_OM_URL'] },
-        { title: 'CLI (wget/curl/git)', vars: ['CLI_POLICY'] },
-        { title: 'Browsers (Firefox/Chrome/Chromium)', vars: ['BROWSER_POLICY'] },
-        { title: 'Detalhes do proxy (compartilhado)', vars: ['PROXY_URL', 'PROXY_USER', 'PROXY_PASSWORD_B64', 'PAC_URL', 'NO_PROXY'] },
-        { title: 'Proxy (legado)', vars: ['PROXY_MODE', 'PROXY_HTTP', 'PROXY_PORTA'] }
+        { title: 'APT (repositórios de pacotes)', vars: ['APT_POLICY', 'APT_PROXY_NAME', 'MIRROR_LOCAL_SEEDER_PATH', 'MIRROR_LOCAL_OM_URL'] },
+        { title: 'CLI (wget/curl/git)', vars: ['CLI_POLICY', 'CLI_PROXY_NAME'] },
+        { title: 'Browsers (Firefox/Chrome/Chromium)', vars: ['BROWSER_POLICY', 'BROWSER_PROXY_NAME'] }
     ],
     'dominio_ad': [
         { title: 'Domínio', vars: ['DOMINIO', 'DOMINIO_NETBIOS', 'OU_PADRAO'] },
@@ -108,7 +106,7 @@ const superCategorySections = {
     'aplicacoes_nav': [
         { title: 'Navegadores', vars: ['HOMEPAGE', 'INSTALL_CHROME', 'INSTALL_CHROMIUM', 'INSTALL_FIREFOX52'] },
         { title: 'Ferramentas', vars: ['INSTALL_ONLYOFFICE', 'REMOVER_LIBREOFFICE'] },
-        { title: 'Java e Utilitários', vars: ['INSTALL_JAVA8', 'INSTALL_PASSWORD_CHANGER'] }
+        { title: 'Java e Utilitários', vars: ['INSTALL_JAVA8', 'INSTALL_PASSWORD_CHANGER', 'LEGACY_ALLOW_EXTERNAL'] }
     ],
     'estacoes_perifericos': [
         { title: 'Impressoras', vars: ['DEFAULT_PRINTER', 'PRINTERS'] },
@@ -121,27 +119,28 @@ const superCategorySections = {
 
 // Variables that should appear in a different super category than their original category maps to.
 const variableSuperOverride = {
-    'NO_PROXY': 'rede_proxy',
-    'PAC_URL': 'rede_proxy',
-    'PROXY_MODE': 'rede_proxy',
-    'PROXY_HTTP': 'rede_proxy',
-    'PROXY_PORTA': 'rede_proxy',
-    'PROXY_URL': 'rede_proxy',
-    'PROXY_USER': 'rede_proxy',
-    'PROXY_PASSWORD_B64': 'rede_proxy',
     'APT_POLICY': 'rede_proxy',
     'CLI_POLICY': 'rede_proxy',
     'BROWSER_POLICY': 'rede_proxy',
+    'APT_PROXY_NAME': 'rede_proxy',
+    'CLI_PROXY_NAME': 'rede_proxy',
+    'BROWSER_PROXY_NAME': 'rede_proxy',
     'MIRROR_LOCAL_SEEDER_PATH': 'rede_proxy',
     'MIRROR_LOCAL_OM_URL': 'rede_proxy',
     'NTP_SERVER': 'rede_proxy',
     'HOMEPAGE': 'aplicacoes_nav',
+    'LEGACY_ALLOW_EXTERNAL': 'aplicacoes_nav',
     'CERTIFICATE_BUNDLE': 'seguranca_agente',
     'SSH_GROUPS': 'seguranca_agente',
     'JAVA_EXCEPTIONS': 'seguranca_agente',
     'VNC_PASSWORD_B64': 'estacoes_perifericos',
     'DESKTOP_ENV': 'identidade'
 };
+
+// Variaveis legadas de proxy (nao aparecem mais na UI, mas continuam no banco)
+const deprecatedVariables = [
+    'PROXY_MODE', 'PROXY_HTTP', 'PROXY_PORTA', 'PROXY_URL', 'PROXY_USER', 'PROXY_PASSWORD_B64', 'PAC_URL', 'NO_PROXY'
+];
 
 // Campos dependentes: chave = var pai, valor = lista de vars que aparecem apenas se pai=true
 const dependentFields = {
@@ -186,7 +185,8 @@ const variableOptions = {
     'VNC_ENABLED': 'boolean',
     'REMOVER_LIBREOFFICE': 'boolean',
     'INSTALL_AGENT': 'boolean',
-    'AGENT_NO_CHECK_CERT': 'boolean'
+    'AGENT_NO_CHECK_CERT': 'boolean',
+    'LEGACY_ALLOW_EXTERNAL': 'boolean'
 };
 
 const conkyPositions = ['top_left', 'top_right', 'top_middle', 'middle_left', 'middle_right', 'bottom_left', 'bottom_right', 'bottom_middle'];

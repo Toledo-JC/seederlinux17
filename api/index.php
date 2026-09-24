@@ -33,7 +33,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit(0);
 
 $action = $_GET['action'] ?? '';
 $id = isset($_GET['id']) ? (int)$_GET['id'] : null;
-$orgId = isset($_GET['org_id']) ? (int)$_GET['org_id'] : null;
+$orgId = isset($_GET['org_id']) ? (int)$_GET['org_id'] : (isset($_GET['organization_id']) ? (int)$_GET['organization_id'] : null);
 $method = $_SERVER['REQUEST_METHOD'];
 
 // Parse input

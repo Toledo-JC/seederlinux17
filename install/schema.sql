@@ -210,7 +210,22 @@ INSERT INTO variable_definitions (name, placeholder, description, type, category
 ('AGENT_NO_CHECK_CERT', '{{AGENT_NO_CHECK_CERT}}', 'Permitir certificado autoassinado no agente', 'boolean', 'agente', FALSE, 'true', 151),
 
 -- Execution / Provisioning
-('NON_INTERACTIVE', '{{NON_INTERACTIVE}}', 'Modo nao-interativo: true para execucao automatica, false para permitir prompts do usuario', 'boolean', 'avancado', FALSE, 'true', 160)
+('NON_INTERACTIVE', '{{NON_INTERACTIVE}}', 'Modo nao-interativo: true para execucao automatica, false para permitir prompts do usuario', 'boolean', 'avancado', FALSE, 'true', 160),
+
+-- Proxy Policies (novo modelo multi-policy)
+('APT_POLICY', '{{APT_POLICY}}', 'Politica de proxy para apt-get: DIRECT, PROXY_NO_AUTH, PROXY_WITH_AUTH, MIRROR_LOCAL_SEEDER, MIRROR_LOCAL_OM, MIRROR_OFFICIAL', 'select', 'proxy', FALSE, 'DIRECT', 56),
+('CLI_POLICY', '{{CLI_POLICY}}', 'Politica de proxy para wget/curl/git: DIRECT, PROXY_NO_AUTH, PROXY_WITH_AUTH, PAC', 'select', 'proxy', FALSE, 'DIRECT', 57),
+('BROWSER_POLICY', '{{BROWSER_POLICY}}', 'Politica de proxy para browsers: DIRECT, PROXY_NO_AUTH, PROXY_WITH_AUTH, PAC, SYSTEM', 'select', 'proxy', FALSE, 'DIRECT', 58),
+('APT_PROXY_NAME', '{{APT_PROXY_NAME}}', 'Nome do proxy para APT (vazio = proxy padrao da OM)', 'string', 'proxy', FALSE, '', 59),
+('CLI_PROXY_NAME', '{{CLI_PROXY_NAME}}', 'Nome do proxy para CLI (vazio = proxy padrao da OM)', 'string', 'proxy', FALSE, '', 60),
+('BROWSER_PROXY_NAME', '{{BROWSER_PROXY_NAME}}', 'Nome do proxy para browsers (vazio = proxy padrao da OM)', 'string', 'proxy', FALSE, '', 61),
+('PROXY_USER', '{{PROXY_USER}}', 'Usuario do proxy (apenas se alguma policy = PROXY_WITH_AUTH)', 'string', 'proxy', FALSE, '', 62),
+('PROXY_PASSWORD_B64', '{{PROXY_PASSWORD_B64}}', 'Senha do proxy codificada em base64 (apenas se alguma policy = PROXY_WITH_AUTH)', 'password', 'proxy', FALSE, '', 63),
+('MIRROR_LOCAL_SEEDER_PATH', '{{MIRROR_LOCAL_SEEDER_PATH}}', 'Path do mirror local no SeederLinux (default: /mirror/)', 'string', 'proxy', FALSE, '/mirror/', 64),
+('MIRROR_LOCAL_OM_URL', '{{MIRROR_LOCAL_OM_URL}}', 'URL do mirror da OM (apenas se APT_POLICY = MIRROR_LOCAL_OM)', 'url', 'proxy', FALSE, '', 65),
+
+-- Legacy external packages
+('LEGACY_ALLOW_EXTERNAL', '{{LEGACY_ALLOW_EXTERNAL}}', 'Permite que a estacao baixe Firefox 52.7 / Java 8 diretamente da Mozilla/Adoptium quando nao estiverem hospedados no SeederLinux. Deixe desligado em ambientes isolados.', 'boolean', 'aplicacoes', FALSE, 'false', 118)
 ON CONFLICT (name) DO NOTHING;
 
 UPDATE variable_definitions
@@ -618,6 +633,40 @@ JOIN (VALUES
     ('Zorin', 'jammy', 'old')
 ) AS seed(name, version, status) ON seed.name = d.name
 ON CONFLICT (distro_id, version) DO NOTHING;
+
+-- ============================================================================
+-- Table 11: om_proxies (multiplos proxies nomeados por OM)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS om_proxies (
+    id              SERIAL PRIMARY KEY,
+    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name            VARCHAR(64) NOT NULL,
+    url             TEXT NOT NULL DEFAULT '',
+    username        VARCHAR(128) DEFAULT '',
+    password_enc    TEXT DEFAULT '',
+    pac_url         TEXT DEFAULT '',
+    no_proxy        TEXT DEFAULT '',
+    is_default      BOOLEAN NOT NULL DEFAULT false,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_om_proxies_org_name
+    ON om_proxies (organization_id, name);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_om_proxies_org_default
+    ON om_proxies (organization_id)
+    WHERE is_default = true;
+
+CREATE INDEX IF NOT EXISTS idx_om_proxies_org
+    ON om_proxies (organization_id);
+
+-- Seed: novas variaveis de policy para todas as OMs existentes
+INSERT INTO organization_variables (organization_id, variable_id, value)
+SELECT o.id, vd.id, vd.default_value
+FROM organizations o
+CROSS JOIN variable_definitions vd
+WHERE vd.name IN ('APT_POLICY', 'CLI_POLICY', 'BROWSER_POLICY', 'APT_PROXY_NAME', 'CLI_PROXY_NAME', 'BROWSER_PROXY_NAME', 'PROXY_USER', 'PROXY_PASSWORD_B64', 'MIRROR_LOCAL_SEEDER_PATH', 'MIRROR_LOCAL_OM_URL', 'LEGACY_ALLOW_EXTERNAL')
+ON CONFLICT (organization_id, variable_id) DO NOTHING;
 
 -- ============================================================================
 -- Permissions
