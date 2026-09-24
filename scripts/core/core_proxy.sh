@@ -61,7 +61,6 @@ echo ">>> Proxies cadastrados: $PROXY_COUNT"
 # ============================================================
 # Helper: resolver proxy por nome -> URL com user:pass
 # ============================================================
-# Retorna a URL completa (com credenciais se houver) ou vazio.
 _resolver_proxy_url() {
     local name="$1"
     [ -z "$name" ] && return 1
@@ -106,7 +105,6 @@ _resolver_proxy_url() {
 # ============================================================
 # Helper: NO_PROXY específico de um proxy
 # ============================================================
-# Cada proxy pode ter seu próprio no_proxy. Retorna o valor (ou vazio).
 _resolver_proxy_no_proxy() {
     local name="$1"
     [ -z "$name" ] && return 1
@@ -139,25 +137,10 @@ _resolver_proxy_nome_efetivo() {
 # ============================================================
 # Helper: montar NO_PROXY final
 # ============================================================
-# Regra:
-#   - Sempre inclui localhost e 127.0.0.1
-#   - Inclui o hostname e IP do SEEDER_SERVER
-#   - Inclui todos os DCs (DC_IP + DC_IP_LIST)
-#   - Inclui o domínio (para cobrir subdomínios que clientes
-#     entendem - Firefox aceita ".dominio", wget não, mas não faz mal)
-#   - Anexa o NO_PROXY específico do proxy (se houver)
-#
-# NOTA sobre wildcards:
-#   apt/wget/curl/git NÃO respeitam wildcards tipo "*.intraer".
-#   Por isso incluímos o domínio literal ".comara.intraer" - alguns
-#   clientes (Firefox) interpretam como sufixo; os que não interpretam
-#   simplesmente ignoram. IPs e hostnames exatos são o mecanismo
-#   confiável.
 _build_no_proxy() {
     local extra="$1"
     local base="localhost,127.0.0.1"
 
-    # Seeder hostname + IP
     if [ -n "$SEEDER_SERVER" ]; then
         local host
         host="$(echo "$SEEDER_SERVER" | sed -E 's|https?://([^/]+).*|\1|')"
@@ -169,12 +152,10 @@ _build_no_proxy() {
         fi
     fi
 
-    # Domínio
     if [ -n "$DOMINIO" ]; then
         base="${base},.${DOMINIO}"
     fi
 
-    # DC principal
     if [ -n "$DC_IP" ]; then
         case ",$base," in
             *",$DC_IP,"*) ;;
@@ -182,7 +163,6 @@ _build_no_proxy() {
         esac
     fi
 
-    # DCs adicionais (DC_IP_LIST pode ser "ip1,ip2" ou "ip1 ip2")
     if [ -n "$DC_IP_LIST" ]; then
         local dc
         for dc in $(echo "$DC_IP_LIST" | tr ',' ' '); do
@@ -194,7 +174,6 @@ _build_no_proxy() {
         done
     fi
 
-    # Extra específico do proxy
     if [ -n "$extra" ]; then
         base="${base},${extra}"
     fi
@@ -205,21 +184,17 @@ _build_no_proxy() {
 # ============================================================
 # Helper: escrever proxy em /etc/environment
 # ============================================================
-# Preserva todo o resto do arquivo, remove linhas de proxy antigas e
-# anexa as novas.
 _escrever_environment_proxy() {
     local url="$1"
     local no_proxy="$2"
 
-    # Garante que o arquivo existe
     touch /etc/environment
 
-    # Remove linhas de proxy antigas (idempotente)
     sed -i '/^http_proxy=/d;/^https_proxy=/d;/^ftp_proxy=/d;/^no_proxy=/d' /etc/environment 2>/dev/null || true
     sed -i '/^HTTP_PROXY=/d;/^HTTPS_PROXY=/d;/^FTP_PROXY=/d;/^NO_PROXY=/d' /etc/environment 2>/dev/null || true
     sed -i '/^all_proxy=/d;/^ALL_PROXY=/d' /etc/environment 2>/dev/null || true
+    sed -i '/^# Proxy configurado por SeederLinux/d' /etc/environment 2>/dev/null || true
 
-    # Anexa novas
     {
         echo ""
         echo "# Proxy configurado por SeederLinux (core_proxy.sh)"
@@ -235,7 +210,6 @@ _escrever_environment_proxy() {
         fi
     } >> /etc/environment
 
-    # Modo canônico
     chmod 644 /etc/environment
 
     echo ">>> /etc/environment atualizado"
@@ -251,8 +225,7 @@ _limpar_environment_proxy() {
         sed -i '/^http_proxy=/d;/^https_proxy=/d;/^ftp_proxy=/d;/^no_proxy=/d' /etc/environment 2>/dev/null || true
         sed -i '/^HTTP_PROXY=/d;/^HTTPS_PROXY=/d;/^FTP_PROXY=/d;/^NO_PROXY=/d' /etc/environment 2>/dev/null || true
         sed -i '/^all_proxy=/d;/^ALL_PROXY=/d' /etc/environment 2>/dev/null || true
-        # Remove o comentário marcador para não acumular lixo
-        sed -i '/^# Proxy configurado por SeederLinux (core_proxy.sh)$/d' /etc/environment 2>/dev/null || true
+        sed -i '/^# Proxy configurado por SeederLinux/d' /etc/environment 2>/dev/null || true
         echo ">>> /etc/environment limpo (sem proxy)"
     fi
 }
@@ -300,16 +273,6 @@ case "$CLI_POLICY" in
         _limpar_environment_proxy
         ;;
 esac
-
-# ============================================================
-# Nota sobre o agente Seeder
-# ============================================================
-# O agente Seeder NAO respeita /etc/environment para decidir se usa
-# proxy - ele remove as variaveis do proprio processo antes de fazer
-# qualquer request (ver disable_proxy_for_process() no agent.py).
-# Isso e' intencional: o agente so fala com o SEEDER_SERVER, que esta
-# sempre no NO_PROXY, e nunca deve passar por proxy corporativo.
-# Nada a fazer aqui para o agente.
 
 echo ">>> [17] Proxy de CLI configurado!"
 echo "============================================================"
