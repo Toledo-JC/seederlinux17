@@ -8,29 +8,13 @@
 # seederlinux-logoff, seeder-sync) apos reboot, quando as variaveis
 # exportadas no bundle ja nao existem mais na memoria.
 #
-# Variaveis sensiveis (senha VNC, usuario admin do AD) NAO sao escritas
-# neste arquivo. Elas sao gravadas em /etc/seederlinux/secrets.env (perm 600)
-# apenas pelo core_vnc.sh e core_domain.sh respectivamente.
+# MODELO MULTI-PROXY:
+#   A OM pode ter 0..N proxies nomeados. As 3 politicas (APT/CLI/BROWSER)
+#   referenciam um proxy pelo nome. config.env guarda o array de proxies
+#   SEM as senhas; as senhas vao para /etc/seederlinux/secrets.env (600).
 #
-# CORRECOES NESTA VERSAO:
-#   1. URLs de assets (WALLPAPER_URL, WALLPAPER_LOGIN_URL, LOGO_URL,
-#      GREETER_URL) sao NORMALIZADAS para forma ABSOLUTA antes de serem
-#      gravadas no config.env. Antes, iam como caminho relativo
-#      ("/assets/wallpapers/xxx.jpg"), o que quebrava o seeder-sync:
-#      ele faz wget DIRETO com o valor lido do config.env, e wget nao
-#      aceita URL sem scheme. Resultado pratico: trocar uma imagem no
-#      painel nunca chegava na estacao - o sync falhava silenciosamente
-#      a cada ciclo. O core_branding.sh prefixava internamente para uso
-#      proprio, mas o que ficava gravado no config.env era o valor cru.
-#   2. SEEDER_SERVER e BASE_URL passam a ser declaradas como variaveis
-#      no topo (antes eram literais so no here-doc do config.env), para
-#      que a normalizacao de URLs possa usa-las.
-#   3. Removida a duplicacao do bloco "NTP_SERVER=${NTP_SERVER#http://}"
-#      que aparecia duas vezes seguidas no script original (efeito
-#      pratico zero, mas confundia leitura).
-#   4. Comentario explicito sobre SERIAL_APLICADO no config.env gerado,
-#      para deixar claro que o agente (nao o bundle) e' quem avanca o
-#      serial apos o provisionamento completo.
+# Variaveis sensiveis (senha VNC, senha de proxy) NAO sao escritas em
+# config.env. Vao em secrets.env, com permissao 600.
 #
 # Os placeholders VARIAVEL sao substituidos automaticamente
 # pelo sistema na geracao do bundle.
@@ -48,93 +32,68 @@ echo "============================================================"
 mkdir -p /etc/seederlinux
 
 CONFIG_FILE="/etc/seederlinux/config.env"
+SECRETS_FILE="/etc/seederlinux/secrets.env"
 
 # ============================================================
-# Variaveis usadas na NORMALIZACAO (prefixacao de URLs)
+# Normalizacao de URLs de assets
 # ============================================================
-# Vem do backend com substituicao de placeholder. Sao usadas apenas
-# aqui, para montar as URLs absolutas que vao para o config.env.
 SEEDER_SERVER="{{SEEDER_SERVER}}"
-
-# Normalizacao defensiva: se o backend devolver algo com barra no final,
-# removemos para nao gerar "https://host//assets/...".
 SEEDER_SERVER="${SEEDER_SERVER%/}"
 
-# URLs de assets, recebidas como podem vir relativas ("/assets/...") ou
-# absolutas ("https://host/assets/...").
 WALLPAPER_URL="{{WALLPAPER_URL}}"
 WALLPAPER_LOGIN_URL="{{WALLPAPER_LOGIN_URL}}"
 LOGO_URL="{{LOGO_URL}}"
 GREETER_URL="{{GREETER_URL}}"
 
-# ============================================================
-# Normalizacao de URLs: prefixar com SEEDER_SERVER quando relativa
-# ============================================================
-# Regra:
-#   - Se a URL ja comeca com "http://" ou "https://", mantemos intacta.
-#   - Se comeca com "/", e' relativa ao host do Seeder: prefixamos.
-#   - Se nao comeca com "/" (ex: "assets/xxx.jpg"), tratamos como
-#     relativa tambem e prefixamos com "/".
-#   - Vazio continua vazio (o core_branding.sh e o sync lidam com isso).
-#
-# Sem essa normalizacao, o config.env fica com URL sem scheme, e o
-# seeder-sync (que le direto daqui) falha no wget a cada 10min.
 echo ">>> Normalizando URLs de assets para forma absoluta..."
 for url_var in WALLPAPER_URL WALLPAPER_LOGIN_URL LOGO_URL GREETER_URL; do
     url_val="${!url_var}"
-
-    # Vazio: nao mexe
-    if [ -z "$url_val" ] || [ "$url_val" = "" ]; then
-        continue
+    [ -z "$url_val" ] && continue
+    echo "$url_val" | grep -qE '^https?://[^/]+/' && continue
+    if [ -n "$SEEDER_SERVER" ]; then
+        if echo "$url_val" | grep -q '^/'; then
+            eval "${url_var}=\"${SEEDER_SERVER}${url_val}\""
+        else
+            eval "${url_var}=\"${SEEDER_SERVER}/${url_val}\""
+        fi
     fi
-
-    # Ja e' absoluta: nao mexe
-    if echo "$url_val" | grep -qE '^https?://[^/]+/'; then
-        echo ">>>   $url_var: ja absoluta ($url_val)"
-        continue
-    fi
-
-    # E' relativa: prefixa com SEEDER_SERVER
-    if [ -z "$SEEDER_SERVER" ] || [ "$SEEDER_SERVER" = "" ]; then
-        echo ">>>   AVISO: $url_var e' relativa ('$url_val') mas SEEDER_SERVER esta vazio."
-        echo ">>>   Mantendo como esta (sera tratado pelo core_branding.sh se possivel)."
-        continue
-    fi
-
-    if echo "$url_val" | grep -q '^/'; then
-        eval "${url_var}=\"${SEEDER_SERVER}${url_val}\""
-    else
-        eval "${url_var}=\"${SEEDER_SERVER}/${url_val}\""
-    fi
-    echo ">>>   $url_var: ${url_val} -> ${!url_var}"
 done
 
 # ============================================================
-# NTP_SERVER: remover protocolo se a OM cadastrou com http:// ou
-# https:// (a OM as vezes cadastra "http://host" achando que e' URL;
-# chrony/ntp esperam so hostname ou IP).
+# NTP_SERVER: remover protocolo
 # ============================================================
 NTP_SERVER="{{NTP_SERVER}}"
 NTP_SERVER="${NTP_SERVER#http://}"
 NTP_SERVER="${NTP_SERVER#https://}"
 
 # ============================================================
-# SERIAL_APLICADO — ESTADO LOCAL da estacao
+# Politicas de proxy (multi-proxy)
 # ============================================================
-# E' o ultimo serial de configuracao que a estacao aplicou com sucesso,
-# NAO um valor da OM. Se este script rodar de novo (bundle regenerado e
-# reaplicado numa estacao ja provisionada), NAO podemos simplesmente
-# sobrescrever com "0" de novo - isso faria a estacao "esquecer" que
-# ja estava em dia, forcaria o seeder-sync a reaplicar tudo, e ainda
-# faria o agente reenviar serial_applied=0 ao servidor no proximo
-# check-in, o que resulta em update_available=true sempre, causando
-# re-provisionamento em loop.
-#
-# Portanto: preservamos o valor existente se ja houver um no
-# config.env. So usamos "0" na primeira geracao (estacao virgem, sem
-# config.env ainda). Quem AVANCA o serial ao longo do tempo e' o
-# seeder-sync (apos reaplicar as politicas com sucesso) ou o agente
-# (apos rodar o bundle completo em estacao virgem).
+APT_POLICY="{{APT_POLICY}}"
+APT_PROXY_NAME="{{APT_PROXY_NAME}}"
+CLI_POLICY="{{CLI_POLICY}}"
+CLI_PROXY_NAME="{{CLI_PROXY_NAME}}"
+BROWSER_POLICY="{{BROWSER_POLICY}}"
+BROWSER_PROXY_NAME="{{BROWSER_PROXY_NAME}}"
+MIRROR_LOCAL_SEEDER_PATH="{{MIRROR_LOCAL_SEEDER_PATH}}"
+MIRROR_LOCAL_OM_URL="{{MIRROR_LOCAL_OM_URL}}"
+
+[ -z "$APT_POLICY" ] && APT_POLICY="DIRECT"
+[ -z "$CLI_POLICY" ] && CLI_POLICY="DIRECT"
+[ -z "$BROWSER_POLICY" ] && BROWSER_POLICY="DIRECT"
+[ -z "$MIRROR_LOCAL_SEEDER_PATH" ] && MIRROR_LOCAL_SEEDER_PATH="/mirror/"
+
+# Array de proxies (vem do header do bundle)
+PROXY_COUNT="${PROXY_COUNT:-0}"
+PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
+
+echo ">>> APT_POLICY: $APT_POLICY"
+echo ">>> CLI_POLICY: $CLI_POLICY"
+echo ">>> BROWSER_POLICY: $BROWSER_POLICY"
+echo ">>> Proxies: $PROXY_COUNT (default: ${PROXY_DEFAULT_NAME:-<nenhum>})"
+
+# ============================================================
+# Preservar SERIAL_APLICADO
 # ============================================================
 SERIAL_APLICADO_ATUAL="0"
 if [ -f "$CONFIG_FILE" ]; then
@@ -144,11 +103,8 @@ fi
 echo ">>> SERIAL_APLICADO preservado: $SERIAL_APLICADO_ATUAL"
 
 # ============================================================
-# Escrever config.env
+# Escrever config.env (cabecalho + variaveis + array de proxies)
 # ============================================================
-# Todas as variaveis vem de placeholders substituidos pelo backend.
-# As URLs ja foram normalizadas acima. SERIAL_APLICADO e' calculado
-# localmente (preservando o valor existente).
 cat > "$CONFIG_FILE" <<EOF
 # SeederLinux Lite - Configuracao Persistente
 # NAO EDITAR MANUALMENTE - gerado pelo core_config.sh
@@ -173,16 +129,17 @@ AUTH_METHOD="{{AUTH_METHOD}}"
 OFFLINE_AUTH_ENABLED="{{OFFLINE_AUTH_ENABLED}}"
 OFFLINE_AUTH_DAYS="{{OFFLINE_AUTH_DAYS}}"
 
-# Rede e Proxy
-PROXY_HTTP="{{PROXY_HTTP}}"
-PROXY_PORTA="{{PROXY_PORTA}}"
-PROXY_URL="{{PROXY_URL}}"
-PROXY_MODE="{{PROXY_MODE}}"
-PAC_URL="{{PAC_URL}}"
-NO_PROXY="{{NO_PROXY}}"
+# Politicas de proxy (modelo multi-proxy)
+APT_POLICY="${APT_POLICY}"
+APT_PROXY_NAME="${APT_PROXY_NAME}"
+CLI_POLICY="${CLI_POLICY}"
+CLI_PROXY_NAME="${CLI_PROXY_NAME}"
+BROWSER_POLICY="${BROWSER_POLICY}"
+BROWSER_PROXY_NAME="${BROWSER_PROXY_NAME}"
+MIRROR_LOCAL_SEEDER_PATH="${MIRROR_LOCAL_SEEDER_PATH}"
+MIRROR_LOCAL_OM_URL="${MIRROR_LOCAL_OM_URL}"
 
-# URLs e Servidores (URLs de assets em forma absoluta - ver comentario
-# no topo do script sobre normalizacao)
+# URLs e Servidores
 BASE_URL="{{BASE_URL}}"
 HOMEPAGE="{{HOMEPAGE}}"
 OCS_SERVER="{{OCS_SERVER}}"
@@ -205,7 +162,7 @@ THEME="{{THEME}}"
 DESKTOP_ENV="{{DESKTOP_ENV}}"
 DISPLAY_MANAGER="{{DISPLAY_MANAGER}}"
 
-# Aplicacoes e Funcionalidades (toggles individuais)
+# Aplicacoes e Funcionalidades
 INSTALL_ONLYOFFICE="{{INSTALL_ONLYOFFICE}}"
 INSTALL_CHROME="{{INSTALL_CHROME}}"
 INSTALL_CHROMIUM="{{INSTALL_CHROMIUM}}"
@@ -238,19 +195,81 @@ CERTIFICATE_AUTO_INSTALL="{{CERTIFICATE_AUTO_INSTALL}}"
 CONKY_PROFILE="{{CONKY_PROFILE}}"
 CONKY_CONFIG='{{CONKY_CONFIG}}'
 
-# Servidor SeederLinux (usado pelo agente Python e por consumidores
-# que precisam montar URLs relativas)
+# Servidor SeederLinux
 SEEDER_SERVER="${SEEDER_SERVER}"
-
-# Estado local (GPO) - NAO e uma variavel da OM, e o progresso desta
-# estacao. Preservado entre regeneracoes do bundle (ver logica acima).
-# O agente envia este valor ao servidor no check-in (serial_applied);
-# o seeder-sync o avanca apos reaplicar as politicas.
-SERIAL_APLICADO="${SERIAL_APLICADO_ATUAL}"
 EOF
 
-chmod 644 "$CONFIG_FILE"
+# ============================================================
+# Anexar array de proxies (sem senhas - vao em secrets.env)
+# ============================================================
+{
+    echo ""
+    echo "# Array de proxies da OM (senhas em secrets.env)"
+    echo "PROXY_COUNT=\"${PROXY_COUNT}\""
+    echo "PROXY_DEFAULT_NAME=\"${PROXY_DEFAULT_NAME}\""
+    echo ""
 
-echo ">>> Configuracao persistente gravada em $CONFIG_FILE"
+    i=1
+    while [ "$i" -le "$PROXY_COUNT" ] 2>/dev/null; do
+        v_name="PROXY_${i}_NAME"
+        v_url="PROXY_${i}_URL"
+        v_user="PROXY_${i}_USER"
+        v_pac="PROXY_${i}_PAC_URL"
+        v_no_proxy="PROXY_${i}_NO_PROXY"
+
+        # Escapar valores entre aspas duplas (\ e ")
+        name_v="$(printf '%s' "${!v_name}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        url_v="$(printf '%s' "${!v_url}"  | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        user_v="$(printf '%s' "${!v_user}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        pac_v="$(printf '%s' "${!v_pac}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        no_proxy_v="$(printf '%s' "${!v_no_proxy}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+
+        echo "PROXY_${i}_NAME=\"${name_v}\""
+        echo "PROXY_${i}_URL=\"${url_v}\""
+        echo "PROXY_${i}_USER=\"${user_v}\""
+        echo "PROXY_${i}_PAC_URL=\"${pac_v}\""
+        echo "PROXY_${i}_NO_PROXY=\"${no_proxy_v}\""
+        i=$((i+1))
+    done
+
+    echo ""
+    echo "# Estado local (GPO) - progresso desta estacao"
+    echo "SERIAL_APLICADO=\"${SERIAL_APLICADO_ATUAL}\""
+} >> "$CONFIG_FILE"
+
+chmod 644 "$CONFIG_FILE"
+echo ">>> config.env gravado em $CONFIG_FILE"
+
+# ============================================================
+# Atualizar secrets.env com as senhas dos proxies
+# ============================================================
+# Preserva o que ja existe (VNC_PASSWORD_SET etc), so substitui as
+# linhas PROXY_K_PASS. Arquivo criado com perm 600.
+TMP_SECRETS="$(mktemp /tmp/seeder-secrets.XXXXXX)"
+
+if [ -f "$SECRETS_FILE" ]; then
+    grep -v '^PROXY_[0-9]\+_PASS=' "$SECRETS_FILE" > "$TMP_SECRETS" 2>/dev/null || : > "$TMP_SECRETS"
+else
+    : > "$TMP_SECRETS"
+fi
+
+i=1
+while [ "$i" -le "$PROXY_COUNT" ] 2>/dev/null; do
+    v_pass_b64="PROXY_${i}_PASS_B64"
+    pass_b64="${!v_pass_b64}"
+    pass=""
+    if [ -n "$pass_b64" ]; then
+        pass="$(printf '%s' "$pass_b64" | base64 -d 2>/dev/null)" || pass=""
+    fi
+    # Usa printf %q do bash para escape shell-safe
+    pass_escaped="$(printf '%q' "$pass")"
+    printf 'PROXY_%d_PASS=%s\n' "$i" "$pass_escaped" >> "$TMP_SECRETS"
+    i=$((i+1))
+done
+
+install -m 0600 "$TMP_SECRETS" "$SECRETS_FILE"
+rm -f "$TMP_SECRETS"
+
+echo ">>> secrets.env atualizado (${PROXY_COUNT} senha(s) de proxy)"
 echo ">>> [13.5] Arquivo de configuracao criado!"
 echo "============================================================"
