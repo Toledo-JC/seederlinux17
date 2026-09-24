@@ -5,6 +5,7 @@
 
 let currentUser = null;
 let currentOrgId = null;
+let omProxyNames = []; // nomes dos proxies cadastrados da OM (para datalist e validação de policy)
 let organizations = [];
 let allVariables = [];
 let activeCategory = 'identidade';
@@ -1330,6 +1331,8 @@ function renderVariables(vars) {
     el.innerHTML = html;
     if (activeCategory === 'rede_proxy') {
         loadOmProxies(currentOrgId);
+        updateProxyPolicyOptions(omProxyNames.length > 0);
+        updatePolicyFieldVisibility();
     }
     updateVariableSearchCount();
 }
@@ -1767,8 +1770,132 @@ function renderTypedInput(v) {
         return `<input type="password" data-var-id="${varId}" data-b64-encode="${isB64Pwd ? '1' : '0'}" value="${Utils.escapeHtml(val)}" class="var-input"${hint}>${alertBadge}`;
     }
 
+    // Campos *_PROXY_NAME: autocomplete com nomes dos proxies cadastrados
+    if (v.name === 'APT_PROXY_NAME' || v.name === 'CLI_PROXY_NAME' || v.name === 'BROWSER_PROXY_NAME') {
+        const listId = `datalist-${v.name}`;
+        const options = omProxyNames.length
+            ? omProxyNames.map(n => `<option value="${Utils.escapeHtml(n)}">`).join('')
+            : '<option value="" disabled>(nenhum proxy cadastrado - clique em + Novo Proxy)</option>';
+        return `<input type="text" data-var-id="${varId}" value="${Utils.escapeHtml(val)}" class="var-input" list="${listId}" placeholder="(vazio = proxy padrão da OM)">
+            <datalist id="${listId}">${options}</datalist>`;
+    }
+
     return `<input type="text" data-var-id="${varId}" value="${Utils.escapeHtml(val)}" class="var-input">`;
 }
+
+// ============ PROXY POLICY UX (Tarefas 3 e 4) ============
+
+// Encontra o elemento .var-row (ou wrapper) que contém o input de uma variável pelo nome
+function findVarRowByVarName(varName) {
+    const v = allVariables.find(x => x.name === varName);
+    if (!v) return null;
+    const input = document.querySelector(`[data-var-id="${v.id}"]`);
+    if (!input) return null;
+    return input.closest('.var-row') || input.closest('.var-row-wrapper') || null;
+}
+
+// Tarefa 3: desabilitar opções PROXY_* nos selects de policy quando não há proxy cadastrado
+function updateProxyPolicyOptions(hasProxies) {
+    const policyVarNames = ['APT_POLICY', 'CLI_POLICY', 'BROWSER_POLICY'];
+    policyVarNames.forEach(policyName => {
+        const v = allVariables.find(x => x.name === policyName);
+        if (!v) return;
+        const select = document.querySelector(`select[data-var-id="${v.id}"]`);
+        if (!select) return;
+        select.querySelectorAll('option').forEach(opt => {
+            if (opt.value === 'PROXY_NO_AUTH' || opt.value === 'PROXY_WITH_AUTH') {
+                opt.disabled = !hasProxies;
+                opt.title = hasProxies ? '' : 'Cadastre um proxy para habilitar esta opção';
+            }
+        });
+        // Se a opção selecionada ficou disabled, resetar para DIRECT
+        if (select.selectedOptions[0] && select.selectedOptions[0].disabled) {
+            select.value = 'DIRECT';
+            const v2 = allVariables.find(x => x.name === policyName);
+            if (v2) v2.current_value = 'DIRECT';
+        }
+        // Adiciona ou remove texto de ajuda sob o select
+        let help = select.parentElement.querySelector('.proxy-policy-help');
+        if (!hasProxies) {
+            if (!help) {
+                help = document.createElement('p');
+                help.className = 'proxy-policy-help text-amber-400 text-xs mt-1';
+                help.textContent = "Cadastre um proxy em 'Proxies cadastrados' para habilitar as opções de proxy.";
+                select.parentElement.appendChild(help);
+            }
+        } else if (help) {
+            help.remove();
+        }
+    });
+    // Recalcular visibilidade já que uma policy pode ter sido resetada
+    updatePolicyFieldVisibility();
+}
+
+// Tarefa 4: visibilidade condicional dos campos baseado nas policies
+function updatePolicyFieldVisibility() {
+    const aptPolicy = getVarCurrentValue('APT_POLICY');
+    const cliPolicy = getVarCurrentValue('CLI_POLICY');
+    const browserPolicy = getVarCurrentValue('BROWSER_POLICY');
+
+    // APT_POLICY
+    const aptProxyName = findVarRowByVarName('APT_PROXY_NAME');
+    const mirrorSeederPath = findVarRowByVarName('MIRROR_LOCAL_SEEDER_PATH');
+    const mirrorOmUrl = findVarRowByVarName('MIRROR_LOCAL_OM_URL');
+
+    if (aptPolicy === 'MIRROR_LOCAL_SEEDER') {
+        showRow(mirrorSeederPath, true);
+        showRow(aptProxyName, false);
+        showRow(mirrorOmUrl, false);
+    } else if (aptPolicy === 'MIRROR_LOCAL_OM') {
+        showRow(mirrorOmUrl, true);
+        showRow(aptProxyName, false);
+        showRow(mirrorSeederPath, false);
+    } else if (aptPolicy === 'PROXY_NO_AUTH' || aptPolicy === 'PROXY_WITH_AUTH') {
+        showRow(aptProxyName, true);
+        showRow(mirrorSeederPath, false);
+        showRow(mirrorOmUrl, false);
+    } else {
+        // DIRECT, MIRROR_OFFICIAL, etc.
+        showRow(aptProxyName, false);
+        showRow(mirrorSeederPath, false);
+        showRow(mirrorOmUrl, false);
+    }
+
+    // CLI_POLICY
+    const cliProxyName = findVarRowByVarName('CLI_PROXY_NAME');
+    showRow(cliProxyName, cliPolicy === 'PROXY_NO_AUTH' || cliPolicy === 'PROXY_WITH_AUTH');
+
+    // BROWSER_POLICY
+    const browserProxyName = findVarRowByVarName('BROWSER_PROXY_NAME');
+    showRow(browserProxyName, browserPolicy === 'PROXY_NO_AUTH' || browserPolicy === 'PROXY_WITH_AUTH');
+}
+
+function getVarCurrentValue(varName) {
+    const v = allVariables.find(x => x.name === varName);
+    if (!v) return '';
+    const el = document.querySelector(`[data-var-id="${v.id}"]`);
+    if (el && el.tagName === 'SELECT') return el.value;
+    if (el) return el.value;
+    return v.current_value || '';
+}
+
+function showRow(rowEl, show) {
+    if (!rowEl) return;
+    rowEl.style.display = show ? '' : 'none';
+}
+
+// Listener delegado: recalcula visibilidade quando um select de policy muda
+document.addEventListener('change', (e) => {
+    if (!e.target || e.target.tagName !== 'SELECT' || !e.target.dataset.varId) return;
+    const v = allVariables.find(x => String(x.id) === String(e.target.dataset.varId));
+    if (!v) return;
+    if (v.name === 'APT_POLICY' || v.name === 'CLI_POLICY' || v.name === 'BROWSER_POLICY') {
+        if (v) v.current_value = e.target.value;
+        updatePolicyFieldVisibility();
+    }
+});
+window.updateProxyPolicyOptions = updateProxyPolicyOptions;
+window.updatePolicyFieldVisibility = updatePolicyFieldVisibility;
 
 // ============ CONKY EXPANDED PANEL ============
 function renderConkyPanel(v, varId, val) {
@@ -3134,7 +3261,8 @@ async function loadStations() {
     const el = document.getElementById('stations-tbody');
     if (!el) return;
 
-    el.innerHTML = res.data.length ? res.data.map(s => {
+    const stations = res.data.stations || res.data || [];
+    el.innerHTML = stations.length ? stations.map(s => {
         const connBadge = { online: 'badge-success', delayed: 'badge-warning', never: 'badge-secondary' }[s.connection_status] || 'badge-secondary';
         const connLabel = { online: 'Online', delayed: 'Atrasada', never: 'Nunca' }[s.connection_status] || '-';
         return `
@@ -3632,6 +3760,8 @@ async function loadOmProxies(orgId) {
         const res = await API.get('om-proxies', { organization_id: orgId });
         if (!res.success) { Toast.error(res.error || 'Erro ao carregar proxies'); return; }
         const proxies = res.data || [];
+        omProxyNames = proxies.map(p => p.name).filter(Boolean);
+        updateProxyPolicyOptions(omProxyNames.length > 0);
         const el = document.getElementById('om-proxies-list');
         if (!el) return;
         if (!proxies.length) {
