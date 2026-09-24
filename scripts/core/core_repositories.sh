@@ -197,7 +197,7 @@ EOF
 APT_PROXY_URL=""
 
 case "$APT_POLICY" in
-    PROXY_NO_AUTH|PROXY_WITH_AUTH)
+    PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
         NOME_EFETIVO="$(_resolver_proxy_nome_efetivo)"
         if [ -z "$NOME_EFETIVO" ]; then
             echo ">>> ERRO: APT_POLICY=$APT_POLICY mas nenhum proxy configurado (APT_PROXY_NAME vazio e PROXY_DEFAULT_NAME vazio)."
@@ -244,7 +244,7 @@ backup_sources() {
 # ============================================================
 case "$APT_POLICY" in
 
-    DIRECT|PROXY_NO_AUTH|PROXY_WITH_AUTH)
+    DIRECT|PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
         echo ">>> Policy: mirrors oficiais da distro ($DISTRO)."
         echo ">>> Nenhuma alteracao em sources.list (mantendo o que ja esta)."
         # Nao mexe: a estacao ja veio com sources.list da distro

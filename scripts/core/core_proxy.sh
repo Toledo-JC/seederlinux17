@@ -240,7 +240,7 @@ case "$CLI_POLICY" in
         _limpar_environment_proxy
         ;;
 
-    PROXY_NO_AUTH|PROXY_WITH_AUTH)
+    PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
         NOME_EFETIVO="$(_resolver_proxy_nome_efetivo)"
         if [ -z "$NOME_EFETIVO" ]; then
             echo ">>> ERRO: CLI_POLICY=$CLI_POLICY mas nenhum proxy configurado."

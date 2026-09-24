@@ -330,7 +330,7 @@ sync_cli_proxy() {
             fi
             echo "OK: /etc/environment sem proxy (DIRECT)"
             ;;
-        PROXY_NO_AUTH|PROXY_WITH_AUTH)
+        PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
             local nome
             nome="$(_proxy_nome_efetivo "${CLI_PROXY_NAME:-}")"
             if [ -z "$nome" ]; then
@@ -390,7 +390,7 @@ sync_firefox_policy() {
         SYSTEM)
             ff_proxy_json='"Proxy": { "Mode": "system", "Locked": true }'
             ;;
-        PROXY_NO_AUTH|PROXY_WITH_AUTH)
+        PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
             local nome hostport no_proxy_extra no_proxy_final
             nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
             hostport="$(_resolver_proxy_hostport "$nome" plain)" || hostport=""
@@ -501,7 +501,7 @@ sync_chrome_policy() {
         SYSTEM)
             proxy_json=", \"ProxyMode\": \"system\""
             ;;
-        PROXY_NO_AUTH|PROXY_WITH_AUTH)
+        PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
             local nome authport no_proxy_extra no_proxy_final
             nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
             authport="$(_resolver_proxy_hostport "$nome" auth)" || authport=""
