@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS organizations (
 );
 
 -- Migra serial_config de INTEGER para BIGINT (suporta formato AAAAMMDDNN)
-DO $
+DO $$
 BEGIN
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
@@ -34,7 +34,7 @@ BEGIN
     ) THEN
         ALTER TABLE organizations ALTER COLUMN serial_config TYPE BIGINT;
     END IF;
-END $;
+END $$;
 
 -- Seed: default organization
 INSERT INTO organizations (id, name, acronym, domain, description)
@@ -638,16 +638,17 @@ ON CONFLICT (distro_id, version) DO NOTHING;
 -- Table 11: om_proxies (multiplos proxies nomeados por OM)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS om_proxies (
-    id              SERIAL PRIMARY KEY,
-    organization_id INTEGER NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    id              BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
     name            VARCHAR(64) NOT NULL,
-    url             TEXT NOT NULL DEFAULT '',
+    url             TEXT NOT NULL,
     username        VARCHAR(128) DEFAULT '',
     password_enc    TEXT DEFAULT '',
     pac_url         TEXT DEFAULT '',
     no_proxy        TEXT DEFAULT '',
     is_default      BOOLEAN NOT NULL DEFAULT false,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_om_proxies_org_name

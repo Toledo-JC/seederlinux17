@@ -179,14 +179,16 @@ apply_database_schema() {
     fi
 
     print_step "Aplicando schema: $(basename "$SCHEMA_FILE")"
-    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -f "$SCHEMA_FILE" 2>&1 | tee /tmp/schema-apply.log | grep -v "already exists"; then
-        if grep -qi "^ERROR" /tmp/schema-apply.log; then
+    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "$SCHEMA_FILE" 2>&1 | tee /tmp/schema-apply.log | grep -v "already exists"; then
+        if grep -qiE "ERROR|ERRO" /tmp/schema-apply.log; then
             print_error "schema.sql teve erros. Veja /tmp/schema-apply.log"
+            cat /tmp/schema-apply.log
             exit 1
         fi
         print_success "Schema aplicado"
     else
         print_error "Falha ao aplicar schema.sql"
+        cat /tmp/schema-apply.log 2>/dev/null
         exit 1
     fi
 
@@ -194,19 +196,21 @@ apply_database_schema() {
     # (necessaria para o ON CONFLICT (filename) do insert_core_scripts.sql)
     print_step "Garantindo constraint UNIQUE em scripts.filename..."
     PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -c \
-        "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scripts_filename_key') THEN ALTER TABLE scripts ADD CONSTRAINT scripts_filename_key UNIQUE (filename); END IF; END \$\$;" 2>/dev/null || true
+        "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scripts_filename_key') THEN ALTER TABLE scripts ADD CONSTRAINT scripts_filename_key UNIQUE (filename); END IF; END \$\$;"
 
     # Carregar scripts Core de provisionamento
     if [ -f "${SCRIPT_DIR}/insert_core_scripts.sql" ]; then
         print_step "Carregando scripts Core de provisionamento..."
-        if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -f "${SCRIPT_DIR}/insert_core_scripts.sql" 2>&1 | tee /tmp/insert-core-apply.log | grep -v "already exists"; then
-            if grep -qi "^ERROR" /tmp/insert-core-apply.log; then
+        if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "${SCRIPT_DIR}/insert_core_scripts.sql" 2>&1 | tee /tmp/insert-core-apply.log | grep -v "already exists"; then
+            if grep -qiE "ERROR|ERRO" /tmp/insert-core-apply.log; then
                 print_error "insert_core_scripts.sql teve erros. Veja /tmp/insert-core-apply.log"
+                cat /tmp/insert-core-apply.log
                 exit 1
             fi
             print_success "Scripts Core carregados com sucesso"
         else
             print_error "Falha ao aplicar insert_core_scripts.sql"
+            cat /tmp/insert-core-apply.log 2>/dev/null
             exit 1
         fi
     else
@@ -238,10 +242,16 @@ regenerate_core_scripts() {
     fi
 
     print_step "Aplicando insert_core_scripts.sql no banco..."
-    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -f "${SCRIPT_DIR}/insert_core_scripts.sql" 2>&1 | grep -v "already exists"; then
+    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "${SCRIPT_DIR}/insert_core_scripts.sql" 2>&1 | tee /tmp/insert-core-regen.log | grep -v "already exists"; then
+        if grep -qiE "ERROR|ERRO" /tmp/insert-core-regen.log; then
+            print_error "insert_core_scripts.sql teve erros. Veja /tmp/insert-core-regen.log"
+            cat /tmp/insert-core-regen.log
+            exit 1
+        fi
         print_success "Scripts Core atualizados no banco"
     else
         print_error "Falha ao aplicar insert_core_scripts.sql"
+        cat /tmp/insert-core-regen.log 2>/dev/null
         exit 1
     fi
 }

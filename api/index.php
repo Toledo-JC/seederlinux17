@@ -33,7 +33,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') exit(0);
 
 $action = $_GET['action'] ?? '';
 $id = isset($_GET['id']) ? (int)$_GET['id'] : null;
-$orgId = isset($_GET['org_id']) ? (int)$_GET['org_id'] : (isset($_GET['organization_id']) ? (int)$_GET['organization_id'] : null);
 $method = $_SERVER['REQUEST_METHOD'];
 
 // Parse input
@@ -47,6 +46,10 @@ if ($method === 'POST' || $method === 'PUT') {
         $input = json_decode($raw, true) ?? [];
     }
 }
+
+// Prioriza organization_id (novo), mantém compatibilidade com org_id e JSON body
+$orgId = $_GET['organization_id'] ?? $_GET['org_id'] ?? $input['organization_id'] ?? null;
+$orgId = $orgId !== null ? (int)$orgId : null;
 
 try {
     switch ($action) {
