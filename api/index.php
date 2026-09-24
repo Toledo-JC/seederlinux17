@@ -2656,6 +2656,8 @@ function handleGenerateBundle($input) {
 
     $skipExportTypes = ['password'];
     $skipExportNames = ['INSTALL_DESKTOP'];
+    // Variaveis legadas do modelo single-proxy: continuam no banco mas nao sao exportadas em bundles novos
+    $deprecatedProxyVars = ['PROXY_MODE', 'PROXY_URL', 'PROXY_USER', 'PROXY_PASSWORD_B64', 'PROXY_HTTP', 'PROXY_PORTA', 'PAC_URL', 'NO_PROXY'];
     $imageVars = ['WALLPAPER_URL', 'LOGO_URL', 'WALLPAPER_LOGIN_URL', 'GREETER_URL'];
     $baseUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off' ? 'https' : 'http') . '://' . ($_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? '');
     // Always use SEEDER_SERVER FQDN for URLs in the bundle
@@ -2776,11 +2778,10 @@ function handleGenerateBundle($input) {
     }
     $bundle .= "# ============================================\n\n";
     $bundle .= "export NON_INTERACTIVE=true\n";
-    // Export PROXY_PASSWORD_B64 with placeholder (type=password is skipped by the loop)
-    $bundle .= "export PROXY_PASSWORD_B64='__PROXY_PASSWORD_B64__'\n";
     foreach ($vars as $v) {
         if (in_array($v['type'], $skipExportTypes, true)) continue;
         if (in_array($v['name'], $skipExportNames, true)) continue;
+        if (in_array($v['name'], $deprecatedProxyVars, true)) continue;
         $varValue = $v['value'] ?? '';
         // Prefix relative paths with SEEDER_SERVER for image/branding URLs
         if (in_array($v['name'], $imageVars, true) && !empty($varValue) && strpos($varValue, 'http') !== 0) {
