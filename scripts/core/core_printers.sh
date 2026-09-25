@@ -27,6 +27,12 @@ DOMINIO="{{DOMINIO}}"
 echo ">>> Servidor de impressao: $PRINT_SERVER"
 echo ">>> Impressora padrao: $DEFAULT_PRINTER"
 
+# Normalizar PRINT_SERVER: remover http:// ou https:// do prefixo e
+# barra final (operador pode cadastrar URL completa no painel, mas
+# o CUPS/IPP espera apenas host:port).
+PRINT_SERVER="$(echo "$PRINT_SERVER" | sed -E 's|^https?://||' | sed 's|/$||')"
+echo ">>> Servidor de impressao (normalizado): $PRINT_SERVER"
+
 # ============================================================
 # Verificar se ha servidor de impressao
 # ============================================================

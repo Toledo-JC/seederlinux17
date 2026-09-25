@@ -67,14 +67,14 @@ echo "============================================================"
 # ============================================================
 # Variáveis (substituídas no bundle)
 # ============================================================
-HOMEPAGE="www.om.local"
-BROWSER_POLICY="DIRECT"
-BROWSER_PROXY_NAME=""
-DOMINIO="om.local"
-OM_ACRONYM="OM"
-SEEDER_SERVER="https://seederlinux.om.local"
-DC_IP="10.0.0.1"
-DC_IP_LIST="10.0.0.1,10.0.0.2"
+HOMEPAGE="{{HOMEPAGE}}"
+BROWSER_POLICY="{{BROWSER_POLICY}}"
+BROWSER_PROXY_NAME="{{BROWSER_PROXY_NAME}}"
+DOMINIO="{{DOMINIO}}"
+OM_ACRONYM="{{OM_ACRONYM}}"
+SEEDER_SERVER="{{SEEDER_SERVER}}"
+DC_IP="{{DC_IP}}"
+DC_IP_LIST="{{DC_IP_LIST}}"
 
 # Múltiplos proxies
 PROXY_COUNT="${PROXY_COUNT:-0}"

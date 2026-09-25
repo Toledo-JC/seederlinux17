@@ -143,6 +143,8 @@ fi
 #    quebra a descoberta automatica do SSSD.
 systemctl disable --now systemd-resolved 2>/dev/null || true
 systemctl stop systemd-resolved 2>/dev/null || true
+systemctl disable --now systemd-resolved-monitor.socket 2>/dev/null || true
+systemctl disable --now systemd-resolved-varlink.socket 2>/dev/null || true
 
 # -- Remover imutabilidade eventualmente deixada por uma execucao
 #    anterior deste script (idempotencia defensiva).

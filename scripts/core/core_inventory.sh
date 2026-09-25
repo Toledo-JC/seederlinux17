@@ -46,6 +46,12 @@ fi
 echo ">>> Servidor OCS: $OCS_SERVER"
 echo ">>> Tag OCS: $OCS_TAG"
 
+# Normalizar OCS_SERVER: remover http:// ou https:// do prefixo e
+# sufixo /ocsinventory se presentes (operador pode cadastrar URL
+# completa no painel, mas o agente espera apenas host:port).
+OCS_SERVER="$(echo "$OCS_SERVER" | sed -E 's|^https?://||' | sed -E 's|/ocsinventory/?$||' | sed 's|/$||')"
+echo ">>> Servidor OCS (normalizado): $OCS_SERVER"
+
 # ============================================================
 # Verificar se o pacote foi instalado (no core_packages.sh)
 # ============================================================
