@@ -333,27 +333,56 @@ else
 fi
 
 # ============================================================
-# Firefox: substituir snap por .deb do Mozilla PPA
+# Firefox: instalar tarball oficial da Mozilla (sem PPA, sem snap)
 # ============================================================
 # Ubuntu 24.04+ entrega Firefox como snap. O snap NAO le policies.json
 # (a interface firefox:etc-firefox nao vem conectada por padrao),
-# o que quebra proxy e homepage corporativos. Substituir pelo .deb
-# do PPA mozillateam.
-echo ">>> Verificando Firefox snap..."
-if snap list firefox &>/dev/null; then
-    echo ">>> Firefox snap detectado. Substituindo por .deb do Mozilla PPA..."
-    snap remove --purge firefox 2>/dev/null || true
-    add-apt-repository -y ppa:mozillateam/ppa 2>/dev/null || true
-    cat > /etc/apt/preferences.d/mozilla-firefox <<EOF
-Package: *
-Pin: release o=LP-PPA-mozillateam
-Pin-Priority: 1001
-EOF
-    apt-get update -qq
-    apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
-    echo ">>> Firefox .deb instalado do PPA mozillateam."
+# o que quebra proxy e homepage corporativos.
+#
+# NAO remover o snap automaticamente: o snap remove --purge seguido de
+# add-apt-repository ppa:mozillateam falha quando o DNS ja foi trocado
+# para o AD (Fase 2 do core_domain.sh) e o PPA nao resolve. Resultado:
+# usuario perde o Firefox moderno sem ganhar o .deb.
+#
+# Em vez disso, baixar o tarball direto da Mozilla (nao depende de PPA
+# nem de apt) e instalar em /opt/firefox. O snap (se presente) e
+# mantido — o usuario pode remove-lo manualmente depois se quiser.
+# O tarball le policies.json normalmente.
+echo ">>> Instalando Firefox via tarball oficial da Mozilla..."
+FIREFOX_TARBALL="/tmp/firefox-latest.tar.xz"
+FIREFOX_URL="https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=pt-BR"
+
+if wget -q -O "$FIREFOX_TARBALL" "$FIREFOX_URL" 2>/dev/null; then
+    tar xJf "$FIREFOX_TARBALL" -C /opt/ 2>/dev/null
+    rm -f "$FIREFOX_TARBALL"
+
+    # Mover se ja existir um /opt/firefox anterior
+    [ -d /opt/firefox-moderno ] && rm -rf /opt/firefox-moderno
+    mv /opt/firefox /opt/firefox-moderno 2>/dev/null || true
+
+    ln -sf /opt/firefox-moderno/firefox /usr/local/bin/firefox
+
+    # .desktop para aparecer no menu de aplicativos
+    cat > /usr/share/applications/firefox-moderno.desktop <<DESKTOP
+[Desktop Entry]
+Version=1.0
+Name=Firefox
+Comment=Navegador Web
+Exec=/opt/firefox-moderno/firefox %u
+Icon=/opt/firefox-moderno/browser/chrome/icons/default/default128.png
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;application/vnd.mozilla.xul+xml;text/mml;x-scheme-handler/http;x-scheme-handler/https;
+DESKTOP
+
+    echo ">>> Firefox tarball instalado em /opt/firefox-moderno."
 else
-    echo ">>> Firefox nao e snap. Instalando .deb normalmente..."
+    echo ">>> AVISO: Falha ao baixar tarball do Firefox."
+    echo ">>> Firefox snap detectado. Para politica corporativa de proxy funcionar,"
+    echo ">>> instale o Firefox .deb manualmente via:"
+    echo ">>>   sudo snap remove firefox && sudo add-apt-repository ppa:mozillateam/ppa && sudo apt install firefox"
+    # Fallback: tentar firefox-esr via apt (so se o DNS ainda resolver internet)
     apt-get install -y firefox-esr firefox-esr-l10n-pt-br 2>/dev/null || \
         apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
 fi

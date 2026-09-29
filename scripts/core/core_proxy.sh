@@ -280,4 +280,67 @@ case "$CLI_POLICY" in
 esac
 
 echo ">>> [17] Proxy de CLI configurado!"
+
+# ============================================================
+# Gerar resolve-proxy.sh — funções compartilhadas para
+# core_logon.sh e seeder-sync resolverem o proxy por grupo do AD.
+# ============================================================
+echo ">>> Gerando /usr/local/lib/seederlinux/resolve-proxy.sh..."
+mkdir -p /usr/local/lib/seederlinux
+cat > /usr/local/lib/seederlinux/resolve-proxy.sh <<'RESOLVE_EOF'
+# resolve-proxy.sh — funções compartilhadas entre core_logon e seeder-sync.
+# Carregado via source. Requer PROXY_COUNT e PROXY_K_* definidos no env.
+
+# Retorna o índice do proxy aplicável ao usuário ($1):
+# 1. Se pertence a um grupo que tem proxy específico → esse
+# 2. Senão → o catch-all (ad_group='')
+# 3. Senão → vazio (DIRECT)
+_resolver_proxy_index_para_usuario() {
+    local user="$1"
+    [ -z "$user" ] && return 1
+
+    local grupos
+    grupos="$(id -nG "$user" 2>/dev/null)" || return 1
+
+    local i=1
+    while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
+        local vg="PROXY_${i}_AD_GROUP"
+        local g="${!vg}"
+        if [ -n "$g" ] && echo "$grupos" | tr ' ' '\n' | grep -qxF "$g"; then
+            echo "$i"
+            return 0
+        fi
+        i=$((i+1))
+    done
+
+    i=1
+    while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
+        local vg="PROXY_${i}_AD_GROUP"
+        if [ -z "${!vg}" ]; then
+            echo "$i"
+            return 0
+        fi
+        i=$((i+1))
+    done
+
+    return 1
+}
+
+# Retorna "host:port" do proxy pelo índice
+_proxy_hostport_por_index() {
+    local i="$1"
+    local vu="PROXY_${i}_URL"
+    echo "${!vu}" | sed -E 's|^https?://||' | sed 's|/$||'
+}
+
+# Retorna a lista de bypass (no_proxy) do proxy pelo índice
+_proxy_no_proxy_por_index() {
+    local i="$1"
+    local v="PROXY_${i}_NO_PROXY"
+    echo "${!v}"
+}
+RESOLVE_EOF
+chmod 644 /usr/local/lib/seederlinux/resolve-proxy.sh
+echo ">>> resolve-proxy.sh gerado."
+
 echo "============================================================"
