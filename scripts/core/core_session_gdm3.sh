@@ -179,7 +179,23 @@ DisallowRoot=true
 Session=${DESKTOP_ENV}
 EOF
 
-echo ">>> GDM3 configurado"
+echo ">>> GDM3 configurado (daemon.conf)"
+
+# Ubuntu 24.04+: o GDM3 le WaylandEnable de /etc/gdm3/custom.conf,
+# NAO de daemon.conf. Sem isso, o GDM sobe em Wayland e quebra
+# x11vnc (nao acessa display :0). Escrever ambos.
+cat > /etc/gdm3/custom.conf <<EOF
+# Configuracao GDM3 custom - SeederLinux (Ubuntu 24.04+)
+[daemon]
+WaylandEnable=false
+AutomaticLoginEnable=false
+TimedLoginEnable=false
+
+[security]
+DisallowRoot=true
+EOF
+
+echo ">>> GDM3 configurado (custom.conf)"
 
 # ============================================================
 # Configurar script de logoff via PostSession

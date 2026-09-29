@@ -3,6 +3,19 @@
 # Core Script: core_browser.sh
 # SeederLinux Lite - Políticas de navegadores (Firefox, Chrome, Chromium)
 # ============================================================================
+# LIMITAÇÃO DO CHROMIUM (não é bug do bundle):
+# Chrome e Chromium NÃO exibem popup de autenticação quando a
+# política de proxy é 'fixed_servers' e o proxy exige Basic auth.
+# Eles ignoram silenciosamente a credencial e caem em DIRECT.
+#
+# Para resolver, é preciso uma extensão Chrome com
+# chrome.webRequest.onAuthRequired. Firefox suporta popup nativo
+# mas apenas no pacote .deb (o snap ignora policies.json).
+#
+# Recomendação para as OMs: preferir Firefox .deb + Squid
+# transparente, ou aceitar que o usuário precisará de extensão
+# no Chrome.
+#
 # Configura políticas corporativas para Firefox ESR, Google Chrome e
 # Chromium, incluindo homepage, proxy, certificados e telemetria.
 #

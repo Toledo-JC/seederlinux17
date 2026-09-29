@@ -977,9 +977,31 @@ else
     echo ">>> OCS Inventory Agent instalado com sucesso"
 fi
 
-# Firefox ESR com fallback
-apt-get install -y firefox-esr firefox-esr-l10n-pt-br 2>/dev/null || \
+# ============================================================
+# Firefox: substituir snap por .deb do Mozilla PPA
+# ============================================================
+# Ubuntu 24.04+ entrega Firefox como snap. O snap NAO le policies.json
+# (a interface firefox:etc-firefox nao vem conectada por padrao),
+# o que quebra proxy e homepage corporativos. Substituir pelo .deb
+# do PPA mozillateam.
+echo ">>> Verificando Firefox snap..."
+if snap list firefox &>/dev/null; then
+    echo ">>> Firefox snap detectado. Substituindo por .deb do Mozilla PPA..."
+    snap remove --purge firefox 2>/dev/null || true
+    add-apt-repository -y ppa:mozillateam/ppa 2>/dev/null || true
+    cat > /etc/apt/preferences.d/mozilla-firefox <<EOF
+Package: *
+Pin: release o=LP-PPA-mozillateam
+Pin-Priority: 1001
+EOF
+    apt-get update -qq
     apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
+    echo ">>> Firefox .deb instalado do PPA mozillateam."
+else
+    echo ">>> Firefox nao e snap. Instalando .deb normalmente..."
+    apt-get install -y firefox-esr firefox-esr-l10n-pt-br 2>/dev/null || \
+        apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
+fi
 
 # Firmware opcional
 apt-get install -y firmware-linux 2>/dev/null || true
@@ -2360,7 +2382,10 @@ domains = ${DOMINIO}
     ldap_user_shell = loginShell
     enumerate = false
     use_fully_qualified_names = false
-    fallback_homedir = /home/%d/%u
+    # /home/%u (nao /home/%d/%u): o snap do Firefox no Ubuntu 24.04+
+    # usa AppArmor que restringe /home/*/snap — /home/dominio/usuario/snap
+    # nao bate com o pattern e o snap falha com Permission denied.
+    fallback_homedir = /home/%u
     default_shell = /bin/bash
     krb5_use_fast = never
     ${OFFLINE_CACHE}
@@ -2664,6 +2689,19 @@ VALUES (
 # Core Script: core_browser.sh
 # SeederLinux Lite - Políticas de navegadores (Firefox, Chrome, Chromium)
 # ============================================================================
+# LIMITAÇÃO DO CHROMIUM (não é bug do bundle):
+# Chrome e Chromium NÃO exibem popup de autenticação quando a
+# política de proxy é 'fixed_servers' e o proxy exige Basic auth.
+# Eles ignoram silenciosamente a credencial e caem em DIRECT.
+#
+# Para resolver, é preciso uma extensão Chrome com
+# chrome.webRequest.onAuthRequired. Firefox suporta popup nativo
+# mas apenas no pacote .deb (o snap ignora policies.json).
+#
+# Recomendação para as OMs: preferir Firefox .deb + Squid
+# transparente, ou aceitar que o usuário precisará de extensão
+# no Chrome.
+#
 # Configura políticas corporativas para Firefox ESR, Google Chrome e
 # Chromium, incluindo homepage, proxy, certificados e telemetria.
 #
@@ -3737,6 +3775,17 @@ CFG_SHOW_DISK=$(parse_json show_disk "true")
 CFG_DISK_PARTITION=$(parse_json disk_partition "/")
 CFG_SHOW_NETWORK=$(parse_json show_network "true")
 CFG_NETWORK_IFACE=$(parse_json network_interface "eth0")
+
+# Validar interface de rede: se a configurada nao existir, detectar
+# a interface default do sistema. Evita ${addr eth0} falhar em
+# estacoes com interface enp0s3, wlp2s0, etc.
+if ! ip link show "$CFG_NETWORK_IFACE" &>/dev/null 2>&1; then
+    DETECTED_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
+    if [ -n "$DETECTED_IFACE" ]; then
+        echo ">>> interface '$CFG_NETWORK_IFACE' nao existe, usando '$DETECTED_IFACE'"
+        CFG_NETWORK_IFACE="$DETECTED_IFACE"
+    fi
+fi
 CFG_SHOW_TOP=$(parse_json show_top_processes "true")
 CFG_SHOW_DATETIME=$(parse_json show_datetime "true")
 CFG_SHOW_HOSTNAME=$(parse_json show_hostname "true")
@@ -6077,7 +6126,23 @@ DisallowRoot=true
 Session=${DESKTOP_ENV}
 EOF
 
-echo ">>> GDM3 configurado"
+echo ">>> GDM3 configurado (daemon.conf)"
+
+# Ubuntu 24.04+: o GDM3 le WaylandEnable de /etc/gdm3/custom.conf,
+# NAO de daemon.conf. Sem isso, o GDM sobe em Wayland e quebra
+# x11vnc (nao acessa display :0). Escrever ambos.
+cat > /etc/gdm3/custom.conf <<EOF
+# Configuracao GDM3 custom - SeederLinux (Ubuntu 24.04+)
+[daemon]
+WaylandEnable=false
+AutomaticLoginEnable=false
+TimedLoginEnable=false
+
+[security]
+DisallowRoot=true
+EOF
+
+echo ">>> GDM3 configurado (custom.conf)"
 
 # ============================================================
 # Configurar script de logoff via PostSession
@@ -7453,10 +7518,10 @@ EOF
 
     for DIR in /etc/opt/chrome/policies/managed \
                /etc/chromium/policies/managed \
-               /etc/chromium-browser/policies/managed; do
-        GRANDPARENT="$(dirname "$(dirname "$DIR")")"
-        [ -d "$GRANDPARENT" ] || continue
-        mkdir -p "$DIR"
+               /etc/chromium-browser/policies/managed \
+               /var/snap/chromium/current/policies/managed \
+               /var/snap/chromium/common/policies/managed; do
+        mkdir -p "$DIR" 2>/dev/null || continue
         echo "$json" > "$DIR/seederlinux.json"
         chmod 644 "$DIR/seederlinux.json"
     done
@@ -7655,6 +7720,18 @@ sync_conky() {
     CFG_DISK_PARTITION="$(_json_get "$CONKY_CONFIG" disk_partition "/")"
     CFG_SHOW_NETWORK="$(_json_get "$CONKY_CONFIG" show_network "true")"
     CFG_NETWORK_IFACE="$(_json_get "$CONKY_CONFIG" network_interface "eth0")"
+
+    # Validar interface de rede: se a configurada nao existir,
+    # detectar a interface default. Evita ${addr eth0} falhar.
+    if ! ip link show "$CFG_NETWORK_IFACE" &>/dev/null 2>&1; then
+        local DETECTED_IFACE
+        DETECTED_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
+        if [ -n "$DETECTED_IFACE" ]; then
+            echo ">>> interface '$CFG_NETWORK_IFACE' nao existe, usando '$DETECTED_IFACE'"
+            CFG_NETWORK_IFACE="$DETECTED_IFACE"
+        fi
+    fi
+
     CFG_SHOW_TOP="$(_json_get "$CONKY_CONFIG" show_top_processes "true")"
     CFG_SHOW_DATETIME="$(_json_get "$CONKY_CONFIG" show_datetime "true")"
     CFG_SHOW_HOSTNAME="$(_json_get "$CONKY_CONFIG" show_hostname "true")"
@@ -7674,8 +7751,57 @@ sync_conky() {
     local NEW_CONF
     NEW_CONF="$(mktemp /tmp/seeder-conky.XXXXXX)"
 
+    local CONKY_TEXT=""
+    if [ "$CFG_SHOW_HOSTNAME" = "true" ]; then
+        CONKY_TEXT="\${font DejaVu Sans Mono:size=${CFG_HOSTNAME_FONT_SIZE}}\${color ${COLOR_TEXT_LUA}}Host: \${nodetype}
+\${font DejaVu Sans Mono:size=${CFG_FONT_SIZE}}
+\${color ${COLOR_TEXT_LUA}}${OM_ACRONYM:-} - ${OM_NAME:-}
+\${color ${COLOR_TEXT_LUA}}\${hr}"
+    else
+        CONKY_TEXT="\${color ${COLOR_TEXT_LUA}}${OM_ACRONYM:-} - ${OM_NAME:-}
+\${color ${COLOR_TEXT_LUA}}\${hr}"
+    fi
+
+    CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}Uptime: \${color grey}\${uptime}
+\${color ${COLOR_TEXT_LUA}}\${hr}"
+
+    if [ "$CFG_SHOW_CPU" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}CPU:  \${color grey}\${cpu}% \${cpubar 4}"
+    fi
+    if [ "$CFG_SHOW_RAM" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}RAM:  \${color grey}\${mem}/\${memmax} \${membar 4}
+\${color ${COLOR_TEXT_LUA}}SWAP: \${color grey}\${swap}/\${swapmax} \${swapbar 4}"
+    fi
+    if [ "$CFG_SHOW_DISK" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}Disco (${CFG_DISK_PARTITION}): \${color grey}\${fs_used ${CFG_DISK_PARTITION}}/\${fs_size ${CFG_DISK_PARTITION}} \${fs_bar 6 ${CFG_DISK_PARTITION}}"
+    fi
+    if [ "$CFG_SHOW_NETWORK" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}Rede (${CFG_NETWORK_IFACE}):
+\${color ${COLOR_TEXT_LUA}}IP:   \${color grey}\${addr ${CFG_NETWORK_IFACE}}
+\${color ${COLOR_TEXT_LUA}}Down: \${color grey}\${downspeed ${CFG_NETWORK_IFACE}}
+\${color ${COLOR_TEXT_LUA}}Up:   \${color grey}\${upspeed ${CFG_NETWORK_IFACE}}"
+    fi
+    if [ "$CFG_SHOW_TOP" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}\${hr}
+\${color ${COLOR_TEXT_LUA}}Top CPU:
+\${color grey}\${top name 1} \${top cpu 1}%
+\${color grey}\${top name 2} \${top cpu 2}%
+\${color grey}\${top name 3} \${top cpu 3}%"
+    fi
+    if [ "$CFG_SHOW_DATETIME" = "true" ]; then
+        CONKY_TEXT="${CONKY_TEXT}
+\${color ${COLOR_TEXT_LUA}}\${hr}
+\${color ${COLOR_TEXT_LUA}}\${time %A, %d/%m/%Y %H:%M:%S}"
+    fi
+
     cat > "$NEW_CONF" <<EOF
--- Configuracao Conky - SeederLinux
+-- Configuracao Conky - SeederLinux (seeder-sync)
 conky.config = {
     alignment = '${CFG_POSITION}',
     background = false,
@@ -7703,9 +7829,7 @@ conky.config = {
     use_xft = true,
 }
 conky.text = [[
-\${color ${COLOR_TEXT_LUA}}${OM_ACRONYM:-} - ${OM_NAME:-}
-\${color ${COLOR_TEXT_LUA}}\${hr}
-\${color ${COLOR_TEXT_LUA}}Uptime: \${color grey}\${uptime}
+${CONKY_TEXT}
 ]]
 EOF
 

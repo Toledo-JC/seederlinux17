@@ -772,7 +772,10 @@ domains = ${DOMINIO}
     ldap_user_shell = loginShell
     enumerate = false
     use_fully_qualified_names = false
-    fallback_homedir = /home/%d/%u
+    # /home/%u (nao /home/%d/%u): o snap do Firefox no Ubuntu 24.04+
+    # usa AppArmor que restringe /home/*/snap — /home/dominio/usuario/snap
+    # nao bate com o pattern e o snap falha com Permission denied.
+    fallback_homedir = /home/%u
     default_shell = /bin/bash
     krb5_use_fast = never
     ${OFFLINE_CACHE}

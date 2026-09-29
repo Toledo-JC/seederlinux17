@@ -82,6 +82,17 @@ CFG_SHOW_DISK=$(parse_json show_disk "true")
 CFG_DISK_PARTITION=$(parse_json disk_partition "/")
 CFG_SHOW_NETWORK=$(parse_json show_network "true")
 CFG_NETWORK_IFACE=$(parse_json network_interface "eth0")
+
+# Validar interface de rede: se a configurada nao existir, detectar
+# a interface default do sistema. Evita ${addr eth0} falhar em
+# estacoes com interface enp0s3, wlp2s0, etc.
+if ! ip link show "$CFG_NETWORK_IFACE" &>/dev/null 2>&1; then
+    DETECTED_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
+    if [ -n "$DETECTED_IFACE" ]; then
+        echo ">>> interface '$CFG_NETWORK_IFACE' nao existe, usando '$DETECTED_IFACE'"
+        CFG_NETWORK_IFACE="$DETECTED_IFACE"
+    fi
+fi
 CFG_SHOW_TOP=$(parse_json show_top_processes "true")
 CFG_SHOW_DATETIME=$(parse_json show_datetime "true")
 CFG_SHOW_HOSTNAME=$(parse_json show_hostname "true")
