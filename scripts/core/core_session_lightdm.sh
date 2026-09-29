@@ -56,11 +56,11 @@ echo "============================================================"
 # ============================================================
 DISPLAY_MANAGER=""
 DESKTOP_ENV=""
-BASE_URL="https://seederlinux.comara.intraer"
-DOMINIO="comara.intraer"
-DOMINIO_NETBIOS="COMARA"
-GRUPO_ADMIN_AD="Dominio\ Admins"
-THEME="DEFAULT"
+BASE_URL="{{BASE_URL}}"
+DOMINIO="{{DOMINIO}}"
+DOMINIO_NETBIOS="{{DOMINIO_NETBIOS}}"
+GRUPO_ADMIN_AD="{{GRUPO_ADMIN_AD}}"
+THEME="{{THEME}}"
 
 CONFIG_FILE="/etc/seederlinux/config.env"
 
@@ -268,10 +268,9 @@ done
 echo ">>> Desabilitando outros display managers..."
 systemctl disable gdm3 2>/dev/null || true
 systemctl disable sddm 2>/dev/null || true
-# CORRECAO: "systemctl enable lightdm" removido - o unit e estatico
-# (sem secao [Install]), o enable so emitia warning sem efeito; quem
-# registra o DM padrao e o arquivo /etc/X11/default-display-manager
-# (ja escrito acima).
+
+systemctl enable lightdm 2>/dev/null || true
+ln -sf /lib/systemd/system/lightdm.service /etc/systemd/system/display-manager.service
 
 # ============================================================
 # Aplicacao da config: NAO reiniciar o DM.

@@ -332,9 +332,31 @@ else
     echo ">>> OCS Inventory Agent instalado com sucesso"
 fi
 
-# Firefox ESR com fallback
-apt-get install -y firefox-esr firefox-esr-l10n-pt-br 2>/dev/null || \
+# ============================================================
+# Firefox: substituir snap por .deb do Mozilla PPA
+# ============================================================
+# Ubuntu 24.04+ entrega Firefox como snap. O snap NAO le policies.json
+# (a interface firefox:etc-firefox nao vem conectada por padrao),
+# o que quebra proxy e homepage corporativos. Substituir pelo .deb
+# do PPA mozillateam.
+echo ">>> Verificando Firefox snap..."
+if snap list firefox &>/dev/null; then
+    echo ">>> Firefox snap detectado. Substituindo por .deb do Mozilla PPA..."
+    snap remove --purge firefox 2>/dev/null || true
+    add-apt-repository -y ppa:mozillateam/ppa 2>/dev/null || true
+    cat > /etc/apt/preferences.d/mozilla-firefox <<EOF
+Package: *
+Pin: release o=LP-PPA-mozillateam
+Pin-Priority: 1001
+EOF
+    apt-get update -qq
     apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
+    echo ">>> Firefox .deb instalado do PPA mozillateam."
+else
+    echo ">>> Firefox nao e snap. Instalando .deb normalmente..."
+    apt-get install -y firefox-esr firefox-esr-l10n-pt-br 2>/dev/null || \
+        apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
+fi
 
 # Firmware opcional
 apt-get install -y firmware-linux 2>/dev/null || true

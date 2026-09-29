@@ -1534,7 +1534,7 @@ function handleUpdateVariables($input) {
         $needsProxyUrl = false;
         $needsPac = false;
         foreach ($proxyPolicies as $p) {
-            if (in_array($p, ['PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) $needsProxyUrl = true;
+            if (in_array($p, ['PROXY', 'PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) $needsProxyUrl = true;
             if ($p === 'PAC') $needsPac = true;
         }
         if ($aptPolicy === 'MIRROR_LOCAL_OM') $needsProxyUrl = false;
@@ -1542,26 +1542,6 @@ function handleUpdateVariables($input) {
 
         if ($needsPac && $pacUrl === '') jsonError('PAC_URL e obrigatorio quando alguma policy = PAC', 400);
 
-        // Validação multi-proxy: se alguma policy usar PROXY_WITH_AUTH, precisa
-        // existir ao menos 1 proxy cadastrado para a OM com username e password
-        // preenchidos (senão o bundle não conseguirá montar a URL com credenciais).
-        $needsAuth = in_array('PROXY_WITH_AUTH', [
-            $values['APT_POLICY'] ?? $aptPolicy,
-            $values['CLI_POLICY'] ?? $cliPolicy,
-            $values['BROWSER_POLICY'] ?? $browserPolicy
-        ], true);
-        if ($needsAuth) {
-            $authRow = Database::fetchOne(
-                "SELECT COUNT(*) AS n FROM om_proxies
-                 WHERE organization_id = ?
-                   AND username IS NOT NULL AND username <> ''
-                   AND password_enc IS NOT NULL AND password_enc <> ''",
-                [$orgId]
-            );
-            if ((int)($authRow['n'] ?? 0) === 0) {
-                jsonError('Alguma policy usa PROXY_WITH_AUTH, mas nenhum proxy da OM tem usuario e senha cadastrados. Cadastre um proxy autenticado antes de salvar.', 400);
-            }
-        }
         if ($aptPolicy === 'MIRROR_LOCAL_OM' && $mirrorOmUrl === '') jsonError('MIRROR_LOCAL_OM_URL e obrigatorio quando APT_POLICY = MIRROR_LOCAL_OM', 400);
         if ($aptPolicy === 'MIRROR_LOCAL_SEEDER') {
             if ($mirrorPath === '' || $mirrorPath[0] !== '/' || substr($mirrorPath, -1) !== '/') {
@@ -1569,8 +1549,13 @@ function handleUpdateVariables($input) {
             }
         }
 
+        $policyVarNames = ['APT_POLICY', 'CLI_POLICY', 'BROWSER_POLICY'];
         foreach ($variables as $varId => $value) {
-            if (in_array($definitionNamesById[(int)$varId] ?? '', $repositoryBooleanNames, true)) {
+            $varName = $definitionNamesById[(int)$varId] ?? '';
+            if (in_array($varName, $policyVarNames, true) && in_array($value, ['PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) {
+                $value = 'PROXY';
+            }
+            if (in_array($varName, $repositoryBooleanNames, true)) {
                 $normalized = mirrorInputBoolean(['value' => $value], 'value');
                 if ($normalized === null) jsonError('Valor booleano invalido para ' . $definitionNamesById[(int)$varId]);
                 $value = mirrorDatabaseBoolean($normalized);
@@ -2807,6 +2792,34 @@ function handleGenerateBundle($input) {
     }
     $bundle .= "\n";
 
+    // Fetch named proxies for this OM (om_proxies table) — antes do
+    // marcador # === SCRIPTS === para que o agente Python, que copia
+    // apenas o header ate o marcador, inclua os PROXY_* no config.env.
+    $omProxies = Database::fetchAll(
+        "SELECT name, url, username, password_enc, pac_url, no_proxy, is_default
+         FROM om_proxies WHERE organization_id = ? ORDER BY is_default DESC, name ASC",
+        [$orgId]
+    );
+
+    // Export proxy list in the header (ANTES do marcador SCRIPTS)
+    $bundle .= "export PROXY_COUNT='" . count($omProxies) . "'\n";
+    $defaultProxyName = '';
+    foreach ($omProxies as $p) {
+        if ($p['is_default']) { $defaultProxyName = $p['name']; break; }
+    }
+    $bundle .= "export PROXY_DEFAULT_NAME='" . str_replace("'", "'\\''", $defaultProxyName) . "'\n";
+    $proxyIdx = 1;
+    foreach ($omProxies as $p) {
+        $bundle .= "export PROXY_{$proxyIdx}_NAME='" . str_replace("'", "'\\''", $p['name']) . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_URL='" . str_replace("'", "'\\''", $p['url'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_USER='" . str_replace("'", "'\\''", $p['username'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_PASS_B64='__PROXY_{$proxyIdx}_PASS_B64__'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_PAC_URL='" . str_replace("'", "'\\''", $p['pac_url'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_NO_PROXY='" . str_replace("'", "'\\''", $p['no_proxy'] ?? '') . "'\n";
+        $proxyIdx++;
+    }
+    $bundle .= "\n";
+
     $bundle .= "# === SCRIPTS ===\n\n";
     $scriptIds = [];
 
@@ -2836,32 +2849,6 @@ function handleGenerateBundle($input) {
         [$orgId]
     );
     $proxyPwdEncoded = $proxyPwdRow['value'] ?? '';
-
-    // Fetch named proxies for this OM (om_proxies table)
-    $omProxies = Database::fetchAll(
-        "SELECT name, url, username, password_enc, pac_url, no_proxy, is_default
-         FROM om_proxies WHERE organization_id = ? ORDER BY is_default DESC, name ASC",
-        [$orgId]
-    );
-
-    // Export proxy list in the header
-    $bundle .= "export PROXY_COUNT='" . count($omProxies) . "'\n";
-    $defaultProxyName = '';
-    foreach ($omProxies as $p) {
-        if ($p['is_default']) { $defaultProxyName = $p['name']; break; }
-    }
-    $bundle .= "export PROXY_DEFAULT_NAME='" . str_replace("'", "'\\''", $defaultProxyName) . "'\n";
-    $proxyIdx = 1;
-    foreach ($omProxies as $p) {
-        $bundle .= "export PROXY_{$proxyIdx}_NAME='" . str_replace("'", "'\\''", $p['name']) . "'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_URL='" . str_replace("'", "'\\''", $p['url'] ?? '') . "'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_USER='" . str_replace("'", "'\\''", $p['username'] ?? '') . "'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_PASS_B64='__PROXY_{$proxyIdx}_PASS_B64__'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_PAC_URL='" . str_replace("'", "'\\''", $p['pac_url'] ?? '') . "'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_NO_PROXY='" . str_replace("'", "'\\''", $p['no_proxy'] ?? '') . "'\n";
-        $proxyIdx++;
-    }
-    $bundle .= "\n";
 
     foreach ($scripts as $s) {
         $rawContent = getScriptContent((int)$s['id'], $orgId);

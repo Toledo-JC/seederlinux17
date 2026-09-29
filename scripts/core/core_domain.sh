@@ -143,6 +143,8 @@ fi
 #    quebra a descoberta automatica do SSSD.
 systemctl disable --now systemd-resolved 2>/dev/null || true
 systemctl stop systemd-resolved 2>/dev/null || true
+systemctl disable --now systemd-resolved-monitor.socket 2>/dev/null || true
+systemctl disable --now systemd-resolved-varlink.socket 2>/dev/null || true
 
 # -- Remover imutabilidade eventualmente deixada por uma execucao
 #    anterior deste script (idempotencia defensiva).
@@ -770,7 +772,10 @@ domains = ${DOMINIO}
     ldap_user_shell = loginShell
     enumerate = false
     use_fully_qualified_names = false
-    fallback_homedir = /home/%d/%u
+    # /home/%u (nao /home/%d/%u): o snap do Firefox no Ubuntu 24.04+
+    # usa AppArmor que restringe /home/*/snap — /home/dominio/usuario/snap
+    # nao bate com o pattern e o snap falha com Permission denied.
+    fallback_homedir = /home/%u
     default_shell = /bin/bash
     krb5_use_fast = never
     ${OFFLINE_CACHE}
@@ -779,6 +784,14 @@ EOF
 
     chmod 600 /etc/sssd/sssd.conf
     echo ">>> SSSD configurado (ad_hostname=${SSSD_AD_HOSTNAME})"
+
+    # SSSD 2.9+ (Ubuntu 24.04+): os sockets systemd dos responders
+    # conflitam com a linha "services =" do sssd.conf. Desabilita os
+    # sockets — o sssd.service classico serve os responders sozinho.
+    for sock in nss pam sudo pac autofs ssh; do
+        systemctl disable --now "sssd-${sock}.socket" 2>/dev/null || true
+    done
+    systemctl reset-failed 'sssd-*.socket' 2>/dev/null || true
 fi
 
 # Configurar NSS
