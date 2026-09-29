@@ -702,5 +702,42 @@ else
     echo ">>> Policy de proxy nao e fixed_servers. Extensao de auth nao necessaria."
 fi
 
+# ============================================================
+# Aviso ao usuario sobre proxy por grupo do AD
+# ============================================================
+echo ">>> Criando aviso de proxy para o usuario..."
+mkdir -p /usr/share/doc/seederlinux
+cat > /usr/share/doc/seederlinux/AVISO-PROXY.txt <<'AVISOEOF'
+AVISO — PROXY CORPORATIVO
+
+Este computador usa proxies diferentes conforme o seu grupo no
+Active Directory.
+
+- O CHROME usa sempre o proxy PADRAO configurado pela OM.
+- O FIREFOX usa o proxy do SEU grupo, se houver um especifico.
+  Senao, usa o padrao.
+
+IMPORTANTE:
+- Se o seu grupo mudou, ou se voce foi movido para outro grupo,
+  e necessario fazer LOGOFF e LOGON novamente para que o Firefox
+  receba o novo proxy.
+- O Chrome nao precisa de logoff — sempre usa o padrao.
+
+Em caso de duvida, procure o administrador da sua OM.
+AVISOEOF
+
+cat > /usr/share/applications/seederlinux-aviso-proxy.desktop <<DESKTOPEOF
+[Desktop Entry]
+Type=Application
+Name=Aviso do Proxy
+Comment=Leia sobre o proxy corporativo
+Exec=xdg-open /usr/share/doc/seederlinux/AVISO-PROXY.txt
+Icon=dialog-information
+Terminal=false
+Categories=System;
+DESKTOPEOF
+
+echo ">>> Aviso de proxy criado."
+
 echo ">>> [06] Politicas de navegadores configuradas!"
 echo "============================================================"

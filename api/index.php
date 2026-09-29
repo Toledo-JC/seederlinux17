@@ -1618,7 +1618,7 @@ function handleGetOmProxies($orgId) {
     $resolvedOrgId = resolveProxyOrgId([], $orgId);
     try {
         $proxies = Database::fetchAll(
-            "SELECT id, organization_id, name, url, username, pac_url, no_proxy, is_default, created_at
+            "SELECT id, organization_id, name, url, username, pac_url, no_proxy, ad_group, is_default, created_at
              FROM om_proxies WHERE organization_id = ? ORDER BY is_default DESC, name ASC",
             [$resolvedOrgId]
         );
@@ -1638,6 +1638,7 @@ function handleCreateOmProxy($input) {
     $password = $input['password'] ?? '';
     $pacUrl = trim($input['pac_url'] ?? '');
     $noProxy = trim($input['no_proxy'] ?? '');
+    $adGroup = trim($input['ad_group'] ?? '');
     $isDefault = !empty($input['is_default']);
 
     if ($name === '') jsonError('Nome do proxy e obrigatorio', 400);
@@ -1658,9 +1659,9 @@ function handleCreateOmProxy($input) {
             Database::execute("UPDATE om_proxies SET is_default = false WHERE organization_id = ?", [$orgId]);
         }
         Database::execute(
-            "INSERT INTO om_proxies (organization_id, name, url, username, password_enc, pac_url, no_proxy, is_default)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [$orgId, $name, $url, $username, $passwordEnc, $pacUrl, $noProxy, $isDefault]
+            "INSERT INTO om_proxies (organization_id, name, url, username, password_enc, pac_url, no_proxy, ad_group, is_default)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [$orgId, $name, $url, $username, $passwordEnc, $pacUrl, $noProxy, $adGroup, $isDefault ? 1 : 0]
         );
         $proxyId = (int)Database::lastInsertId();
         log_audit('CREATE', 'om_proxies', $proxyId, [
@@ -1690,6 +1691,7 @@ function handleUpdateOmProxy($id, $input) {
     $username = trim($input['username'] ?? $proxy['username']);
     $pacUrl = trim($input['pac_url'] ?? $proxy['pac_url']);
     $noProxy = trim($input['no_proxy'] ?? $proxy['no_proxy']);
+    $adGroup = trim($input['ad_group'] ?? $proxy['ad_group'] ?? '');
     $isDefault = isset($input['is_default']) ? !empty($input['is_default']) : (bool)$proxy['is_default'];
 
     if ($name === '') jsonError('Nome do proxy e obrigatorio', 400);
@@ -1710,8 +1712,8 @@ function handleUpdateOmProxy($id, $input) {
             Database::execute("UPDATE om_proxies SET is_default = false WHERE organization_id = ?", [$proxy['organization_id']]);
         }
         Database::execute(
-            "UPDATE om_proxies SET name = ?, url = ?, username = ?, password_enc = ?, pac_url = ?, no_proxy = ?, is_default = ? WHERE id = ?",
-            [$name, $url, $username, $passwordEnc, $pacUrl, $noProxy, $isDefault, $id]
+            "UPDATE om_proxies SET name = ?, url = ?, username = ?, password_enc = ?, pac_url = ?, no_proxy = ?, ad_group = ?, is_default = ? WHERE id = ?",
+            [$name, $url, $username, $passwordEnc, $pacUrl, $noProxy, $adGroup, $isDefault ? 1 : 0, $id]
         );
         log_audit('UPDATE', 'om_proxies', $id, [
             'organization_id' => $proxy['organization_id'],
@@ -2796,7 +2798,7 @@ function handleGenerateBundle($input) {
     // marcador # === SCRIPTS === para que o agente Python, que copia
     // apenas o header ate o marcador, inclua os PROXY_* no config.env.
     $omProxies = Database::fetchAll(
-        "SELECT name, url, username, password_enc, pac_url, no_proxy, is_default
+        "SELECT name, url, username, password_enc, pac_url, no_proxy, ad_group, is_default
          FROM om_proxies WHERE organization_id = ? ORDER BY is_default DESC, name ASC",
         [$orgId]
     );
@@ -2816,6 +2818,7 @@ function handleGenerateBundle($input) {
         $bundle .= "export PROXY_{$proxyIdx}_PASS_B64='__PROXY_{$proxyIdx}_PASS_B64__'\n";
         $bundle .= "export PROXY_{$proxyIdx}_PAC_URL='" . str_replace("'", "'\\''", $p['pac_url'] ?? '') . "'\n";
         $bundle .= "export PROXY_{$proxyIdx}_NO_PROXY='" . str_replace("'", "'\\''", $p['no_proxy'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_AD_GROUP='" . str_replace("'", "'\\''", $p['ad_group'] ?? '') . "'\n";
         $proxyIdx++;
     }
     $bundle .= "\n";

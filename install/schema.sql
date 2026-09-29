@@ -646,10 +646,14 @@ CREATE TABLE IF NOT EXISTS om_proxies (
     password_enc    TEXT DEFAULT '',
     pac_url         TEXT DEFAULT '',
     no_proxy        TEXT DEFAULT '',
+    ad_group        VARCHAR(255) NOT NULL DEFAULT '',
     is_default      BOOLEAN NOT NULL DEFAULT false,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Garantir coluna em bases ja existentes (CREATE TABLE IF NOT EXISTS nao adiciona colunas)
+ALTER TABLE om_proxies ADD COLUMN IF NOT EXISTS ad_group VARCHAR(255) NOT NULL DEFAULT '';
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_om_proxies_org_name
     ON om_proxies (organization_id, name);
@@ -660,6 +664,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_om_proxies_org_default
 
 CREATE INDEX IF NOT EXISTS idx_om_proxies_org
     ON om_proxies (organization_id);
+
+CREATE INDEX IF NOT EXISTS idx_om_proxies_ad_group
+    ON om_proxies (organization_id, ad_group)
+    WHERE ad_group <> '';
 
 -- Seed: novas variaveis de policy para todas as OMs existentes
 INSERT INTO organization_variables (organization_id, variable_id, value)

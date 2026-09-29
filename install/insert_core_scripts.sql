@@ -3417,6 +3417,43 @@ else
     echo ">>> Policy de proxy nao e fixed_servers. Extensao de auth nao necessaria."
 fi
 
+# ============================================================
+# Aviso ao usuario sobre proxy por grupo do AD
+# ============================================================
+echo ">>> Criando aviso de proxy para o usuario..."
+mkdir -p /usr/share/doc/seederlinux
+cat > /usr/share/doc/seederlinux/AVISO-PROXY.txt <<'AVISOEOF'
+AVISO — PROXY CORPORATIVO
+
+Este computador usa proxies diferentes conforme o seu grupo no
+Active Directory.
+
+- O CHROME usa sempre o proxy PADRAO configurado pela OM.
+- O FIREFOX usa o proxy do SEU grupo, se houver um especifico.
+  Senao, usa o padrao.
+
+IMPORTANTE:
+- Se o seu grupo mudou, ou se voce foi movido para outro grupo,
+  e necessario fazer LOGOFF e LOGON novamente para que o Firefox
+  receba o novo proxy.
+- O Chrome nao precisa de logoff — sempre usa o padrao.
+
+Em caso de duvida, procure o administrador da sua OM.
+AVISOEOF
+
+cat > /usr/share/applications/seederlinux-aviso-proxy.desktop <<DESKTOPEOF
+[Desktop Entry]
+Type=Application
+Name=Aviso do Proxy
+Comment=Leia sobre o proxy corporativo
+Exec=xdg-open /usr/share/doc/seederlinux/AVISO-PROXY.txt
+Icon=dialog-information
+Terminal=false
+Categories=System;
+DESKTOPEOF
+
+echo ">>> Aviso de proxy criado."
+
 echo ">>> [06] Politicas de navegadores configuradas!"
 echo "============================================================"
 $SeederScript$,
@@ -5441,6 +5478,59 @@ if ! systemctl is-active --quiet seeder-sync.timer 2>/dev/null; then
     ( sudo -n /usr/local/bin/seeder-sync >/dev/null 2>&1 & ) 2>/dev/null || true
 fi
 
+# ============================================================
+# Resolver e aplicar proxy do Firefox conforme grupo do AD.
+#
+# CHROME: sempre usa o proxy padrao (system-wide, aplicado pelo
+# core_browser.sh no provisionamento). Nao e tocado aqui.
+#
+# FIREFOX: aplica o proxy especifico do grupo do usuario em
+# ~/.mozilla/firefox/*/user.js. Se o usuario nao pertence a nenhum
+# grupo com proxy, cai no padrao (catch-all).
+# ============================================================
+if [ -f /usr/local/lib/seederlinux/resolve-proxy.sh ]; then
+    # shellcheck disable=SC1091
+    source /usr/local/lib/seederlinux/resolve-proxy.sh
+
+    _proxy_idx="$(_resolver_proxy_index_para_usuario "$USERNAME")" || _proxy_idx=""
+    if [ -n "$_proxy_idx" ]; then
+        _hostport="$(_proxy_hostport_por_index "$_proxy_idx")"
+        _no_proxy="$(_proxy_no_proxy_por_index "$_proxy_idx")"
+        _vname="PROXY_${_proxy_idx}_NAME"
+        _proxy_name="${!_vname}"
+
+        # Normalizar no_proxy: virgulas, sem espacos, sem *.
+        _no_proxy="$(echo "$_no_proxy" | tr ';' ',' | tr -d ' ')"
+        _no_proxy="$(echo "$_no_proxy" | sed 's/^\*\././; s/,\*\./,./g')"
+
+        if [ -n "$_hostport" ]; then
+            _proxy_host="${_hostport%:*}"
+            _proxy_port="${_hostport##*:}"
+
+            for _profile in "$USER_HOME"/.mozilla/firefox/*.default* \
+                            "$USER_HOME"/.mozilla/firefox/*.default-release*; do
+                [ -d "$_profile" ] || continue
+                _userjs="$_profile/user.js"
+                cat > "$_userjs" <<EOFPREF
+// SeederLinux — proxy por grupo do AD
+// Proxy: ${_proxy_name}
+// Gerado em: $(date -Is)
+user_pref("network.proxy.type", 1);
+user_pref("network.proxy.http", "${_proxy_host}");
+user_pref("network.proxy.http_port", ${_proxy_port});
+user_pref("network.proxy.ssl", "${_proxy_host}");
+user_pref("network.proxy.ssl_port", ${_proxy_port});
+user_pref("network.proxy.no_proxies_on", "${_no_proxy}");
+EOFPREF
+                chmod 644 "$_userjs"
+                echo "Firefox: proxy aplicado (${_proxy_name}) em $_userjs"
+            done
+        fi
+    else
+        echo "Firefox: nenhum proxy aplicavel (DIRECT)"
+    fi
+fi
+
 echo "=== Logon concluido: $(date) ==="
 exit 0
 PERMSCRIPT
@@ -7177,6 +7267,69 @@ case "$CLI_POLICY" in
 esac
 
 echo ">>> [17] Proxy de CLI configurado!"
+
+# ============================================================
+# Gerar resolve-proxy.sh — funções compartilhadas para
+# core_logon.sh e seeder-sync resolverem o proxy por grupo do AD.
+# ============================================================
+echo ">>> Gerando /usr/local/lib/seederlinux/resolve-proxy.sh..."
+mkdir -p /usr/local/lib/seederlinux
+cat > /usr/local/lib/seederlinux/resolve-proxy.sh <<'RESOLVE_EOF'
+# resolve-proxy.sh — funções compartilhadas entre core_logon e seeder-sync.
+# Carregado via source. Requer PROXY_COUNT e PROXY_K_* definidos no env.
+
+# Retorna o índice do proxy aplicável ao usuário ($1):
+# 1. Se pertence a um grupo que tem proxy específico → esse
+# 2. Senão → o catch-all (ad_group='')
+# 3. Senão → vazio (DIRECT)
+_resolver_proxy_index_para_usuario() {
+    local user="$1"
+    [ -z "$user" ] && return 1
+
+    local grupos
+    grupos="$(id -nG "$user" 2>/dev/null)" || return 1
+
+    local i=1
+    while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
+        local vg="PROXY_${i}_AD_GROUP"
+        local g="${!vg}"
+        if [ -n "$g" ] && echo "$grupos" | tr ' ' '\n' | grep -qxF "$g"; then
+            echo "$i"
+            return 0
+        fi
+        i=$((i+1))
+    done
+
+    i=1
+    while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
+        local vg="PROXY_${i}_AD_GROUP"
+        if [ -z "${!vg}" ]; then
+            echo "$i"
+            return 0
+        fi
+        i=$((i+1))
+    done
+
+    return 1
+}
+
+# Retorna "host:port" do proxy pelo índice
+_proxy_hostport_por_index() {
+    local i="$1"
+    local vu="PROXY_${i}_URL"
+    echo "${!vu}" | sed -E 's|^https?://||' | sed 's|/$||'
+}
+
+# Retorna a lista de bypass (no_proxy) do proxy pelo índice
+_proxy_no_proxy_por_index() {
+    local i="$1"
+    local v="PROXY_${i}_NO_PROXY"
+    echo "${!v}"
+}
+RESOLVE_EOF
+chmod 644 /usr/local/lib/seederlinux/resolve-proxy.sh
+echo ">>> resolve-proxy.sh gerado."
+
 echo "============================================================"
 $SeederScript$,
     TRUE,

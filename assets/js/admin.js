@@ -1344,6 +1344,11 @@ function renderOmProxiesSection() {
                 <p class="text-slate-400 text-sm">Cadastre os proxies da OM aqui. Eles ficarão disponíveis para seleção nas políticas abaixo.</p>
                 <button class="btn btn-primary btn-sm" onclick="openOmProxyModal()">+ Novo Proxy</button>
             </div>
+            <div class="mt-2 mb-2 p-3 bg-amber-900/20 border border-amber-700/40 rounded-lg">
+                <p class="text-amber-300 text-xs">
+                    <b>Chrome</b> sempre usa o proxy <b>padrão</b>. O <b>Firefox</b> diferencia por grupo do AD — mudanças exigem logoff/logon.
+                </p>
+            </div>
             <div id="om-proxies-list" class="space-y-2"></div>
         </div>
     `;
@@ -3830,6 +3835,7 @@ async function loadOmProxies(orgId) {
                 <div>
                     <span class="font-medium text-white">${Utils.escapeHtml(p.name)}</span>
                     ${p.is_default ? '<span class="badge badge-success ml-2">Padrão</span>' : ''}
+                    ${p.ad_group ? '<span class="badge badge-warning ml-2">AD: ' + Utils.escapeHtml(p.ad_group) + '</span>' : ''}
                     <span class="text-slate-500 text-sm ml-2">${Utils.escapeHtml(p.url || '')}</span>
                     ${p.username ? '<span class="text-slate-600 text-xs ml-2">user: ' + Utils.escapeHtml(p.username) + '</span>' : ''}
                     ${p.pac_url ? '<span class="text-slate-600 text-xs ml-2">PAC: ' + Utils.escapeHtml(p.pac_url) + '</span>' : ''}
@@ -3864,11 +3870,12 @@ async function saveOmProxy() {
     const password = document.getElementById('om-proxy-password').value;
     const pacUrl = document.getElementById('om-proxy-pac-url').value.trim();
     const noProxy = document.getElementById('om-proxy-no-proxy').value.trim();
+    const adGroup = document.getElementById('om-proxy-ad-group').value.trim();
     const isDefault = document.getElementById('om-proxy-default').checked;
 
     if (!name) { Toast.error('Nome do proxy é obrigatório'); return; }
 
-    const payload = { organization_id: currentOrgId, name, url, username, pac_url: pacUrl, no_proxy: noProxy, is_default: isDefault };
+    const payload = { organization_id: currentOrgId, name, url, username, pac_url: pacUrl, no_proxy: noProxy, ad_group: adGroup, is_default: isDefault };
     if (password) payload.password = password;
 
     try {
@@ -3901,6 +3908,7 @@ async function editOmProxy(id) {
         document.getElementById('om-proxy-password').value = '';
         document.getElementById('om-proxy-pac-url').value = proxy.pac_url || '';
         document.getElementById('om-proxy-no-proxy').value = proxy.no_proxy || '';
+        document.getElementById('om-proxy-ad-group').value = proxy.ad_group || '';
         document.getElementById('om-proxy-default').checked = !!proxy.is_default;
         document.getElementById('om-proxy-title').textContent = 'Editar Proxy';
         document.getElementById('modal-om-proxy')?.classList.remove('hidden');

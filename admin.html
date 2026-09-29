@@ -958,6 +958,17 @@
                         <input type="text" id="om-proxy-no-proxy" class="form-input" placeholder="127.0.0.1, 10.0.0.0/8, .local">
                     </div>
                     <div class="form-group">
+                        <label class="form-label">Grupo do AD (opcional)</label>
+                        <input type="text" id="om-proxy-ad-group" class="form-input" list="ad-groups-list" placeholder="ex: _DASTI, TI_Admin (vazio = padrao)">
+                        <datalist id="ad-groups-list"></datalist>
+                        <small class="text-slate-500 text-xs mt-1 block">
+                            Se <b>vazio</b>, este e o proxy <b>padrao</b> — usado por todos os usuarios que nao pertencem a nenhum grupo com proxy especifico (aplica tambem ao Chrome de todos).<br>
+                            Se <b>preenchido</b>, aplica-se <b>somente</b> ao Firefox de usuarios membros deste grupo do AD, sobrepondo o padrao.<br>
+                            <b>Cada usuario deve pertencer a no maximo um grupo com proxy.</b> Se pertencer a mais de um, o comportamento e indefinido.<br>
+                            <b>Atencao:</b> o Chrome sempre usa o proxy padrao. O Firefox diferencia por grupo.
+                        </small>
+                    </div>
+                    <div class="form-group">
                         <label class="flex items-center gap-2 cursor-pointer">
                             <input type="checkbox" id="om-proxy-default" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-600 focus:ring-blue-500">
                             <span class="text-slate-300 font-medium">Definir como proxy padrao</span>
