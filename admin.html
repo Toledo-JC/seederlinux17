@@ -350,7 +350,6 @@
                         <div class="tabs">
                             <button class="tab-btn active" data-tab="variables" onclick="switchTab('variables')">Variaveis</button>
                             <button class="tab-btn" data-tab="scripts" onclick="switchTab('scripts')">Scripts</button>
-                            <button class="tab-btn" data-tab="proxies" onclick="switchTab('proxies')">Proxies da OM</button>
                             <button class="tab-btn" data-tab="bundle" onclick="switchTab('bundle')">Gerar Bundle</button>
                         </div>
 
@@ -384,20 +383,6 @@
                                         <button class="btn btn-sm btn-secondary script-tab-btn" data-script-tab="Custom" onclick="switchScriptTab('Custom')">Custom</button>
                                     </div>
                                     <div id="org-scripts-list"></div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <!-- Proxies Tab -->
-                        <div id="tab-proxies" class="tab-content hidden">
-                            <div class="card">
-                                <div class="card-header">
-                                    <h3 class="card-title">Proxies da OM</h3>
-                                    <button class="btn btn-primary btn-sm" onclick="openOmProxyModal()">+ Novo Proxy</button>
-                                </div>
-                                <div class="card-body">
-                                    <p class="text-slate-400 text-sm mb-4">Cadastre múltiplos proxies nomeados para esta OM (ex: internet, intranet, backup). Cada proxy pode ser referenciado pelas policies de APT, CLI e Browser.</p>
-                                    <div id="om-proxies-list" class="space-y-2"></div>
                                 </div>
                             </div>
                         </div>

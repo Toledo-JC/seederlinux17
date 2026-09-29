@@ -178,6 +178,11 @@ _build_no_proxy() {
         base="${base},${extra}"
     fi
 
+    # Normalizar: painel guarda "a;b; *.dom" — wget/curl/git
+    # esperam virgula e sem "*".
+    base="$(echo "$base" | tr ';' ',' | tr -d ' ')"
+    base="$(echo "$base" | sed 's/^\*\././; s/,\*\./,./g')"
+
     echo "$base"
 }
 
@@ -240,7 +245,7 @@ case "$CLI_POLICY" in
         _limpar_environment_proxy
         ;;
 
-    PROXY_NO_AUTH|PROXY_WITH_AUTH)
+    PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
         NOME_EFETIVO="$(_resolver_proxy_nome_efetivo)"
         if [ -z "$NOME_EFETIVO" ]; then
             echo ">>> ERRO: CLI_POLICY=$CLI_POLICY mas nenhum proxy configurado."

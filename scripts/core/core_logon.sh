@@ -24,14 +24,25 @@
 # aqui - isso agora e responsabilidade do core_sync.sh (aplicador
 # tipo GPO, rodando via timer systemd, independente de login).
 #
-# PRIVILEGIO: como o script agora roda como usuario comum (nao root),
-# `mount`/`umount` dos compartilhamentos CIFS precisam de sudo. Uma
-# regra sudoers bem restrita (so mount.cifs/umount na pasta de
-# compartilhamentos + o binario seeder-sync, nada generico) e criada
-# abaixo.
+# PRIVILEGIO:
+# Como o script agora roda como usuario comum (nao root), mount/umount
+# de CIFS precisam de sudo. Mas sudo 1.9.x+ (Ubuntu 24.04/26.04)
+# REJEITA wildcards em argumentos de comando dentro do sudoers:
 #
-# Os placeholders VARIAVEL são substituídos automaticamente
-# pelo sistema na geração do bundle.
+#   /etc/sudoers.d/xxx: syntax error:
+#   wildcards are not allowed in command arguments
+#
+# (sudo antigo do Mint aceitava; por isso o bundle passava la e
+# abortava no Ubuntu 26.04 sob `set -e`.)
+#
+# SOLUCAO: expor dois wrappers em /usr/local/bin/ que fazem a
+# validacao do share internamente (whitelist via config.env) e
+# chamam /bin/mount e /bin/umount com caminhos absolutos. O sudoers
+# autoriza apenas os wrappers - sem wildcards, sem argumentos com
+# padroes. Funciona identico em qualquer versao de sudo.
+#
+# Os placeholders VARIAVEL sao substituidos automaticamente
+# pelo sistema na geracao do bundle.
 # ============================================================================
 
 set -e
@@ -51,22 +62,137 @@ HOMEPAGE="{{HOMEPAGE}}"
 OM_ACRONYM="{{OM_ACRONYM}}"
 DOMINIO_NETBIOS="{{DOMINIO_NETBIOS}}"
 
-MOUNT_DIR="${MOUNT_BASE:-/mnt}"
+MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
 
 # ============================================================
-# 1. Regra sudoers restrita - mount/umount de CIFS (so na pasta de
-#    compartilhamentos) e o binario seeder-sync (sem argumentos).
-#    Nada mais e liberado por essa regra.
+# 1. Wrappers de mount/umount
+#
+# Motivo: sudo 1.9.x+ rejeita wildcards em argumentos. Em vez de
+# autorizar /bin/mount -t cifs * e /bin/umount <dir>/* no sudoers,
+# autorizamos dois wrappers que:
+#   - leem /etc/seederlinux/config.env (fonte de verdade da OM)
+#   - validam que o share pedido esta em COMPARTILHAMENTOS
+#   - validam que o caminho resolvido fica dentro de MOUNT_BASE
+#   - chamam /bin/mount | /bin/umount com caminhos absolutos
+#
+# Isso da uma superficie de ataque MENOR que a versao anterior com
+# wildcards - e funciona em qualquer versao de sudo.
+# ============================================================
+echo ">>> Criando wrappers de mount/umount (compat sudo 1.9.x+)..."
+mkdir -p /usr/local/bin
+
+cat > /usr/local/bin/seederlinux-mount-share <<'MOUNT_WRAPPER'
+#!/bin/bash
+# seederlinux-mount-share - mount CIFS com whitelist interna.
+# Uso: seederlinux-mount-share <share> <servidor> <usuario> <uid> <gid>
+#
+# Seguranca: valida que <share> esta em COMPARTILHAMENTOS do
+# /etc/seederlinux/config.env, que <servidor> nao tem path traversal,
+# e que o alvo resolvido fica dentro de MOUNT_BASE. So entao chama
+# /bin/mount com caminhos absolutos. NAO aceita flags do usuario.
+set -euo pipefail
+
+SHARE="${1:?share obrigatorio}"
+SERVER="${2:?servidor obrigatorio}"
+RUN_USER="${3:?usuario obrigatorio}"
+RUN_UID="${4:?uid obrigatorio}"
+RUN_GID="${5:?gid obrigatorio}"
+
+if [ -f /etc/seederlinux/config.env ]; then
+    # shellcheck disable=SC1090
+    . /etc/seederlinux/config.env
+fi
+
+# Whitelist: share precisa estar na lista COMPARTILHAMENTOS.
+AUTORIZADO=false
+for s in ${COMPARTILHAMENTOS:-}; do
+    if [ "$s" = "$SHARE" ]; then AUTORIZADO=true; break; fi
+done
+if [ "$AUTORIZADO" != "true" ]; then
+    echo "seederlinux-mount-share: share nao autorizado: $SHARE" >&2
+    exit 1
+fi
+
+# Server nao pode conter / nem ..
+case "$SERVER" in
+    */*|*..*)
+        echo "seederlinux-mount-share: servidor invalido: $SERVER" >&2
+        exit 1
+        ;;
+esac
+
+MOUNT_BASE_DIR="${MOUNT_BASE:-/mnt/servidor}"
+TARGET="${MOUNT_BASE_DIR%/}/${SHARE}"
+
+# Alvo tem que estar dentro de MOUNT_BASE_DIR.
+case "$TARGET" in
+    "${MOUNT_BASE_DIR%/}"/*) ;;
+    *)
+        echo "seederlinux-mount-share: target fora de MOUNT_BASE: $TARGET" >&2
+        exit 1
+        ;;
+esac
+
+mkdir -p "$TARGET"
+
+exec /bin/mount -t cifs "//${SERVER}/${SHARE}" "$TARGET" \
+    -o "username=${RUN_USER},domain=${DOMINIO_NETBIOS:-},uid=${RUN_UID},gid=${RUN_GID},iocharset=utf8,vers=3.0"
+MOUNT_WRAPPER
+chmod 0755 /usr/local/bin/seederlinux-mount-share
+
+cat > /usr/local/bin/seederlinux-umount-share <<'UMOUNT_WRAPPER'
+#!/bin/bash
+# seederlinux-umount-share - umount CIFS com whitelist interna.
+# Uso: seederlinux-umount-share <share>
+set -euo pipefail
+
+SHARE="${1:?share obrigatorio}"
+
+if [ -f /etc/seederlinux/config.env ]; then
+    # shellcheck disable=SC1090
+    . /etc/seederlinux/config.env
+fi
+
+AUTORIZADO=false
+for s in ${COMPARTILHAMENTOS:-}; do
+    if [ "$s" = "$SHARE" ]; then AUTORIZADO=true; break; fi
+done
+if [ "$AUTORIZADO" != "true" ]; then
+    echo "seederlinux-umount-share: share nao autorizado: $SHARE" >&2
+    exit 1
+fi
+
+MOUNT_BASE_DIR="${MOUNT_BASE:-/mnt/servidor}"
+TARGET="${MOUNT_BASE_DIR%/}/${SHARE}"
+
+case "$TARGET" in
+    "${MOUNT_BASE_DIR%/}"/*) ;;
+    *)
+        echo "seederlinux-umount-share: target fora de MOUNT_BASE: $TARGET" >&2
+        exit 1
+        ;;
+esac
+
+exec /bin/umount "$TARGET"
+UMOUNT_WRAPPER
+chmod 0755 /usr/local/bin/seederlinux-umount-share
+
+# ============================================================
+# 2. sudoers restrito (sem wildcards - compat sudo 1.9.x+)
 # ============================================================
 echo ">>> Configurando sudoers restrito para logon..."
 SUDOERS_FILE="/etc/sudoers.d/seederlinux-logon"
 cat > "$SUDOERS_FILE" <<EOF
-# SeederLinux - permissoes minimas para o logon do usuario (nao roda
-# mais como root). Restrito a mount/umount de CIFS dentro de
-# ${MOUNT_DIR} e ao disparo do seeder-sync - nada generico.
-Cmnd_Alias SEEDERLINUX_MOUNT = /bin/mount -t cifs *, /usr/bin/mount -t cifs *
-Cmnd_Alias SEEDERLINUX_UMOUNT = /bin/umount ${MOUNT_DIR}/*, /usr/bin/umount ${MOUNT_DIR}/*
-Cmnd_Alias SEEDERLINUX_SYNC = /usr/local/bin/seeder-sync
+# SeederLinux - permissoes minimas para o logon do usuario.
+# Restrito aos wrappers (que validam share internamente via
+# /etc/seederlinux/config.env) e ao disparo do seeder-sync.
+#
+# NAO usar wildcards aqui: sudo 1.9.x+ (Ubuntu 24.04+) rejeita
+# wildcards em argumentos de comando com "syntax error: wildcards
+# are not allowed in command arguments". Os wrappers resolvem isso.
+Cmnd_Alias SEEDERLINUX_MOUNT  = /usr/local/bin/seederlinux-mount-share
+Cmnd_Alias SEEDERLINUX_UMOUNT = /usr/local/bin/seederlinux-umount-share
+Cmnd_Alias SEEDERLINUX_SYNC   = /usr/local/bin/seeder-sync
 ALL ALL=(root) NOPASSWD: SEEDERLINUX_MOUNT, SEEDERLINUX_UMOUNT, SEEDERLINUX_SYNC
 EOF
 chmod 440 "$SUDOERS_FILE"
@@ -78,14 +204,13 @@ fi
 echo ">>> sudoers configurado: $SUDOERS_FILE"
 
 # ============================================================
-# 2. Preparar diretorio de log (mundo-gravavel com sticky bit, ja
-#    que quem escreve agora e o usuario comum, nao mais root)
+# 3. Preparar diretorio de log (mundo-gravavel com sticky bit)
 # ============================================================
 mkdir -p /var/log/logon-logoff
 chmod 1777 /var/log/logon-logoff
 
 # ============================================================
-# 3. Pre-criar os pontos de montagem (como root, agora, uma vez)
+# 4. Pre-criar os pontos de montagem (como root, agora, uma vez)
 # ============================================================
 mkdir -p "$MOUNT_DIR"
 if [ -n "$COMPARTILHAMENTOS" ]; then
@@ -96,7 +221,7 @@ fi
 chmod 755 "$MOUNT_DIR"
 
 # ============================================================
-# 4. Criar o script PERMANENTE em /usr/local/bin/seederlinux-logon
+# 5. Criar o script PERMANENTE em /usr/local/bin/seederlinux-logon
 #    Sera chamado via autostart XDG a cada login, DENTRO da sessao
 #    do usuario (nao mais como hook do display manager).
 # ============================================================
@@ -129,17 +254,22 @@ echo "=== Logon (minimo): $(date) - Usuario: $USERNAME ==="
 mkdir -p "$USER_HOME/Desktop" "$USER_HOME/Downloads" "$USER_HOME/Documents" 2>/dev/null || true
 
 # ============================================================
-# Montar compartilhamentos CIFS (via sudo restrito - ver sudoers)
+# Montar compartilhamentos CIFS via wrapper com sudo restrito.
+# O wrapper (seederlinux-mount-share) valida share/servidor/target
+# internamente e chama /bin/mount. Sudoers autoriza apenas o wrapper.
 # ============================================================
 if [ -n "$SERVIDOR_ARQUIVOS" ] && [ -n "$COMPARTILHAMENTOS" ]; then
-    MOUNT_DIR="${MOUNT_BASE:-/mnt}"
+    MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
     for SHARE in $COMPARTILHAMENTOS; do
         SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
         if ! mountpoint -q "$SHARE_MOUNT" 2>/dev/null; then
-            sudo -n mount -t cifs "//${SERVIDOR_ARQUIVOS}/${SHARE}" "$SHARE_MOUNT" \
-                -o "username=${USERNAME},domain=${DOMINIO_NETBIOS},uid=$(id -u),gid=$(id -g),iocharset=utf8,vers=3.0" \
-                2>/dev/null && echo "Compartilhamento montado: ${SHARE}" \
-                || echo "AVISO: falha ao montar ${SHARE} (verifique credenciais/sudoers)"
+            if sudo -n /usr/local/bin/seederlinux-mount-share \
+                    "$SHARE" "$SERVIDOR_ARQUIVOS" "$USERNAME" "$(id -u)" "$(id -g)" \
+                    >/dev/null 2>&1; then
+                echo "Compartilhamento montado: ${SHARE}"
+            else
+                echo "AVISO: falha ao montar ${SHARE} (verifique credenciais/sudoers)"
+            fi
         fi
 
         cat > "$USER_HOME/Desktop/${SHARE}.desktop" <<EOF
@@ -191,7 +321,7 @@ chmod 755 /usr/local/bin/seederlinux-logon
 echo ">>> Script permanente criado: /usr/local/bin/seederlinux-logon"
 
 # ============================================================
-# 5. Registrar via autostart XDG (funciona em GNOME, Cinnamon, MATE,
+# 6. Registrar via autostart XDG (funciona em GNOME, Cinnamon, MATE,
 #    XFCE, KDE, LXDE/LXQt de forma padronizada - um mecanismo so)
 # ============================================================
 echo ">>> Registrando autostart..."
