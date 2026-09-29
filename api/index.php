@@ -2792,6 +2792,34 @@ function handleGenerateBundle($input) {
     }
     $bundle .= "\n";
 
+    // Fetch named proxies for this OM (om_proxies table) — antes do
+    // marcador # === SCRIPTS === para que o agente Python, que copia
+    // apenas o header ate o marcador, inclua os PROXY_* no config.env.
+    $omProxies = Database::fetchAll(
+        "SELECT name, url, username, password_enc, pac_url, no_proxy, is_default
+         FROM om_proxies WHERE organization_id = ? ORDER BY is_default DESC, name ASC",
+        [$orgId]
+    );
+
+    // Export proxy list in the header (ANTES do marcador SCRIPTS)
+    $bundle .= "export PROXY_COUNT='" . count($omProxies) . "'\n";
+    $defaultProxyName = '';
+    foreach ($omProxies as $p) {
+        if ($p['is_default']) { $defaultProxyName = $p['name']; break; }
+    }
+    $bundle .= "export PROXY_DEFAULT_NAME='" . str_replace("'", "'\\''", $defaultProxyName) . "'\n";
+    $proxyIdx = 1;
+    foreach ($omProxies as $p) {
+        $bundle .= "export PROXY_{$proxyIdx}_NAME='" . str_replace("'", "'\\''", $p['name']) . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_URL='" . str_replace("'", "'\\''", $p['url'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_USER='" . str_replace("'", "'\\''", $p['username'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_PASS_B64='__PROXY_{$proxyIdx}_PASS_B64__'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_PAC_URL='" . str_replace("'", "'\\''", $p['pac_url'] ?? '') . "'\n";
+        $bundle .= "export PROXY_{$proxyIdx}_NO_PROXY='" . str_replace("'", "'\\''", $p['no_proxy'] ?? '') . "'\n";
+        $proxyIdx++;
+    }
+    $bundle .= "\n";
+
     $bundle .= "# === SCRIPTS ===\n\n";
     $scriptIds = [];
 
@@ -2821,32 +2849,6 @@ function handleGenerateBundle($input) {
         [$orgId]
     );
     $proxyPwdEncoded = $proxyPwdRow['value'] ?? '';
-
-    // Fetch named proxies for this OM (om_proxies table)
-    $omProxies = Database::fetchAll(
-        "SELECT name, url, username, password_enc, pac_url, no_proxy, is_default
-         FROM om_proxies WHERE organization_id = ? ORDER BY is_default DESC, name ASC",
-        [$orgId]
-    );
-
-    // Export proxy list in the header
-    $bundle .= "export PROXY_COUNT='" . count($omProxies) . "'\n";
-    $defaultProxyName = '';
-    foreach ($omProxies as $p) {
-        if ($p['is_default']) { $defaultProxyName = $p['name']; break; }
-    }
-    $bundle .= "export PROXY_DEFAULT_NAME='" . str_replace("'", "'\\''", $defaultProxyName) . "'\n";
-    $proxyIdx = 1;
-    foreach ($omProxies as $p) {
-        $bundle .= "export PROXY_{$proxyIdx}_NAME='" . str_replace("'", "'\\''", $p['name']) . "'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_URL='" . str_replace("'", "'\\''", $p['url'] ?? '') . "'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_USER='" . str_replace("'", "'\\''", $p['username'] ?? '') . "'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_PASS_B64='__PROXY_{$proxyIdx}_PASS_B64__'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_PAC_URL='" . str_replace("'", "'\\''", $p['pac_url'] ?? '') . "'\n";
-        $bundle .= "export PROXY_{$proxyIdx}_NO_PROXY='" . str_replace("'", "'\\''", $p['no_proxy'] ?? '') . "'\n";
-        $proxyIdx++;
-    }
-    $bundle .= "\n";
 
     foreach ($scripts as $s) {
         $rawContent = getScriptContent((int)$s['id'], $orgId);

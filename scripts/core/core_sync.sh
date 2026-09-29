@@ -221,6 +221,12 @@ _build_no_proxy() {
         done
     fi
     [ -n "$extra" ] && base="${base},${extra}"
+
+    # Normalizar: painel guarda "a;b; *.dom" — wget/curl/git
+    # esperam virgula e sem "*".
+    base="$(echo "$base" | tr ';' ',' | tr -d ' ')"
+    base="$(echo "$base" | sed 's/^\*\././; s/,\*\./,./g')"
+
     echo "$base"
 }
 

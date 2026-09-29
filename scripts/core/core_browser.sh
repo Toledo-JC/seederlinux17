@@ -212,6 +212,11 @@ _build_no_proxy_browser() {
 
     [ -n "$extra" ] && base="${base},${extra}"
 
+    # Normalizar: painel guarda "a;b; *.dom" — Firefox/Chrome
+    # esperam virgula e sem "*".
+    base="$(echo "$base" | tr ';' ',' | tr -d ' ')"
+    base="$(echo "$base" | sed 's/^\*\././; s/,\*\./,./g')"
+
     echo "$base"
 }
 
@@ -453,10 +458,10 @@ EOF
 
 for DIR in /etc/opt/chrome/policies/managed \
            /etc/chromium/policies/managed \
-           /etc/chromium-browser/policies/managed; do
-    GRANDPARENT="$(dirname "$(dirname "$DIR")")"
-    [ -d "$GRANDPARENT" ] || continue
-    mkdir -p "$DIR"
+           /etc/chromium-browser/policies/managed \
+           /var/snap/chromium/current/policies/managed \
+           /var/snap/chromium/common/policies/managed; do
+    mkdir -p "$DIR" 2>/dev/null || continue
     echo "$CHROME_POLICY_JSON" > "$DIR/seederlinux.json"
     chmod 644 "$DIR/seederlinux.json"
 done
