@@ -2369,6 +2369,14 @@ EOF
 
     chmod 600 /etc/sssd/sssd.conf
     echo ">>> SSSD configurado (ad_hostname=${SSSD_AD_HOSTNAME})"
+
+    # SSSD 2.9+ (Ubuntu 24.04+): os sockets systemd dos responders
+    # conflitam com a linha "services =" do sssd.conf. Desabilita os
+    # sockets — o sssd.service classico serve os responders sozinho.
+    for sock in nss pam sudo pac autofs ssh; do
+        systemctl disable --now "sssd-${sock}.socket" 2>/dev/null || true
+    done
+    systemctl reset-failed 'sssd-*.socket' 2>/dev/null || true
 fi
 
 # Configurar NSS
@@ -2601,6 +2609,24 @@ if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
         fi
     fi
 fi
+
+# Validar grupos do AllowGroups (evita lockout silencioso)
+if [ -n "$GRP_LIST" ]; then
+    for GRP in $GRP_LIST; do
+        if ! getent group "$GRP" >/dev/null 2>&1; then
+            echo ">>> AVISO: grupo '$GRP' nao existe no sistema/AD."
+            echo ">>>        AllowGroups vai BLOQUEAR todo mundo ate corrigir."
+        fi
+    done
+fi
+
+# Ubuntu 24.04+ usa ssh.socket (socket activation) com ListenStream=22
+# hardcoded que ignora "Port" do sshd_config. Desabilitar o socket
+# para a porta customizada valer e usar o ssh.service tradicional.
+if systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
+    systemctl disable --now ssh.socket 2>/dev/null || true
+fi
+systemctl enable ssh 2>/dev/null || true
 
 # Reiniciar SSH
 if [ -f /etc/ssh/sshd_config ]; then
@@ -2847,6 +2873,11 @@ _build_no_proxy_browser() {
 
     [ -n "$extra" ] && base="${base},${extra}"
 
+    # Normalizar: painel guarda "a;b; *.dom" — Firefox/Chrome
+    # esperam virgula e sem "*".
+    base="$(echo "$base" | tr ';' ',' | tr -d ' ')"
+    base="$(echo "$base" | sed 's/^\*\././; s/,\*\./,./g')"
+
     echo "$base"
 }
 
@@ -3088,10 +3119,10 @@ EOF
 
 for DIR in /etc/opt/chrome/policies/managed \
            /etc/chromium/policies/managed \
-           /etc/chromium-browser/policies/managed; do
-    GRANDPARENT="$(dirname "$(dirname "$DIR")")"
-    [ -d "$GRANDPARENT" ] || continue
-    mkdir -p "$DIR"
+           /etc/chromium-browser/policies/managed \
+           /var/snap/chromium/current/policies/managed \
+           /var/snap/chromium/common/policies/managed; do
+    mkdir -p "$DIR" 2>/dev/null || continue
     echo "$CHROME_POLICY_JSON" > "$DIR/seederlinux.json"
     chmod 644 "$DIR/seederlinux.json"
 done
@@ -6741,6 +6772,11 @@ _build_no_proxy() {
         base="${base},${extra}"
     fi
 
+    # Normalizar: painel guarda "a;b; *.dom" — wget/curl/git
+    # esperam virgula e sem "*".
+    base="$(echo "$base" | tr ';' ',' | tr -d ' ')"
+    base="$(echo "$base" | sed 's/^\*\././; s/,\*\./,./g')"
+
     echo "$base"
 }
 
@@ -7086,6 +7122,12 @@ _build_no_proxy() {
         done
     fi
     [ -n "$extra" ] && base="${base},${extra}"
+
+    # Normalizar: painel guarda "a;b; *.dom" — wget/curl/git
+    # esperam virgula e sem "*".
+    base="$(echo "$base" | tr ';' ',' | tr -d ' ')"
+    base="$(echo "$base" | sed 's/^\*\././; s/,\*\./,./g')"
+
     echo "$base"
 }
 
