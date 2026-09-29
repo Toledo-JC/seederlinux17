@@ -104,25 +104,13 @@ unset RANDOM_PASS
 # ============================================================
 echo ">>> Criando servico systemd x11vnc..."
 
-case "$DISPLAY_MANAGER" in
-    lightdm)
-        VNC_DISPLAY=":0"
-        VNC_AUTH="/var/run/lightdm/root/:0"
-        ;;
-    gdm3)
-        VNC_DISPLAY=":0"
-        VNC_AUTH="/run/user/0/gdm/Xauthority"
-        ;;
-    sddm)
-        VNC_DISPLAY=":0"
-        VNC_AUTH="/var/run/sddm/:0"
-        ;;
-    *)
-        VNC_DISPLAY=":0"
-        VNC_AUTH="/tmp/.X0-lock"
-        ;;
-esac
+# Detectar display Xorg ativo em runtime; cai em :0 se nao encontrar.
+VNC_DISPLAY="$(ps aux | grep -E '[X]org' | grep -oE ':[0-9]+' | head -1)"
+[ -z "$VNC_DISPLAY" ] && VNC_DISPLAY=":0"
 
+# -auth guess: o x11vnc descobre o Xauthority correto sozinho em
+# qualquer DM (lightdm, gdm3, sddm). O caminho /run/user/0/gdm/Xauthority
+# nao existe no Ubuntu 24.04 e faz o x11vnc falhar com "XOpenDisplay failed".
 cat > /etc/systemd/system/x11vnc.service <<EOF
 [Unit]
 Description=x11vnc Server - SeederLinux
@@ -130,7 +118,7 @@ After=display-manager.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/x11vnc -display ${VNC_DISPLAY} -auth ${VNC_AUTH} -forever -loop -noxdamage -repeat -rfbauth /etc/x11vnc/vncpasswd -rfbport 5900 -shared -o /var/log/x11vnc.log
+ExecStart=/usr/bin/x11vnc -display ${VNC_DISPLAY} -auth guess -forever -loop -noxdamage -repeat -rfbauth /etc/x11vnc/vncpasswd -rfbport 5900 -shared -o /var/log/x11vnc.log
 ExecStop=/usr/bin/killall x11vnc
 Restart=on-failure
 RestartSec=5

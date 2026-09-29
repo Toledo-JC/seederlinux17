@@ -785,13 +785,13 @@ EOF
     chmod 600 /etc/sssd/sssd.conf
     echo ">>> SSSD configurado (ad_hostname=${SSSD_AD_HOSTNAME})"
 
-    # SSSD 2.9+ (Ubuntu 24.04+): os sockets systemd dos responders
-    # conflitam com a linha "services =" do sssd.conf. Desabilita os
-    # sockets — o sssd.service classico serve os responders sozinho.
-    for sock in nss pam sudo pac autofs ssh; do
-        systemctl disable --now "sssd-${sock}.socket" 2>/dev/null || true
-    done
-    systemctl reset-failed 'sssd-*.socket' 2>/dev/null || true
+    # SSSD 2.9+ (Ubuntu 24.04+): o aviso "Misconfiguration found for
+    # the 'nss' responder" entre services= e socket activation e'
+    # COSMETICO — nao impede o sssd.service de subir. NAO desabilitar
+    # os sockets: no Ubuntu 24.04 o sssd.service depende deles para
+    # alguns responders e disable --now quebra o start.
+    # Mantemos services = nss, pam, sudo E os sockets convivendo.
+    echo ">>> SSSD: mantendo socket activation (nao desabilitar sockets)."
 fi
 
 # Configurar NSS
