@@ -1164,7 +1164,7 @@ const variableHelpText = {
     HOMEPAGE: 'Inclua http:// ou https://. Ex: http://www.intraer',
     PRINTERS: 'Nomes separados por vírgula. Ex: printer1,printer2',
     COMPARTILHAMENTOS: 'Nomes separados por vírgula. Ex: publico,usuarios,setores',
-    SSH_GROUPS: 'Grupos separados por vírgula. Ex: linux-admins,_DASTI'
+    SSH_GROUPS: 'Nome EXATO do grupo no AD, sem \\ ou espaços. Separar por vírgula. Ex: linux-admins,_DASTI'
 };
 
 function getVariableTooltip(variable) {
@@ -1716,7 +1716,7 @@ function renderTypedInput(v) {
         if (v.name === 'JAVA_EXCEPTIONS') ph = 'Uma URL por linha';
         if (v.name === 'SSH_GROUPS') {
             ph = 'Grupos separados por vírgula. Ex: linux-admins,_DASTI';
-            note = '<span class="text-xs text-slate-400 mt-1 block">Grupos separados por vírgula. Ex: linux-admins,_DASTI</span>';
+            note = '<span class="text-xs text-slate-400 mt-1 block">Digite o nome EXATO do grupo como exposto pelo AD (ex: _DASTI, linux-admins). Não use "\\ " nem espaços — espaços viram separadores no AllowGroups.</span>';
         }
         return `<textarea data-var-id="${varId}" rows="2" class="var-textarea" placeholder="${ph}">${Utils.escapeHtml(val)}</textarea>${note}`;
     }

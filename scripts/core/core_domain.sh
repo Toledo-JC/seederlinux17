@@ -733,10 +733,7 @@ if [ "$JOIN_METHOD" = "sssd" ] || [ "$ESTADO" = "INGRESSADO_SSSD" ] || [ "$ESTAD
     echo ">>> Configurando SSSD..."
     OFFLINE_CACHE=""
     if [ "$OFFLINE_AUTH_ENABLED" = "true" ]; then
-        DAYS="${OFFLINE_AUTH_DAYS:-3}"
-        OFFLINE_CACHE="cache_credentials = true
-        krb5_store_password_if_offline = true
-        offline_credentials_expiration = ${DAYS}"
+        OFFLINE_CACHE="$(printf '    cache_credentials = true\n    krb5_store_password_if_offline = true\n    offline_credentials_expiration = %s' "${OFFLINE_AUTH_DAYS:-3}")"
     fi
 
     # ad_hostname: evitar duplicar o dominio se o hostname atual ja
@@ -749,6 +746,9 @@ if [ "$JOIN_METHOD" = "sssd" ] || [ "$ESTADO" = "INGRESSADO_SSSD" ] || [ "$ESTAD
         *)   SSSD_AD_HOSTNAME="${_HN_NOW}.${DOMINIO}" ;;
     esac
 
+    # /home/%u (nao /home/%d/%u): o snap do Firefox no Ubuntu 24.04+
+    # usa AppArmor que restringe /home/*/snap — /home/dominio/usuario/snap
+    # nao bate com o pattern e o snap falha com Permission denied.
     cat > /etc/sssd/sssd.conf <<EOF
 [sssd]
 services = nss, pam, sudo
@@ -772,13 +772,10 @@ domains = ${DOMINIO}
     ldap_user_shell = loginShell
     enumerate = false
     use_fully_qualified_names = false
-    # /home/%u (nao /home/%d/%u): o snap do Firefox no Ubuntu 24.04+
-    # usa AppArmor que restringe /home/*/snap — /home/dominio/usuario/snap
-    # nao bate com o pattern e o snap falha com Permission denied.
     fallback_homedir = /home/%u
     default_shell = /bin/bash
     krb5_use_fast = never
-    ${OFFLINE_CACHE}
+${OFFLINE_CACHE}
     dyndns_update = false
 EOF
 

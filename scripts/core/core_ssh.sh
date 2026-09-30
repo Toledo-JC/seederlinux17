@@ -34,7 +34,9 @@ if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
         IFS=$'\n,' read -ra GRP_ARRAY <<< "$SSH_GROUPS"
         GRP_LIST=""
         for GRP in "${GRP_ARRAY[@]}"; do
-            GRP=$(echo "$GRP" | xargs)
+            # Trim leading/trailing whitespace sem xargs (xargs consome "\ ")
+            GRP="${GRP#"${GRP%%[![:space:]]*}"}"
+            GRP="${GRP%"${GRP##*[![:space:]]}"}"
             if [ -n "$GRP" ] && [ "$GRP" != "" ]; then
                 if [ -z "$GRP_LIST" ]; then
                     GRP_LIST="$GRP"

@@ -2732,9 +2732,12 @@ function handleGenerateBundle($input) {
             }
         }
 
-        // SSH_GROUPS: remover espacos extras, garantir separacao por virgula, remover caracteres invalidos
+        // SSH_GROUPS: permitir hifens (nomes de grupo do AD como "linux-admins"),
+        // remover espacos e barras (quebram AllowGroups — viram separadores).
+        // O operador deve digitar o nome EXATO do grupo como exposto pelo AD,
+        // sem "\ " nem espacos. Ver UI para documentacao.
         if ($name === 'SSH_GROUPS') {
-            $cleaned = preg_replace('/[^a-zA-Z0-9_,]/', '', $val);
+            $cleaned = preg_replace('/[^a-zA-Z0-9_,-]/', '', $val);
             $parts = array_filter(array_map('trim', explode(',', $cleaned)), fn($p) => $p !== '');
             $v['value'] = implode(',', $parts);
         }
