@@ -9,18 +9,6 @@
 CREATE SCHEMA IF NOT EXISTS mirror;
 
 -- ============================================================================
--- Create 'root' role to suppress FATAL log errors from external/phantom
--- connections that attempt to authenticate as the OS 'root' user.
--- The role has LOGIN but no privileges on any schema/table.
--- ============================================================================
-DO $$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'root') THEN
-        CREATE ROLE root LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION;
-    END IF;
-END $$;
-
--- ============================================================================
 -- Table 1: organizations (created first — users references it)
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS organizations (
@@ -344,21 +332,6 @@ CREATE TABLE IF NOT EXISTS script_versions (
 CREATE INDEX IF NOT EXISTS idx_script_versions_script ON script_versions(script_id);
 CREATE INDEX IF NOT EXISTS idx_script_versions_type ON script_versions(version_type);
 CREATE INDEX IF NOT EXISTS idx_script_versions_org ON script_versions(organization_id);
-
--- Compatibilidade com bases pre-existentes: adiciona colunas 'filename' e 'version'
--- para acomodar queries externas que referenciam esses nomes em vez de version_name/version_number.
-ALTER TABLE script_versions ADD COLUMN IF NOT EXISTS filename VARCHAR(200);
-ALTER TABLE script_versions ADD COLUMN IF NOT EXISTS version INTEGER;
-
--- Popular filename a partir do join com scripts quando vazio
-UPDATE script_versions sv
-SET filename = s.filename
-FROM scripts s
-WHERE sv.script_id = s.id
-  AND sv.filename IS NULL
-  AND s.filename IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_script_versions_filename ON script_versions(filename);
 
 -- FK: scripts.current_version_id -> script_versions.id (deferred; script_versions is created after scripts)
 DO $$
