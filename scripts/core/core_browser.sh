@@ -423,6 +423,12 @@ for DIR in /etc/firefox/policies /etc/firefox-esr/policies; do
     cp /usr/lib/firefox-esr/distribution/policies.json "$DIR/policies.json" 2>/dev/null || true
 done
 
+if [ -d /opt/firefox-moderno ]; then
+    mkdir -p /opt/firefox-moderno/distribution
+    cp /usr/lib/firefox-esr/distribution/policies.json \
+       /opt/firefox-moderno/distribution/policies.json 2>/dev/null || true
+fi
+
 echo ">>> Firefox configurado (policy de proxy: $FF_PROXY_MODE)"
 
 # ============================================================

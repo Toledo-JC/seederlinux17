@@ -489,6 +489,10 @@ EOF
         mkdir -p "$DIR"
         echo "$json" > "$DIR/policies.json"
     done
+    if [ -d /opt/firefox-moderno ]; then
+        mkdir -p /opt/firefox-moderno/distribution
+        echo "$json" > /opt/firefox-moderno/distribution/policies.json
+    fi
     echo "OK: Firefox policy aplicada (modo: $policy)"
 }
 
@@ -510,7 +514,7 @@ sync_chrome_policy() {
         PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
             local nome authport no_proxy_extra no_proxy_final
             nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
-            authport="$(_resolver_proxy_hostport "$nome" auth)" || authport=""
+            authport="$(_resolver_proxy_hostport "$nome" plain)" || authport=""
             if [ -z "$authport" ]; then
                 proxy_json=", \"ProxyMode\": \"direct\""
                 echo "AVISO: proxy '$nome' nao encontrado - Chrome em DIRECT"
@@ -787,7 +791,7 @@ sync_conky() {
 
     local CONKY_TEXT=""
     if [ "$CFG_SHOW_HOSTNAME" = "true" ]; then
-        CONKY_TEXT="\${font DejaVu Sans Mono:size=${CFG_HOSTNAME_FONT_SIZE}}\${color ${COLOR_TEXT_LUA}}Host: \${nodetype}
+        CONKY_TEXT="\${font DejaVu Sans Mono:size=${CFG_HOSTNAME_FONT_SIZE}}\${color ${COLOR_TEXT_LUA}}Host: \${nodename}
 \${font DejaVu Sans Mono:size=${CFG_FONT_SIZE}}
 \${color ${COLOR_TEXT_LUA}}${OM_ACRONYM:-} - ${OM_NAME:-}
 \${color ${COLOR_TEXT_LUA}}\${hr}"
