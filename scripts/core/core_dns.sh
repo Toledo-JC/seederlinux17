@@ -166,19 +166,19 @@ echo ">>> /etc/hosts configurado"
 # NTP - sincronizar horario com o servidor
 # ============================================================
 echo ">>> Configurando NTP..."
-if command -v timedatectl &> /dev/null; then
-    timedatectl set-ntp true 2>/dev/null || true
+
+# 1. Garantir chrony instalado (Ubuntu 24.04 nao traz por padrao)
+if ! command -v chronyd &>/dev/null; then
+    echo ">>> Instalando chrony..."
+    DEBIAN_FRONTEND=noninteractive apt-get install -y chrony 2>/dev/null || true
 fi
 
-if [ -n "$NTP_SERVER" ] && [ "$NTP_SERVER" != "" ]; then
-    # Tenta sincronizar imediatamente
-    if command -v ntpdate &> /dev/null; then
-        ntpdate "$NTP_SERVER" 2>/dev/null || true
-    elif command -v chronyc &> /dev/null; then
-        chronyc -a makestep 2>/dev/null || true
-    fi
+# 2. Desabilitar systemd-timesyncd (conflita com chrony pelo socket NTP)
+systemctl stop systemd-timesyncd 2>/dev/null || true
+systemctl disable systemd-timesyncd 2>/dev/null || true
 
-    # Configura NTP permanente
+if [ -n "$NTP_SERVER" ] && [ "$NTP_SERVER" != "" ]; then
+    # 3. Escrever config ANTES de tentar sincronizar
     if [ -d /etc/chrony ]; then
         cat > /etc/chrony/chrony.conf <<EOF
 server $NTP_SERVER iburst
@@ -186,7 +186,29 @@ driftfile /var/lib/chrony/chrony.drift
 makestep 1.0 3
 rtcsync
 EOF
+        systemctl enable chrony 2>/dev/null || true
         systemctl restart chrony 2>/dev/null || true
+
+        # 4. Esperar sync acontecer (ate 30s)
+        echo ">>> Aguardando sincronizacao NTP com $NTP_SERVER..."
+        NTP_OK=false
+        for i in $(seq 1 15); do
+            sleep 2
+            if timedatectl status 2>/dev/null | grep -q "synchronized: yes"; then
+                NTP_OK=true
+                break
+            fi
+            chronyc makestep 2>/dev/null || true
+        done
+
+        if [ "$NTP_OK" = "true" ]; then
+            echo ">>> NTP sincronizado com sucesso: $(date -Is)"
+        else
+            echo ">>> AVISO: NTP NAO sincronizou em 30s."
+            echo ">>>        Kerberos pode falhar com 'Clock skew too great'."
+            echo ">>>        Servidor: $NTP_SERVER"
+            chronyc sources 2>/dev/null | sed 's/^/    /' || true
+        fi
     elif [ -f /etc/ntp.conf ]; then
         cp /etc/ntp.conf /etc/ntp.conf.bak 2>/dev/null || true
         cat > /etc/ntp.conf <<EOF
@@ -197,7 +219,6 @@ restrict 127.0.0.1
 EOF
         systemctl restart ntp 2>/dev/null || true
     fi
-    echo ">>> NTP configurado: $NTP_SERVER"
 else
     echo ">>> NTP_SERVER nao definido, usando padrao do sistema"
 fi
