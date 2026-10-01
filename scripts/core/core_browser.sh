@@ -486,9 +486,44 @@ for DIR in /etc/opt/chrome/policies/managed \
     mkdir -p "$DIR" 2>/dev/null || continue
     echo "$CHROME_POLICY_JSON" > "$DIR/seederlinux.json"
     chmod 644 "$DIR/seederlinux.json"
+    chown root:root "$DIR/seederlinux.json" 2>/dev/null || true
 done
 
 log_nivel INFO "Chrome/Chromium configurado (policy de proxy: $CHROME_PROXY_MODE)"
+
+# Diagnostico: verificar onde a policy realmente ficou gravada
+echo ">>> Diagnostico de politicas Chrome/Chromium:"
+for DIR in /etc/opt/chrome/policies/managed \
+           /etc/chromium/policies/managed \
+           /etc/chromium-browser/policies/managed \
+           /var/snap/chromium/current/policies/managed \
+           /var/snap/chromium/common/policies/managed; do
+    if [ -f "$DIR/seederlinux.json" ]; then
+        PERMS="$(stat -c '%a %U:%G' "$DIR/seederlinux.json" 2>/dev/null)"
+        echo "    [OK] $DIR/seederlinux.json ($PERMS)"
+    fi
+done
+
+# Aviso: Chrome/Chromium so releem policies no startup.
+# Se estiverem rodando agora, o usuario precisa fechar e reabrir
+# (ou reiniciar a sessao) para as policies valerem.
+CHROME_RODANDO=false
+pgrep -x chrome >/dev/null 2>&1 && CHROME_RODANDO=true
+pgrep -x chromium >/dev/null 2>&1 && CHROME_RODANDO=true
+
+if [ "$CHROME_RODANDO" = "true" ]; then
+    echo ">>> AVISO: Chrome/Chromium estao rodando."
+    echo ">>>        Eles NAO releem policies.json ate reiniciar."
+    echo ">>>        Feche todos os processos e reabra."
+fi
+
+# Detectar snap-chromium (AppArmor pode bloquear leitura de /etc)
+if command -v snap >/dev/null 2>&1 && snap list chromium 2>/dev/null | grep -q "^chromium"; then
+    echo ">>> AVISO: Chromium via SNAP detectado."
+    echo ">>>        AppArmor da snap pode impedir leitura de /etc/chromium/."
+    echo ">>>        Se a policy nao aplicar, use: snap set chromium proxy..."
+    echo ">>>        ou instale o Chromium via apt (nao snap)."
+fi
 
 # ============================================================
 # Extensao Chrome para autenticacao de proxy (Basic auth)

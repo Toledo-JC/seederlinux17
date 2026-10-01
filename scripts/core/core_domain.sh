@@ -762,10 +762,18 @@ if [ "$JOIN_METHOD" = "sssd" ] || [ "$ESTADO" = "INGRESSADO_SSSD" ] || [ "$ESTAD
     # hostnamectl com FQDN completo). Sem isso, sssd.conf fica com
     # "host.dominio.dominio" e o SSSD nao sobe.
     _HN_NOW="$(hostname)"
-    case "$_HN_NOW" in
-        *.*) SSSD_AD_HOSTNAME="$_HN_NOW" ;;
-        *)   SSSD_AD_HOSTNAME="${_HN_NOW}.${DOMINIO}" ;;
-    esac
+
+    # Se o hostname ja termina com .$DOMINIO, e FQDN real — usa como esta.
+    # Senao, pega so a primeira parte (antes do primeiro ponto) e
+    # adiciona o dominio. Isso evita que hostnames como
+    # "seeder-client11.2" virem "seeder-client11.2" no ad_hostname,
+    # quando o SPN no AD e "seeder-client11".
+    if echo "$_HN_NOW" | grep -q "\.${DOMINIO}$"; then
+        SSSD_AD_HOSTNAME="$_HN_NOW"
+    else
+        _HN_SHORT="${_HN_NOW%%.*}"
+        SSSD_AD_HOSTNAME="${_HN_SHORT}.${DOMINIO}"
+    fi
 
     # /home/%u (nao /home/%d/%u): o snap do Firefox no Ubuntu 24.04+
     # usa AppArmor que restringe /home/*/snap — /home/dominio/usuario/snap
