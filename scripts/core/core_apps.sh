@@ -73,13 +73,7 @@ if [ "$INSTALL_CHROME" = "true" ]; then
     CHROME_DEB="/tmp/google-chrome-stable.deb"
 
     if wget -q -O "$CHROME_DEB" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"; then
-        apt-get install -y "$CHROME_DEB" || {
-            echo ">>> AVISO: Falha ao instalar Google Chrome. Tentando dependencias..."
-            apt-get install -y -f
-            apt-get install -y "$CHROME_DEB" || {
-                echo ">>> AVISO: Google Chrome nao instalado."
-            }
-        }
+        dpkg -i "$CHROME_DEB" || apt-get install -y -f
         rm -f "$CHROME_DEB"
     else
         echo ">>> AVISO: Nao foi possivel baixar Google Chrome."
@@ -129,9 +123,7 @@ EOF
             # Metodo 2: Download direto do .deb
             ONLYOFFICE_DEB="/tmp/onlyoffice-desktopeditors.deb"
             if wget -q -O "$ONLYOFFICE_DEB" "https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors_amd64.deb"; then
-                apt-get install -y "$ONLYOFFICE_DEB" || {
-                    echo ">>> AVISO: Falha ao instalar OnlyOffice via .deb direto."
-                }
+                dpkg -i "$ONLYOFFICE_DEB" || apt-get install -y -f
                 rm -f "$ONLYOFFICE_DEB"
             else
                 echo ">>> AVISO: Nao foi possivel baixar OnlyOffice."

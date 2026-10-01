@@ -515,6 +515,22 @@ wallpaper_mode=crop
 wallpaper=/usr/share/backgrounds/seederlinux/wallpaper.jpg
 EOF
         ;;
+
+    lxqt)
+        # LXQt - via lxqt.conf + pcmanfm-qt
+        mkdir -p /etc/skel/.config/lxqt
+        cat > /etc/skel/.config/lxqt/lxqt.conf <<EOF
+[General]
+theme=Ambiance
+icon_theme=Adwaita
+EOF
+        mkdir -p /etc/skel/.config/pcmanfm-qt/lxqt
+        cat > /etc/skel/.config/pcmanfm-qt/lxqt/settings.conf <<EOF
+[Wallpaper]
+Wallpaper=/usr/share/backgrounds/seederlinux/wallpaper.jpg
+WallpaperMode=zoom
+EOF
+        ;;
 esac
 
 # ============================================================

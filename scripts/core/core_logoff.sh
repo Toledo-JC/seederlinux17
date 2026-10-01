@@ -89,7 +89,7 @@ echo "=== Logoff (minimo): $(date) - Usuario: $USERNAME ==="
 # Desmontar compartilhamentos CIFS do usuario
 # ============================================================
 if [ -n "$COMPARTILHAMENTOS" ]; then
-    MOUNT_DIR="${MOUNT_BASE:-/mnt}"
+    MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
     for SHARE in $COMPARTILHAMENTOS; do
         SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
         if mountpoint -q "$SHARE_MOUNT" 2>/dev/null; then

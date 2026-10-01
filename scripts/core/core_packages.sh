@@ -232,7 +232,6 @@ EXTRA_PACKAGES=(
     conky-all
     jq
     dmidecode
-    openjdk-8-jre
     gimp
     vlc
     evince
@@ -255,6 +254,10 @@ EXTRA_PACKAGES=(
 )
 
 instalar_pacotes "extras" "${EXTRA_PACKAGES[@]}"
+
+if [ "{{INSTALL_JAVA8}}" = "true" ]; then
+    instalar_pacotes "java8" openjdk-8-jre
+fi
 
 # ============================================================
 # Display Manager + greeter
@@ -348,22 +351,38 @@ fi
 # nem de apt) e instalar em /opt/firefox. O snap (se presente) e
 # mantido — o usuario pode remove-lo manualmente depois se quiser.
 # O tarball le policies.json normalmente.
-echo ">>> Instalando Firefox via tarball oficial da Mozilla..."
+echo ">>> Verificando instalacao existente do Firefox..."
 FIREFOX_TARBALL="/tmp/firefox-latest.tar.xz"
 FIREFOX_URL="https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=pt-BR"
 
-if wget -q -O "$FIREFOX_TARBALL" "$FIREFOX_URL" 2>/dev/null; then
-    tar xJf "$FIREFOX_TARBALL" -C /opt/ 2>/dev/null
-    rm -f "$FIREFOX_TARBALL"
+# Deteccao: deb nativo vs snap vs nenhum
+TEM_DEB=false
+TEM_SNAP=false
+if dpkg -l firefox 2>/dev/null | grep -q "^ii" || \
+   dpkg -l firefox-esr 2>/dev/null | grep -q "^ii"; then
+    TEM_DEB=true
+fi
+if snap list firefox 2>/dev/null | grep -q "^firefox"; then
+    TEM_SNAP=true
+fi
 
-    # Mover se ja existir um /opt/firefox anterior
-    [ -d /opt/firefox-moderno ] && rm -rf /opt/firefox-moderno
-    mv /opt/firefox /opt/firefox-moderno 2>/dev/null || true
+if [ "$TEM_DEB" = "true" ] && [ "$TEM_SNAP" != "true" ]; then
+    # Ja existe Firefox .deb nativo e nenhum snap — nada a fazer
+    echo ">>> Firefox .deb nativo ja instalado. Nenhuma acao necessaria."
+elif [ "$TEM_SNAP" = "true" ]; then
+    # Snap presente — baixar tarball da Mozilla em /opt/firefox-moderno
+    # (NAO remover o snap)
+    echo ">>> Firefox snap detectado. Instalando tarball da Mozilla em /opt/firefox-moderno..."
+    if wget -q --no-proxy -O "$FIREFOX_TARBALL" "$FIREFOX_URL" 2>/dev/null; then
+        tar xJf "$FIREFOX_TARBALL" -C /opt/ 2>/dev/null
+        rm -f "$FIREFOX_TARBALL"
 
-    ln -sf /opt/firefox-moderno/firefox /usr/local/bin/firefox
+        [ -d /opt/firefox-moderno ] && rm -rf /opt/firefox-moderno
+        mv /opt/firefox /opt/firefox-moderno 2>/dev/null || true
 
-    # .desktop para aparecer no menu de aplicativos
-    cat > /usr/share/applications/firefox-moderno.desktop <<DESKTOP
+        ln -sf /opt/firefox-moderno/firefox /usr/local/bin/firefox
+
+        cat > /usr/share/applications/firefox-moderno.desktop <<DESKTOP
 [Desktop Entry]
 Version=1.0
 Name=Firefox
@@ -376,15 +395,42 @@ Categories=Network;WebBrowser;
 MimeType=text/html;text/xml;application/xhtml+xml;application/vnd.mozilla.xul+xml;text/mml;x-scheme-handler/http;x-scheme-handler/https;
 DESKTOP
 
-    echo ">>> Firefox tarball instalado em /opt/firefox-moderno."
+        echo ">>> Firefox tarball instalado em /opt/firefox-moderno (snap mantido)."
+    else
+        echo ">>> AVISO: Falha ao baixar tarball do Firefox. Snap mantido."
+    fi
 else
-    echo ">>> AVISO: Falha ao baixar tarball do Firefox."
-    echo ">>> Firefox snap detectado. Para politica corporativa de proxy funcionar,"
-    echo ">>> instale o Firefox .deb manualmente via:"
-    echo ">>>   sudo snap remove firefox && sudo add-apt-repository ppa:mozillateam/ppa && sudo apt install firefox"
-    # Fallback: tentar firefox-esr via apt (so se o DNS ainda resolver internet)
-    apt-get install -y firefox-esr firefox-esr-l10n-pt-br 2>/dev/null || \
-        apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
+    # Nenhum Firefox instalado — baixar tarball da Mozilla
+    echo ">>> Nenhum Firefox detectado. Instalando tarball da Mozilla..."
+    if wget -q --no-proxy -O "$FIREFOX_TARBALL" "$FIREFOX_URL" 2>/dev/null; then
+        tar xJf "$FIREFOX_TARBALL" -C /opt/ 2>/dev/null
+        rm -f "$FIREFOX_TARBALL"
+
+        [ -d /opt/firefox-moderno ] && rm -rf /opt/firefox-moderno
+        mv /opt/firefox /opt/firefox-moderno 2>/dev/null || true
+
+        ln -sf /opt/firefox-moderno/firefox /usr/local/bin/firefox
+
+        cat > /usr/share/applications/firefox-moderno.desktop <<DESKTOP
+[Desktop Entry]
+Version=1.0
+Name=Firefox
+Comment=Navegador Web
+Exec=/opt/firefox-moderno/firefox %u
+Icon=/opt/firefox-moderno/browser/chrome/icons/default/default128.png
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;application/vnd.mozilla.xul+xml;text/mml;x-scheme-handler/http;x-scheme-handler/https;
+DESKTOP
+
+        echo ">>> Firefox tarball instalado em /opt/firefox-moderno."
+    else
+        echo ">>> AVISO: Falha ao baixar tarball do Firefox."
+        echo ">>> Tentando firefox-esr via apt..."
+        apt-get install -y firefox-esr firefox-esr-l10n-pt-br 2>/dev/null || \
+            apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
+    fi
 fi
 
 # Firmware opcional
@@ -411,7 +457,7 @@ fi
 # ============================================================
 # Remover LibreOffice (opcional)
 # ============================================================
-if [ "false" = "true" ]; then
+if [ "{{REMOVER_LIBREOFFICE}}" = "true" ]; then
     echo ">>> Removendo LibreOffice..."
     apt-get remove --purge -y libreoffice* libreoffice-core libreoffice-common
 fi

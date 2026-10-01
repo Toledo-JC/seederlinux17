@@ -68,8 +68,10 @@ fi
 # Ubuntu 24.04+ usa ssh.socket (socket activation) com ListenStream=22
 # hardcoded que ignora "Port" do sshd_config. Desabilitar o socket
 # para a porta customizada valer e usar o ssh.service tradicional.
-if systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
-    systemctl disable --now ssh.socket 2>/dev/null || true
+if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "" ] && [ "$SSH_PORT" != "22" ]; then
+    if systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
+        systemctl disable --now ssh.socket 2>/dev/null || true
+    fi
 fi
 systemctl enable ssh 2>/dev/null || true
 
