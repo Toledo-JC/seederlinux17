@@ -513,7 +513,12 @@ if [ "$CHROME_PROXY_MODE" = "fixed_servers" ]; then
                 _v_user="PROXY_${_i}_USER"
                 _v_pass_b64="PROXY_${_i}_PASS_B64"
                 PROXY_AUTH_USER="${!_v_user}"
-                PROXY_AUTH_PASS="$(printf '%s' "${!_v_pass_b64}" | base64 -d 2>/dev/null)"
+                                _v_pass_b64_val="${!_v_pass_b64}"
+                if [[ "$_v_pass_b64_val" == "__"*"__" ]] || [ -z "$_v_pass_b64_val" ]; then
+                    PROXY_AUTH_PASS=""
+                else
+                    PROXY_AUTH_PASS="$(printf '%s' "$_v_pass_b64_val" | base64 -d 2>/dev/null || true)"
+                fi
                 break
             fi
             _i=$((_i+1))
