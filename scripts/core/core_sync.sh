@@ -577,6 +577,17 @@ sync_branding() {
     mkdir -p /usr/share/backgrounds/seederlinux /usr/share/pixmaps
     chmod 0755 /usr/share/backgrounds/seederlinux /usr/share/pixmaps
 
+    local STATE_ASSETS="/etc/seederlinux/sync-assets.state"
+    local LAST_WALLPAPER_URL="" LAST_WALLPAPER_LOGIN_URL="" LAST_LOGO_URL=""
+    if [ -f "$STATE_ASSETS" ]; then
+        # shellcheck disable=SC1090
+        source "$STATE_ASSETS"
+    fi
+    local WP_FULL WP_LOGIN_FULL LOGO_FULL
+    WP_FULL="$(_prefixar_seeder_url "${WALLPAPER_URL:-}")"
+    WP_LOGIN_FULL="$(_prefixar_seeder_url "${WALLPAPER_LOGIN_URL:-}")"
+    LOGO_FULL="$(_prefixar_seeder_url "${LOGO_URL:-}")"
+
     _baixar_ativo() {
         local url
         url="$(_prefixar_seeder_url "$1")"
@@ -606,9 +617,15 @@ sync_branding() {
         echo "OK: $(basename "$dest") ($mime)"
     }
 
-    [ -n "${WALLPAPER_URL:-}" ] && _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
-    [ -n "${WALLPAPER_LOGIN_URL:-}" ] && _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
-    [ -n "${LOGO_URL:-}" ] && _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
+    if [ -n "$WP_FULL" ] && { [ "$WP_FULL" != "$LAST_WALLPAPER_URL" ] || [ ! -s /usr/share/backgrounds/seederlinux/wallpaper.jpg ]; }; then
+        _baixar_ativo "$WP_FULL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
+    fi
+    if [ -n "$WP_LOGIN_FULL" ] && { [ "$WP_LOGIN_FULL" != "$LAST_WALLPAPER_LOGIN_URL" ] || [ ! -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; }; then
+        _baixar_ativo "$WP_LOGIN_FULL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+    fi
+    if [ -n "$LOGO_FULL" ] && { [ "$LOGO_FULL" != "$LAST_LOGO_URL" ] || [ ! -s /usr/share/pixmaps/seederlinux-logo.png ]; }; then
+        _baixar_ativo "$LOGO_FULL" /usr/share/pixmaps/seederlinux-logo.png
+    fi
 
     local LOGIN_WP="/usr/share/backgrounds/seederlinux/wallpaper-login.jpg"
     local SESSION_WP="/usr/share/backgrounds/seederlinux/wallpaper.jpg"
@@ -669,6 +686,13 @@ EOF
             ;;
     esac
 
+    {
+        echo "LAST_WALLPAPER_URL=\"$WP_FULL\""
+        echo "LAST_WALLPAPER_LOGIN_URL=\"$WP_LOGIN_FULL\""
+        echo "LAST_LOGO_URL=\"$LOGO_FULL\""
+    } > "$STATE_ASSETS"
+    chmod 600 "$STATE_ASSETS"
+
     case "$DISPLAY_MANAGER" in
         lightdm)
             if [ -s "$LOGIN_WP" ]; then
@@ -706,13 +730,16 @@ sync_printers() {
     command -v cupsctl &>/dev/null || { echo "CUPS nao instalado, pulando"; return 0; }
 
     systemctl enable cups 2>/dev/null || true
-    systemctl start cups 2>/dev/null || true
+    if ! systemctl is-active --quiet cups; then
+        systemctl start cups 2>/dev/null || true
+    fi
     cupsctl --remote-admin --remote-any --share-printers 2>/dev/null || true
 
-    cat > /etc/cups/client.conf <<EOF
-# Cliente CUPS - SeederLinux
-ServerName ${PRINT_SERVER}
-EOF
+    local PREV NEW
+    PREV="$(cat /etc/cups/client.conf 2>/dev/null || true)"
+    NEW="# Cliente CUPS - SeederLinux
+ServerName ${PRINT_SERVER}"
+    printf '%s\n' "$NEW" > /etc/cups/client.conf
 
     if [ -n "${PRINTERS:-}" ]; then
         for PRINTER in $PRINTERS; do
@@ -724,7 +751,9 @@ EOF
     fi
 
     [ -n "${DEFAULT_PRINTER:-}" ] && lpadmin -d "$DEFAULT_PRINTER" 2>/dev/null || true
-    systemctl restart cups 2>/dev/null || true
+    if [ "$PREV" != "$NEW" ]; then
+        systemctl restart cups 2>/dev/null || true
+    fi
 }
 
 # ============================================================

@@ -72,15 +72,19 @@ export DEBIAN_FRONTEND=noninteractive
 # Google Chrome (instalado via .deb/wget, nao via apt-get)
 # ============================================================
 if [ "$INSTALL_CHROME" = "true" ]; then
-    log_nivel INFO "Instalando Google Chrome..."
-    CHROME_DEB="/tmp/google-chrome-stable.deb"
-
-    if wget -q -O "$CHROME_DEB" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"; then
-        dpkg -i "$CHROME_DEB" || apt-get install -y -f
-        rm -f "$CHROME_DEB"
+    if command -v google-chrome &>/dev/null || command -v google-chrome-stable &>/dev/null; then
+        log_nivel INFO "Google Chrome ja instalado - pulando download."
     else
-        log_nivel AVISO "Nao foi possivel baixar Google Chrome."
-        log_nivel INFO "Verifique conectividade e configuracao de proxy."
+        log_nivel INFO "Instalando Google Chrome..."
+        CHROME_DEB="/tmp/google-chrome-stable.deb"
+
+        if wget -q -O "$CHROME_DEB" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"; then
+            dpkg -i "$CHROME_DEB" || apt-get install -y -f
+            rm -f "$CHROME_DEB"
+        else
+            log_nivel AVISO "Nao foi possivel baixar Google Chrome."
+            log_nivel INFO "Verifique conectividade e configuracao de proxy."
+        fi
     fi
 else
     log_nivel INFO "Google Chrome desativado (INSTALL_CHROME=false). Pulando."
@@ -103,18 +107,21 @@ fi
 # OnlyOffice Desktop Editors
 # ============================================================
 if [ "$INSTALL_ONLYOFFICE" = "true" ]; then
-    log_nivel INFO "Instalando OnlyOffice Desktop Editors..."
+    if command -v onlyoffice-desktopeditors &>/dev/null; then
+        log_nivel INFO "OnlyOffice ja instalado - pulando download."
+    else
+        log_nivel INFO "Instalando OnlyOffice Desktop Editors..."
 
-    # Metodo 1: Via repositorio APT oficial
-    ONLYOFFICE_KEY="/tmp/onlyoffice-key.asc"
-    ONLYOFFICE_REPO_LIST="/etc/apt/sources.list.d/onlyoffice.list"
+        # Metodo 1: Via repositorio APT oficial
+        ONLYOFFICE_KEY="/tmp/onlyoffice-key.asc"
+        ONLYOFFICE_REPO_LIST="/etc/apt/sources.list.d/onlyoffice.list"
 
-    # Baixar e adicionar chave GPG
-    if wget -q -O "$ONLYOFFICE_KEY" "https://download.onlyoffice.com/GPG-KEY-ONLYOFFICE"; then
-        gpg --dearmor < "$ONLYOFFICE_KEY" > /usr/share/keyrings/onlyoffice-keyring.gpg 2>/dev/null || \
-            apt-key add "$ONLYOFFICE_KEY" 2>/dev/null || true
+        # Baixar e adicionar chave GPG
+        if wget -q -O "$ONLYOFFICE_KEY" "https://download.onlyoffice.com/GPG-KEY-ONLYOFFICE"; then
+            gpg --dearmor < "$ONLYOFFICE_KEY" > /usr/share/keyrings/onlyoffice-keyring.gpg 2>/dev/null || \
+                apt-key add "$ONLYOFFICE_KEY" 2>/dev/null || true
 
-        cat > "$ONLYOFFICE_REPO_LIST" <<EOF
+            cat > "$ONLYOFFICE_REPO_LIST" <<EOF
 deb [signed-by=/usr/share/keyrings/onlyoffice-keyring.gpg] https://download.onlyoffice.com/repo/debian squeeze main
 EOF
 
@@ -140,6 +147,7 @@ EOF
         apt-get install -y onlyoffice-desktopeditors 2>/dev/null || {
             log_nivel AVISO "OnlyOffice nao disponivel. Instalacao ignorada."
         }
+    fi
     fi
 else
     log_nivel INFO "OnlyOffice desativado (INSTALL_ONLYOFFICE=false). Pulando."
