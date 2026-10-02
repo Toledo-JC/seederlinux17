@@ -870,21 +870,53 @@ log_nivel INFO "PAM configurado"
 # Configurar sudo para grupos do domínio
 log_nivel INFO "Configurando sudo..."
 SUDO_FILE="/etc/sudoers.d/seederlinux-domain"
-cat > "$SUDO_FILE" <<EOF
-# SeederLinux - Acesso sudo para grupos do domínio
-%${GRUPO_ADMIN_AD}    ALL=(ALL:ALL) ALL
-%${GRUPO_ADMIN_LINUX}  ALL=(ALL:ALL) ALL
-EOF
+_sudo_candidatos=()
 
-if [ -n "$GRUPO_DASTI" ] && [ "$GRUPO_DASTI" != "" ]; then
-    echo "%${GRUPO_DASTI}    ALL=(ALL:ALL) ALL" >> "$SUDO_FILE"
+if [ -n "${GRUPO_ADMIN_LINUX:-}" ]; then
+    IFS=',' read -ra _tmp <<< "$GRUPO_ADMIN_LINUX"
+    for _g in "${_tmp[@]}"; do
+        _g="$(echo "$_g" | xargs)"
+        [ -n "$_g" ] && _sudo_candidatos+=("$_g")
+    done
 fi
 
+_sudo_candidatos+=("_dasti" "admins. do domínio")
+
+_sudo_deduplicados=()
+while IFS= read -r _g; do
+    _sudo_deduplicados+=("$_g")
+done < <(printf '%s\n' "${_sudo_candidatos[@]}" | awk '!seen[$0]++')
+_sudo_candidatos=("${_sudo_deduplicados[@]}")
+
+{
+    echo "# SeederLinux - Acesso sudo para grupos do dominio"
+    echo "# Regras por GID numerico para evitar problemas com case,"
+    echo "# espacos e acentos nos nomes de grupo do AD."
+    echo ""
+
+    _sudo_gids_adicionados=0
+    for _grupo_nome in "${_sudo_candidatos[@]}"; do
+        _gid="$(getent group "$_grupo_nome" 2>/dev/null | cut -d: -f3)"
+        if [ -n "$_gid" ]; then
+            echo "%#${_gid}    ALL=(ALL:ALL) ALL  # $_grupo_nome"
+            _sudo_gids_adicionados=$((_sudo_gids_adicionados + 1))
+            echo ">>> Sudoers: grupo '$_grupo_nome' (gid=$_gid) adicionado" >&2
+        else
+            echo ">>> Sudoers: grupo '$_grupo_nome' nao existe - pulado" >&2
+        fi
+    done
+} > "$SUDO_FILE"
+
 chmod 440 "$SUDO_FILE"
-visudo -cf "$SUDO_FILE" || {
-    log_nivel ERRO "sintaxe do sudoers inválida"
-    exit 1
-}
+if [ "$_sudo_gids_adicionados" -gt 0 ]; then
+    visudo -cf "$SUDO_FILE" || {
+        log_nivel ERRO "sintaxe do sudoers inválida"
+        exit 1
+    }
+else
+    log_nivel AVISO "nenhum grupo de sudo encontrado no AD."
+    log_nivel AVISO "Nenhum usuario de dominio tera sudo nesta estacao."
+fi
 
 log_nivel INFO "Sudo configurado"
 

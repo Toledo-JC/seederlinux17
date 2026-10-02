@@ -74,6 +74,7 @@ fi
 if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "" ] && [ "$SSH_PORT" != "22" ]; then
     if systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
         systemctl disable --now ssh.socket 2>/dev/null || true
+        systemctl mask ssh.socket 2>/dev/null || true
     fi
 fi
 systemctl enable ssh 2>/dev/null || true
