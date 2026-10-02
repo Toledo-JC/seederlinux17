@@ -460,7 +460,7 @@ CHROME_POLICY_JSON=$(cat <<EOF
 {
     "HomepageLocation": "${HOMEPAGE}",
     "HomepageIsNewTabPage": false,
-    "RestoreOnStartup": 1,
+    "RestoreOnStartup": 4,
     "RestoreOnStartupURLs": ["${HOMEPAGE}"],
     "BrowserSignin": 0,
     "SyncDisabled": true,
