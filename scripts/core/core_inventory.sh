@@ -13,7 +13,7 @@
 set -e
 
 echo "============================================================"
-echo "06 - Configurar OCS Inventory Agent"
+echo "Configurar OCS Inventory Agent"
 echo "============================================================"
 
 # ============================================================
@@ -119,6 +119,6 @@ ocsinventory-agent --server="$OCS_SERVER" --tag="$OCS_TAG" --lazy 2>/dev/null ||
     echo ">>> AVISO: Falha na coleta inicial. Sera refeito via cron."
 }
 
-echo ">>> [06] OCS Inventory configurado!"
+echo ">>> OCS Inventory configurado!"
 echo "============================================================"
 )

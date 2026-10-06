@@ -2638,7 +2638,7 @@ function handleGenerateBundle($input) {
         );
     }
 
-    // Todos os 23 scripts Core são incluídos no bundle.
+    // Todos os 24 scripts Core são incluídos no bundle.
     // Cada script de sessão (lightdm, gdm3, sddm) decide internamente se executa ou não.
 
     $bundle = "#!/bin/bash\n";
@@ -2697,6 +2697,114 @@ log_nivel() {
 }
 SEEDER_DIAG_EOF
 chmod 644 /usr/local/lib/seederlinux/diag.sh
+
+# ============================================================
+# Instala componentes permanentes (scripts que rodam fora do bundle)
+# ============================================================
+cat > /usr/local/bin/seederlinux-sync-ntp <<'SEEDER_SYNC_NTP_EOF'
+#!/bin/bash
+# ============================================================================
+# seederlinux-sync-ntp
+# ============================================================================
+# Sincroniza o relogio usando o cliente NTP vencedor descoberto pelo
+# core_ntp.sh (script 02 do bundle). Lê o estado de
+# /etc/seederlinux/ntp-state.env e chama o comando certo.
+#
+# Chamado em:
+#   - systemd unit seederlinux-sync-ntp.service (no boot)
+#   - /usr/local/bin/seederlinux-logon (a cada login, timeout 3s)
+#   - (V2) seeder-sync timer a cada 10min (health check)
+#
+# Alvo: menos de 3 segundos. Se nao sincronizar nesse tempo, sai
+# silenciosamente - o daemon em background resolve.
+#
+# Exit codes:
+#   0 - sincronizado ou timeout tolerado
+#   1 - sem estado (nunca rodou core_ntp.sh), nada a fazer
+#   2 - cliente conhecido mas o comando falhou (raro)
+# ============================================================================
+
+set -u
+
+STATE_FILE="/etc/seederlinux/ntp-state.env"
+[ ! -f "$STATE_FILE" ] && exit 1
+
+# shellcheck disable=SC1090
+. "$STATE_FILE"
+
+[ -z "${NTP_CLIENT:-}" ] && exit 1
+[ -z "${NTP_SERVER:-}" ] && exit 1
+
+_tentar_sync() {
+    case "$NTP_CLIENT" in
+        systemd-timesyncd)
+            systemctl restart systemd-timesyncd 2>/dev/null || return 2
+            ;;
+        chrony)
+            systemctl restart chrony 2>/dev/null || return 2
+            chronyc makestep 2>/dev/null || true
+            ;;
+        ntpsec)
+            systemctl restart ntpsec 2>/dev/null || return 2
+            ;;
+        ntp-isc)
+            systemctl restart ntp 2>/dev/null || return 2
+            ;;
+        ntpdate+cron)
+            ntpdate -u "$NTP_SERVER" 2>/dev/null || return 2
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+    return 0
+}
+
+_tentar_sync || exit $?
+
+# Aguarda ate 3s para confirmar sincronizacao (nao bloqueia login)
+for i in 1 2 3; do
+    sleep 1
+    case "$NTP_CLIENT" in
+        systemd-timesyncd)
+            [ "$(timedatectl show --property=NTPSynchronized --value 2>/dev/null)" = "yes" ] && exit 0
+            ;;
+        chrony)
+            chronyc tracking 2>/dev/null | grep -q "Leap status.*Normal" && exit 0
+            ;;
+        ntpsec|ntp-isc)
+            ntpq -p 2>/dev/null | grep -qE "^\*" && exit 0
+            ;;
+        ntpdate+cron)
+            # ntpdate e' sincrono; se _tentar_sync retornou 0, ja esta OK
+            exit 0
+            ;;
+    esac
+done
+
+# Nao confirmou em 3s, mas nao abortou. O daemon em background resolve.
+exit 0
+SEEDER_SYNC_NTP_EOF
+chmod 755 /usr/local/bin/seederlinux-sync-ntp
+
+cat > /etc/systemd/system/seederlinux-sync-ntp.service <<'SEEDER_SYNC_NTP_SVC_EOF'
+[Unit]
+Description=SeederLinux - Sincroniza NTP no boot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/seederlinux-sync-ntp
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SEEDER_SYNC_NTP_SVC_EOF
+chmod 644 /etc/systemd/system/seederlinux-sync-ntp.service
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable seederlinux-sync-ntp.service 2>/dev/null || true
 
 BUNDLE_START_EPOCH="$(date +%s)"
 export BUNDLE_START_EPOCH
@@ -2930,16 +3038,22 @@ BUNDLE_HEADER;
 # ============================================================
 _seederlinux_sumario() {
     local dur=$(( $(date +%s) - ${BUNDLE_START_EPOCH:-0} ))
-    local ok aviso erro
-    ok="$(grep -c '^\[OK[[:space:]]*\]'       "$BUNDLE_LOG" 2>/dev/null || echo 0)"
-    aviso="$(grep -c '^\[AVISO[[:space:]]*\]' "$BUNDLE_LOG" 2>/dev/null || echo 0)"
-    erro="$(grep -c '^\[ERRO[[:space:]]*\]'   "$BUNDLE_LOG" 2>/dev/null || echo 0)"
+    local ok aviso erro legado
+    ok="$(grep -c '^\[OK[[:space:]]*\]'       "$BUNDLE_LOG" 2>/dev/null || true)"
+    aviso="$(grep -c '^\[AVISO[[:space:]]*\]' "$BUNDLE_LOG" 2>/dev/null || true)"
+    erro="$(grep -c '^\[ERRO[[:space:]]*\]'   "$BUNDLE_LOG" 2>/dev/null || true)"
+    # Contador de legado: as mensagens ">>> ..." dos scripts ainda nao
+    # instrumentados (o grep -c ja imprime 0 quando nao ha match).
+    legado="$(grep -c '^>>>' "$BUNDLE_LOG" 2>/dev/null || true)"
 
     echo ""
     echo "=== SUMÁRIO DO BUNDLE ==="
     echo "Serial:    {{SERIAL}}"
     echo "Duração:   ${dur}s"
     echo "Log:       $BUNDLE_LOG"
+    echo ""
+    echo "Mensagens estruturadas: $((ok + aviso + erro))"
+    echo "Mensagens legadas:      $legado"
     echo ""
     echo "Contadores: OK=$ok AVISO=$aviso ERRO=$erro"
     echo ""

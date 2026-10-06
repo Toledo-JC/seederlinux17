@@ -18,7 +18,7 @@
 set -e
 
 echo "============================================================"
-echo "08 - Configurar x11vnc"
+echo "Configurar x11vnc"
 echo "============================================================"
 
 # ============================================================
@@ -134,6 +134,6 @@ systemctl start x11vnc.service 2>/dev/null || {
     echo ">>> O servico sera iniciado apos o display manager."
 }
 
-echo ">>> [08] x11vnc configurado!"
+echo ">>> x11vnc configurado!"
 echo "============================================================"
 )

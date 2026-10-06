@@ -23,7 +23,7 @@
 set -e
 
 echo "============================================================"
-echo "13.5 - Criar arquivo de configuracao persistente"
+echo "Criar arquivo de configuracao persistente"
 echo "============================================================"
 
 # ============================================================
@@ -271,5 +271,5 @@ install -m 0600 "$TMP_SECRETS" "$SECRETS_FILE"
 rm -f "$TMP_SECRETS"
 
 echo ">>> secrets.env atualizado (${PROXY_COUNT} senha(s) de proxy)"
-echo ">>> [13.5] Arquivo de configuracao criado!"
+echo ">>> Arquivo de configuracao criado!"
 echo "============================================================"

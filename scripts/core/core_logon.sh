@@ -48,7 +48,7 @@
 set -e
 
 echo "============================================================"
-echo "15 - Logon minimalista (via autostart)"
+echo "Logon minimalista (via autostart)"
 echo "============================================================"
 
 # ============================================================
@@ -407,5 +407,5 @@ X-GNOME-Autostart-enabled=true
 X-KDE-autostart-after=panel
 EOF
 
-echo ">>> [15] Logon minimalista instalado (via autostart)!"
+echo ">>> Logon minimalista instalado (via autostart)!"
 echo "============================================================"

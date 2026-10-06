@@ -1,18 +1,19 @@
 #!/bin/bash
 # ============================================================================
 # Core Script: core_dns.sh
-# SeederLinux Lite - DNS, NTP e resolucao de nomes
+# SeederLinux Lite - DNS e resolucao de nomes
 # ============================================================================
 # Configura DNS temporario para permitir resolucao durante o
-# provisionamento, ajusta /etc/resolv.conf, /etc/hosts e sincroniza NTP.
+# provisionamento e ajusta /etc/resolv.conf, /etc/hosts e hostname.
+# NTP foi movido para core_ntp.sh (script 02).
 #
 # CONTRATO DE FASES DO BUNDLE:
 #   Fase 1 (este script, etapa 01): DNS de internet na frente. Permite
-#     apt-get/wget nos scripts 02..05 (repositorios, pacotes, legados,
+#     apt-get/wget nos scripts 03..06 (repositorios, pacotes, legados,
 #     apps).
-#   Fase 2 (core_domain.sh, etapa 06): reescreve /etc/resolv.conf
+#   Fase 2 (core_domain.sh, etapa 07): reescreve /etc/resolv.conf
 #     apontando SOMENTE para DNS_PRIMARIO + DNS_SECUNDARIO do AD.
-#   Fase 3 (scripts 07..23): DNS do AD mantido, sem apt-get.
+#   Fase 3 (scripts 08..24): DNS do AD mantido, sem apt-get.
 #
 # Este script NAO trava o resolv.conf com chattr +i - quem faz isso e'
 # o core_domain.sh, na Fase 2. Este script apenas REMOVE a trava antes
@@ -26,7 +27,7 @@
 set -e
 
 echo "============================================================"
-echo "01 - Configurar DNS, NTP e resolucao de nomes"
+echo "Configurar DNS e resolucao de nomes"
 echo "============================================================"
 
 # ============================================================
@@ -38,7 +39,6 @@ DC_IP_LIST="{{DC_IP_LIST}}"
 DNS_PRIMARIO="{{DNS_PRIMARIO}}"
 DNS_SECUNDARIO="{{DNS_SECUNDARIO}}"
 DNS_INTERNET="{{DNS_INTERNET}}"
-NTP_SERVER="{{NTP_SERVER}}"
 OM_ACRONYM="{{OM_ACRONYM}}"
 
 # Remover protocolo indevido do NTP_SERVER (a OM pode ter cadastrado
@@ -114,7 +114,7 @@ fi
 #    "nameserver " (vazias) que confundem o glibc.
 {
     echo "# SeederLinux - Fase 1 (DNS de internet temporario)"
-    echo "# Sera reescrito pelo core_domain.sh (script 06) na Fase 2."
+    echo "# Sera reescrito pelo core_domain.sh (script 07) na Fase 2."
     echo "# Gerado em: $(date -Is)"
     if [ -n "$DNS_INTERNET" ] && [ "$DNS_INTERNET" != "" ]; then
         echo "nameserver $DNS_INTERNET"
@@ -187,5 +187,5 @@ if [ "${REPOSITORY_MODE:-PUBLIC}" = "PUBLIC" ]; then
     echo "[DIAG]  [01-dns] Ordem obrigatoria: core_dns (01) antes de core_ntp (02) antes de core_domain (07)"
 fi
 
-echo ">>> [01] DNS, NTP e resolucao de nomes configurados!"
+echo ">>> DNS e resolucao de nomes configurados!"
 echo "============================================================"

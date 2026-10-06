@@ -28,7 +28,7 @@
 set -e
 
 echo "============================================================"
-echo "18 - Instalar agente de check-in (seeder-agent)"
+echo "Instalar agente de check-in (seeder-agent)"
 echo "============================================================"
 
 INSTALL_AGENT="{{INSTALL_AGENT}}"
@@ -130,6 +130,6 @@ mkdir -p /var/log/seeder
 nohup /usr/local/bin/seeder-agent --org "$OM_ACRONYM" --no-check-certificate \
     > /tmp/seeder-first-checkin.log 2>&1 &
 
-echo ">>> [18] Agente instalado e agendado!"
+echo ">>> Agente instalado e agendado!"
 echo "============================================================"
 )

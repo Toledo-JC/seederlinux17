@@ -48,7 +48,7 @@
 set -e
 
 echo "============================================================"
-echo "14a - Configurar LightDM (MATE, Cinnamon, XFCE, LXDE)"
+echo "Configurar LightDM (MATE, Cinnamon, XFCE, LXDE)"
 echo "============================================================"
 
 # ============================================================
@@ -161,7 +161,7 @@ echo ">>> Ambiente: $DESKTOP_ENV"
 # CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
 # no AD, quando o DNS ja foi trocado pro controlador de dominio e
 # nao resolve mais repositorios publicos. A instalacao real acontece
-# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# no core_packages.sh (etapa 04), enquanto o DNS de internet ainda
 # esta ativo. Aqui so verificamos e configuramos.
 # ============================================================
 if ! dpkg -l lightdm 2>/dev/null | grep -q "^ii"; then
@@ -291,6 +291,6 @@ echo ">>> (NAO reiniciamos o DM aqui: se o bundle rodar via cron/agente,"
 echo ">>>  ele nao tem \$DISPLAY nem \$SSH_CONNECTION - qualquer restart"
 echo ">>>  mataria a sessao do usuario logado.)"
 
-echo ">>> [14a] LightDM configurado!"
+echo ">>> LightDM configurado!"
 echo "============================================================"
 )

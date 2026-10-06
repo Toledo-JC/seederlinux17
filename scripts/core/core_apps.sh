@@ -35,7 +35,7 @@
 set -e
 
 echo "============================================================"
-echo "10 - Instalar aplicativos (Chrome, OnlyOffice via .deb/wget)"
+echo "Instalar aplicativos (Chrome, OnlyOffice via .deb/wget)"
 echo "============================================================"
 
 # ============================================================
@@ -208,6 +208,6 @@ else
     echo ">>> Firefox 52.7 ESR (legado): nao instalado"
 fi
 
-echo ">>> [10] Aplicativos instalados!"
+echo ">>> Aplicativos instalados!"
 echo "============================================================"
 )

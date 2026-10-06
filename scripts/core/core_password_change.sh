@@ -12,7 +12,7 @@
 set -e
 
 echo "============================================================"
-echo "16 - Instalar aplicativo de troca de senha AD"
+echo "Instalar aplicativo de troca de senha AD"
 echo "============================================================"
 
 INSTALL_PASSWORD_CHANGER="{{INSTALL_PASSWORD_CHANGER}}"
@@ -167,6 +167,6 @@ for USER_HOME in /home/*/; do
 done
 
 echo ">>> Atalhos na area de trabalho criados"
-echo ">>> [16] Aplicativo de troca de senha instalado!"
+echo ">>> Aplicativo de troca de senha instalado!"
 echo "============================================================"
 )

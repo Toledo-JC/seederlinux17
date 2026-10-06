@@ -33,7 +33,7 @@
 set -e
 
 echo "============================================================"
-echo "17 - Configurar proxy de CLI"
+echo "Configurar proxy de CLI"
 echo "============================================================"
 
 # ============================================================
@@ -279,7 +279,7 @@ case "$CLI_POLICY" in
         ;;
 esac
 
-echo ">>> [17] Proxy de CLI configurado!"
+echo ">>> Proxy de CLI configurado!"
 
 # ============================================================
 # Gerar resolve-proxy.sh — funções compartilhadas para

@@ -33,7 +33,7 @@
 set -e
 
 echo "============================================================"
-echo "14c - Configurar SDDM (KDE)"
+echo "Configurar SDDM (KDE)"
 echo "============================================================"
 
 # ============================================================
@@ -145,7 +145,7 @@ echo ">>> Ambiente: $DESKTOP_ENV"
 # CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
 # no AD, quando o DNS ja foi trocado pro controlador de dominio e
 # nao resolve mais repositorios publicos. A instalacao real acontece
-# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# no core_packages.sh (etapa 04), enquanto o DNS de internet ainda
 # esta ativo.
 # ============================================================
 if ! dpkg -l sddm 2>/dev/null | grep -q "^ii"; then
@@ -241,6 +241,6 @@ ln -sf /lib/systemd/system/sddm.service /etc/systemd/system/display-manager.serv
 echo ">>> Configuracao de SDDM sera aplicada no proximo boot."
 echo ">>> (NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
 
-echo ">>> [14c] SDDM configurado!"
+echo ">>> SDDM configurado!"
 echo "============================================================"
 )

@@ -24,7 +24,7 @@
 set -e
 
 echo "============================================================"
-echo "19 - Instalar seeder-sync (aplicador GPO) + timer systemd"
+echo "Instalar seeder-sync (aplicador GPO) + timer systemd"
 echo "============================================================"
 
 mkdir -p /etc/seederlinux
@@ -1037,5 +1037,5 @@ systemctl daemon-reload
 systemctl enable --now seeder-sync.timer
 systemctl start seeder-sync.service 2>/dev/null || true
 
-echo ">>> [19] seeder-sync instalado e timer ativo (10min)"
+echo ">>> seeder-sync instalado e timer ativo (10min)"
 echo "============================================================"

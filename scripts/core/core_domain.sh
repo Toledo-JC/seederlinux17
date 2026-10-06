@@ -44,7 +44,7 @@
 set -e
 
 echo "============================================================"
-echo "04 - Gerenciador de Estado do Active Directory"
+echo "Gerenciador de Estado do Active Directory"
 echo "============================================================"
 
 # ============================================================
@@ -941,5 +941,5 @@ if [ "$VALIDATION_OK" = "false" ]; then
 fi
 
 echo ""
-echo ">>> [04] Gerenciamento de AD concluído! Método: ${JOIN_METHOD:-$ESTADO}"
+echo ">>> Gerenciamento de AD concluído! Método: ${JOIN_METHOD:-$ESTADO}"
 echo "============================================================="

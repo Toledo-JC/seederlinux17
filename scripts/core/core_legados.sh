@@ -37,7 +37,7 @@
 set -e
 
 echo "============================================================"
-echo "05 - Configurar sistemas legados (Java 8, Firefox 52.7)"
+echo "Configurar sistemas legados (Java 8, Firefox 52.7)"
 echo "============================================================"
 
 # ============================================================
@@ -269,6 +269,6 @@ else
     echo ">>> Firefox 52.7 desativado (INSTALL_FIREFOX52=false). Pulando."
 fi
 
-echo ">>> [05] Sistemas legados configurados!"
+echo ">>> Sistemas legados configurados!"
 echo "============================================================"
 )

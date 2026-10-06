@@ -13,7 +13,7 @@
 set -e
 
 echo "============================================================"
-echo "07 - Configurar CUPS e impressoras"
+echo "Configurar CUPS e impressoras"
 echo "============================================================"
 
 # ============================================================
@@ -146,6 +146,6 @@ fi
 # ============================================================
 systemctl restart cups
 
-echo ">>> [07] CUPS e impressoras configurados!"
+echo ">>> CUPS e impressoras configurados!"
 echo "============================================================"
 )

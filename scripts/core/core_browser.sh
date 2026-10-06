@@ -74,7 +74,7 @@
 set -e
 
 echo "============================================================"
-echo "06 - Configurar politicas de navegadores"
+echo "Configurar politicas de navegadores"
 echo "============================================================"
 
 # ============================================================
@@ -745,5 +745,5 @@ DESKTOPEOF
 
 echo ">>> Aviso de proxy criado."
 
-echo ">>> [06] Politicas de navegadores configuradas!"
+echo ">>> Politicas de navegadores configuradas!"
 echo "============================================================"

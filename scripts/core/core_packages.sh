@@ -23,7 +23,7 @@
 set -e
 
 echo "============================================================"
-echo "03 - Instalar pacotes essenciais"
+echo "Instalar pacotes essenciais"
 echo "============================================================"
 
 # ============================================================
@@ -469,5 +469,5 @@ echo ">>> Limpando cache do APT..."
 apt-get clean
 apt-get autoremove -y
 
-echo ">>> [03] Pacotes essenciais instalados!"
+echo ">>> Pacotes essenciais instalados!"
 echo "============================================================"

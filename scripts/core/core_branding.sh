@@ -38,7 +38,7 @@ set -e
 set -e
 
 echo "============================================================"
-echo "13 - Aplicar identidade visual (branding)"
+echo "Aplicar identidade visual (branding)"
 echo "============================================================"
 
 # ============================================================
@@ -604,6 +604,6 @@ echo ">>> Sumario dos assets instalados:"
 ls -la /usr/share/backgrounds/seederlinux/ 2>/dev/null | sed 's/^/    /'
 ls -la /usr/share/pixmaps/seederlinux-logo.png 2>/dev/null | sed 's/^/    /'
 
-echo ">>> [13] Identidade visual aplicada!"
+echo ">>> Identidade visual aplicada!"
 echo "============================================================"
 )

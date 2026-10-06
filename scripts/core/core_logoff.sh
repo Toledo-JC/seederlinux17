@@ -31,7 +31,7 @@
 set -e
 
 echo "============================================================"
-echo "16 - Logoff minimalista"
+echo "Logoff minimalista"
 echo "============================================================"
 
 # ============================================================
@@ -147,5 +147,5 @@ PERMSCRIPT
 
 chmod 755 /usr/local/bin/seederlinux-logoff
 echo ">>> Script permanente criado: /usr/local/bin/seederlinux-logoff"
-echo ">>> [16] Logoff minimalista instalado!"
+echo ">>> Logoff minimalista instalado!"
 echo "============================================================"

@@ -32,7 +32,7 @@
 set -e
 
 echo "============================================================"
-echo "02 - Sincronizacao de horario (NTP adaptativo)"
+echo "Sincronizar horario (NTP adaptativo)"
 echo "============================================================"
 
 # ============================================================
@@ -393,5 +393,5 @@ EOF
     chmod 644 "$NTP_STATE_FILE"
 fi
 
-echo ">>> [02] NTP configurado!"
+echo ">>> NTP configurado!"
 echo "============================================================"

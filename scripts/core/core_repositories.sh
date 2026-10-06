@@ -29,7 +29,7 @@
 set -e
 
 echo "============================================================"
-echo "02 - Configurar repositorios APT"
+echo "Configurar repositorios APT"
 echo "============================================================"
 
 # ============================================================
@@ -360,9 +360,9 @@ esac
 # real (mirror fora do ar, path errado), e o bundle deve abortar.
 #
 # Nao toleramos falha aqui: queremos saber se o APT nao esta funcional
-# ANTES de tentar instalar pacotes no script 03.
+# ANTES de tentar instalar pacotes no script 04.
 echo ">>> Atualizando apt-get update..."
 apt-get update
 
-echo ">>> [02] Repositorios configurados com sucesso (policy: $APT_POLICY)!"
+echo ">>> Repositorios configurados com sucesso (policy: $APT_POLICY)!"
 echo "============================================================"

@@ -8,7 +8,7 @@
 set -e
 
 echo "============================================================"
-echo "07 - Configurar SSH"
+echo "Configurar SSH"
 echo "============================================================"
 
 SSH_PORT="{{SSH_PORT}}"
@@ -80,5 +80,5 @@ if [ -f /etc/ssh/sshd_config ]; then
     systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
 fi
 
-echo ">>> [07] SSH configurado!"
+echo ">>> SSH configurado!"
 echo "============================================================"
