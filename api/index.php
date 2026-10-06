@@ -2657,6 +2657,52 @@ function handleGenerateBundle($input) {
     $bundle .= "    exit 1\n";
     $bundle .= "fi\n\n";
 
+    // ========================================================================
+    // SeederLinux Lite - infraestrutura de log estruturado (Core Pipeline V2)
+    // ========================================================================
+    // 1. Abre $BUNDLE_LOG e faz tee de todo o output (tela + arquivo)
+    // 2. Instala /usr/local/lib/seederlinux/diag.sh a partir de uma
+    //    cópia embutida (não depende de rede - o script é autocontido)
+    // ========================================================================
+    $bundle .= <<<'BUNDLE_HEADER'
+
+# ============================================================
+# Infraestrutura de log estruturado (Core Pipeline V2)
+# ============================================================
+mkdir -p /var/log/seederlinux /usr/local/lib/seederlinux
+
+BUNDLE_LOG="/var/log/seederlinux/bundle-$(date +%Y%m%d-%H%M%S).log"
+export BUNDLE_LOG
+exec > >(tee -a "$BUNDLE_LOG") 2>&1
+
+echo "[INFO]  [bundle] Log estruturado ativo: $BUNDLE_LOG"
+
+cat > /usr/local/lib/seederlinux/diag.sh <<'SEEDER_DIAG_EOF'
+#!/bin/bash
+if [ -n "${SEEDER_DIAG_LOADED:-}" ]; then return 0; fi
+SEEDER_DIAG_LOADED=1
+SEEDER_LOG_INFO="INFO"
+SEEDER_LOG_TESTE="TESTE"
+SEEDER_LOG_TENT="TENT"
+SEEDER_LOG_OK="OK"
+SEEDER_LOG_AVISO="AVISO"
+SEEDER_LOG_DIAG="DIAG"
+SEEDER_LOG_ACAO="ACAO"
+SEEDER_LOG_ERRO="ERRO"
+log_nivel() {
+    local nivel="$1"
+    shift
+    local tag="${SCRIPT_ID:-core}"
+    printf '[%-5s] [%s] %s\n' "$nivel" "$tag" "$*"
+}
+SEEDER_DIAG_EOF
+chmod 644 /usr/local/lib/seederlinux/diag.sh
+
+BUNDLE_START_EPOCH="$(date +%s)"
+export BUNDLE_START_EPOCH
+BUNDLE_HEADER;
+    $bundle .= "\n"; // nowdoc não inclui o newline final antes do delimitador
+
     $skipExportTypes = ['password'];
     $skipExportNames = ['INSTALL_DESKTOP'];
     // Variaveis legadas do modelo single-proxy: continuam no banco mas nao sao exportadas em bundles novos
@@ -2876,6 +2922,54 @@ function handleGenerateBundle($input) {
     }
 
     $bundle .= "# === FIM DO BUNDLE ===\n";
+
+    $bundle .= <<<'BUNDLE_FOOTER'
+
+# ============================================================
+# Sumário do bundle
+# ============================================================
+_seederlinux_sumario() {
+    local dur=$(( $(date +%s) - ${BUNDLE_START_EPOCH:-0} ))
+    local ok aviso erro
+    ok="$(grep -c '^\[OK[[:space:]]*\]'       "$BUNDLE_LOG" 2>/dev/null || echo 0)"
+    aviso="$(grep -c '^\[AVISO[[:space:]]*\]' "$BUNDLE_LOG" 2>/dev/null || echo 0)"
+    erro="$(grep -c '^\[ERRO[[:space:]]*\]'   "$BUNDLE_LOG" 2>/dev/null || echo 0)"
+
+    echo ""
+    echo "=== SUMÁRIO DO BUNDLE ==="
+    echo "Serial:    {{SERIAL}}"
+    echo "Duração:   ${dur}s"
+    echo "Log:       $BUNDLE_LOG"
+    echo ""
+    echo "Contadores: OK=$ok AVISO=$aviso ERRO=$erro"
+    echo ""
+
+    if [ "$erro" -gt 0 ]; then
+        echo "[ERROS ENCONTRADOS]"
+        grep -n '^\[ERRO[[:space:]]*\]' "$BUNDLE_LOG" | sed 's/^/    /'
+        echo ""
+        echo "Ações sugeridas:"
+        grep -n '^\[ACAO[[:space:]]*\]' "$BUNDLE_LOG" | sed 's/^/    /'
+        echo ""
+    fi
+
+    if [ "$aviso" -gt 0 ]; then
+        echo "[AVISOS]"
+        grep -n '^\[AVISO[[:space:]]*\]' "$BUNDLE_LOG" | sed 's/^/    /'
+        echo ""
+    fi
+
+    echo "=== FIM DO SUMÁRIO ==="
+}
+
+_seederlinux_sumario
+BUNDLE_FOOTER;
+    $bundle .= "\n"; // nowdoc não inclui o newline final antes do delimitador
+
+    // O rodapé é um nowdoc (literal): resolve o serial real da OM aqui,
+    // com a mesma variável já usada no header do bundle.
+    $bundle = str_replace('{{SERIAL}}', (string)$org['serial_config'], $bundle);
+
     $bundle .= "echo 'Bundle executado com sucesso!'\n";
 
     $validPlaceholders = array_column(
