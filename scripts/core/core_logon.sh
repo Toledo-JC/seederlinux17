@@ -314,6 +314,22 @@ if ! systemctl is-active --quiet seeder-sync.timer 2>/dev/null; then
 fi
 
 # ============================================================
+# Sincronizar NTP (rapido: timeout 3s, nao bloqueia login).
+#
+# Motivo: se a estacao ficou desligada por dias, o relogio pode
+# estar fora da janela de tolerancia do Kerberos (> 5 min) ate o
+# daemon NTP conseguir sincronizar. Forcar uma tentativa rapida
+# aqui evita que o usuario tome erro de autenticacao no primeiro
+# login apos boot.
+#
+# O cliente vencedor foi descoberto pelo core_ntp.sh (script 02)
+# e persistido em /etc/seederlinux/ntp-state.env.
+# ============================================================
+if [ -x /usr/local/bin/seederlinux-sync-ntp ]; then
+    timeout 3 /usr/local/bin/seederlinux-sync-ntp >/dev/null 2>&1 || true
+fi
+
+# ============================================================
 # Resolver e aplicar proxy do Firefox conforme grupo do AD.
 #
 # CHROME: sempre usa o proxy padrao (system-wide, aplicado pelo

@@ -163,43 +163,28 @@ done
 echo ">>> /etc/hosts configurado"
 
 # ============================================================
-# NTP - sincronizar horario com o servidor
+# Aviso de contexto: sem mirror local
 # ============================================================
-echo ">>> Configurando NTP..."
-if command -v timedatectl &> /dev/null; then
-    timedatectl set-ntp true 2>/dev/null || true
-fi
-
-if [ -n "$NTP_SERVER" ] && [ "$NTP_SERVER" != "" ]; then
-    # Tenta sincronizar imediatamente
-    if command -v ntpdate &> /dev/null; then
-        ntpdate "$NTP_SERVER" 2>/dev/null || true
-    elif command -v chronyc &> /dev/null; then
-        chronyc -a makestep 2>/dev/null || true
-    fi
-
-    # Configura NTP permanente
-    if [ -d /etc/chrony ]; then
-        cat > /etc/chrony/chrony.conf <<EOF
-server $NTP_SERVER iburst
-driftfile /var/lib/chrony/chrony.drift
-makestep 1.0 3
-rtcsync
-EOF
-        systemctl restart chrony 2>/dev/null || true
-    elif [ -f /etc/ntp.conf ]; then
-        cp /etc/ntp.conf /etc/ntp.conf.bak 2>/dev/null || true
-        cat > /etc/ntp.conf <<EOF
-server $NTP_SERVER iburst
-driftfile /var/lib/ntp/ntp.drift
-restrict default kod nomodify notrap nopeer noquery
-restrict 127.0.0.1
-EOF
-        systemctl restart ntp 2>/dev/null || true
-    fi
-    echo ">>> NTP configurado: $NTP_SERVER"
-else
-    echo ">>> NTP_SERVER nao definido, usando padrao do sistema"
+# Este script prepara a Fase 1 (DNS de internet ativo). O NTP
+# agora roda no core_ntp.sh (script 02), logo apos este.
+#
+# Se REPOSITORY_MODE=PUBLIC, a estacao depende de internet real
+# para baixar pacotes nos scripts 03..06. Se a OM tem mirror
+# interno (MIRROR_LOCAL_SEEDER ou MIRROR_LOCAL_OM), a Fase 1 pode
+# ser mais curta.
+#
+# IMPORTANTE: o core_ntp.sh (02) PRECISA vir antes do
+# core_domain.sh (07), porque:
+#   - NTP depende de apt (na Fase 1) para instalar chrony/ntpsec
+#     se o cliente default falhar.
+#   - Kerberos (no core_domain.sh) depende de clock sincronizado.
+# Se um tecnico reordenar os scripts na UI, manter essa restricao.
+# ============================================================
+if [ "${REPOSITORY_MODE:-PUBLIC}" = "PUBLIC" ]; then
+    echo "[INFO]  [01-dns] REPOSITORY_MODE=PUBLIC (sem mirror local)"
+    echo "[INFO]  [01-dns] Fase 1 exige internet real (DNS de internet na frente)"
+    echo "[DIAG]  [01-dns] Se a OM tiver mirror interno, mudar REPOSITORY_MODE no painel"
+    echo "[DIAG]  [01-dns] Ordem obrigatoria: core_dns (01) antes de core_ntp (02) antes de core_domain (07)"
 fi
 
 echo ">>> [01] DNS, NTP e resolucao de nomes configurados!"

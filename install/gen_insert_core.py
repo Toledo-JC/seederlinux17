@@ -38,6 +38,9 @@ CATALOG = [
     (21, 'core_agent.sh',            'Agente SeederLinux',               'Instala e configura o agente SeederLinux.'),
     (22, 'core_proxy.sh',            'Configuracao de Proxy',            'Configura proxy corporativo no sistema (apt, curl, wget, env).'),
     (23, 'core_sync.sh',             'Aplicador de Politicas (seeder-sync)', 'Instala o seeder-sync e um timer systemd (10 em 10 minutos) que reaplica de forma idempotente toda a configuracao corporativa da OM (estilo GPO).'),
+    # NOVO (Commit 2/6) - Sincronizacao de Horario (NTP adaptativo).
+    # Ordem provisoria: a renumeracao definitiva (02) vem no Commit 3.
+    (24, 'core_ntp.sh',              'Sincronizacao de Horario (NTP adaptativo)', 'Descobre o cliente NTP que funciona com o servidor da OM, sincroniza o relogio e persiste o cliente vencedor em /etc/seederlinux/ntp-state.env.'),
 ]
 
 def escape_sql_literal(s: str) -> str:

@@ -1,0 +1,82 @@
+#!/bin/bash
+# ============================================================================
+# seederlinux-sync-ntp
+# ============================================================================
+# Sincroniza o relogio usando o cliente NTP vencedor descoberto pelo
+# core_ntp.sh (script 02 do bundle). Lê o estado de
+# /etc/seederlinux/ntp-state.env e chama o comando certo.
+#
+# Chamado em:
+#   - systemd unit seederlinux-sync-ntp.service (no boot)
+#   - /usr/local/bin/seederlinux-logon (a cada login, timeout 3s)
+#   - (V2) seeder-sync timer a cada 10min (health check)
+#
+# Alvo: menos de 3 segundos. Se nao sincronizar nesse tempo, sai
+# silenciosamente - o daemon em background resolve.
+#
+# Exit codes:
+#   0 - sincronizado ou timeout tolerado
+#   1 - sem estado (nunca rodou core_ntp.sh), nada a fazer
+#   2 - cliente conhecido mas o comando falhou (raro)
+# ============================================================================
+
+set -u
+
+STATE_FILE="/etc/seederlinux/ntp-state.env"
+[ ! -f "$STATE_FILE" ] && exit 1
+
+# shellcheck disable=SC1090
+. "$STATE_FILE"
+
+[ -z "${NTP_CLIENT:-}" ] && exit 1
+[ -z "${NTP_SERVER:-}" ] && exit 1
+
+_tentar_sync() {
+    case "$NTP_CLIENT" in
+        systemd-timesyncd)
+            systemctl restart systemd-timesyncd 2>/dev/null || return 2
+            ;;
+        chrony)
+            systemctl restart chrony 2>/dev/null || return 2
+            chronyc makestep 2>/dev/null || true
+            ;;
+        ntpsec)
+            systemctl restart ntpsec 2>/dev/null || return 2
+            ;;
+        ntp-isc)
+            systemctl restart ntp 2>/dev/null || return 2
+            ;;
+        ntpdate+cron)
+            ntpdate -u "$NTP_SERVER" 2>/dev/null || return 2
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+    return 0
+}
+
+_tentar_sync || exit $?
+
+# Aguarda ate 3s para confirmar sincronizacao (nao bloqueia login)
+for i in 1 2 3; do
+    sleep 1
+    case "$NTP_CLIENT" in
+        systemd-timesyncd)
+            [ "$(timedatectl show --property=NTPSynchronized --value 2>/dev/null)" = "yes" ] && exit 0
+            ;;
+        chrony)
+            chronyc tracking 2>/dev/null | grep -q "Leap status.*Normal" && exit 0
+            ;;
+        ntpsec|ntp-isc)
+            ntpq -p 2>/dev/null | grep -qE "^\*" && exit 0
+            ;;
+        ntpdate+cron)
+            # ntpdate e' sincrono; se _tentar_sync retornou 0, ja esta OK
+            exit 0
+            ;;
+    esac
+done
+
+# Nao confirmou em 3s, mas nao abortou. O daemon em background resolve.
+exit 0
