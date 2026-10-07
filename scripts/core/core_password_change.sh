@@ -11,6 +11,9 @@
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="20-password-change"
+
 echo "============================================================"
 echo "Instalar aplicativo de troca de senha AD"
 echo "============================================================"
@@ -18,8 +21,8 @@ echo "============================================================"
 INSTALL_PASSWORD_CHANGER="{{INSTALL_PASSWORD_CHANGER}}"
 
 if [ "$INSTALL_PASSWORD_CHANGER" != "true" ]; then
-    echo ">>> Instalacao do trocador de senha desativada. Pulando."
-    echo ">>> [16] Trocador de senha ignorado."
+    log_nivel INFO "Instalacao do trocador de senha desativada. Pulando."
+    log_nivel INFO "[16] Trocador de senha ignorado."
     echo "============================================================"
     exit 0
 fi
@@ -27,7 +30,7 @@ fi
 DOMINIO="{{DOMINIO}}"
 OM_ACRONYM="{{OM_ACRONYM}}"
 
-echo ">>> Instalando aplicativo de troca de senha..."
+log_nivel INFO "Instalando aplicativo de troca de senha..."
 
 # Criar o script de troca de senha
 cat > /usr/local/bin/trocar-senha << 'EOFSCRIPT'
@@ -131,7 +134,7 @@ exit $?
 EOFSCRIPT
 
 chmod 755 /usr/local/bin/trocar-senha
-echo ">>> Script de troca de senha instalado em /usr/local/bin/trocar-senha"
+log_nivel INFO "Script de troca de senha instalado em /usr/local/bin/trocar-senha"
 
 # Criar entrada no menu de aplicativos
 cat > /usr/share/applications/trocar-senha.desktop << EOF
@@ -149,7 +152,7 @@ Categories=System;Settings;
 StartupNotify=true
 EOF
 
-echo ">>> Atalho no menu criado"
+log_nivel INFO "Atalho no menu criado"
 
 # Criar atalho na área de trabalho (todos os usuários futuros via /etc/skel)
 if [ -d /etc/skel ]; then
@@ -166,7 +169,7 @@ for USER_HOME in /home/*/; do
     fi
 done
 
-echo ">>> Atalhos na area de trabalho criados"
-echo ">>> Aplicativo de troca de senha instalado!"
+log_nivel INFO "Atalhos na area de trabalho criados"
+log_nivel OK "Aplicativo de troca de senha instalado!"
 echo "============================================================"
 )

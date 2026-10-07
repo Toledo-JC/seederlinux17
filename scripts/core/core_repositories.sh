@@ -28,6 +28,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="03-repositories"
+
 echo "============================================================"
 echo "Configurar repositorios APT"
 echo "============================================================"
@@ -50,9 +53,9 @@ PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
 [ -z "$MIRROR_LOCAL_SEEDER_PATH" ] && MIRROR_LOCAL_SEEDER_PATH="/mirror/"
 SEEDER_SERVER="${SEEDER_SERVER%/}"
 
-echo ">>> APT_POLICY: $APT_POLICY"
-echo ">>> APT_PROXY_NAME: ${APT_PROXY_NAME:-<default>}"
-echo ">>> Proxies cadastrados: $PROXY_COUNT"
+log_nivel INFO "APT_POLICY: $APT_POLICY"
+log_nivel INFO "APT_PROXY_NAME: ${APT_PROXY_NAME:-<default>}"
+log_nivel INFO "Proxies cadastrados: $PROXY_COUNT"
 
 # ============================================================
 # Fase 1 — limpar estado de proxy herdado
@@ -65,7 +68,7 @@ echo ">>> Proxies cadastrados: $PROXY_COUNT"
 # Comecamos SEMPRE limpo. Se a policy escolhida for PROXY_*, o
 # arquivo sera reescrito no fim deste script, ANTES do apt-get
 # update.
-echo ">>> Limpando config de proxy do apt de execucoes anteriores..."
+log_nivel INFO "Limpando config de proxy do apt de execucoes anteriores..."
 rm -f /etc/apt/apt.conf.d/95seederlinux-proxy 2>/dev/null || true
 
 # ============================================================
@@ -86,7 +89,7 @@ detect_distro() {
 }
 
 DISTRO="$(detect_distro)"
-echo ">>> Distribuicao detectada: $DISTRO"
+log_nivel INFO "Distribuicao detectada: $DISTRO"
 
 # ============================================================
 # Obter codename da distro
@@ -102,7 +105,7 @@ get_codename() {
         codename="$(lsb_release -cs 2>/dev/null)"
     fi
     if [ -z "$codename" ]; then
-        echo ">>> AVISO: nao foi possivel detectar o codename. Usando fallback: $fallback" >&2
+        log_nivel AVISO "nao foi possivel detectar o codename. Usando fallback: $fallback"
         codename="$fallback"
     fi
     echo "$codename"
@@ -132,7 +135,7 @@ _resolver_proxy_url() {
             local pass_b64="${!v_pass_b64}"
 
             if [ -z "$url" ]; then
-                echo ">>> AVISO: proxy '$name' encontrado mas URL vazia." >&2
+                log_nivel AVISO "proxy '$name' encontrado mas URL vazia."
                 return 1
             fi
 
@@ -183,7 +186,7 @@ _resolver_proxy_nome_efetivo() {
 # ============================================================
 _escrever_proxy_apt() {
     local url="$1"
-    echo ">>> Configurando apt via proxy: $url"
+    log_nivel INFO "Configurando apt via proxy: $url"
     cat > /etc/apt/apt.conf.d/95seederlinux-proxy <<EOF
 Acquire::http::Proxy "${url}";
 Acquire::https::Proxy "${url}";
@@ -200,14 +203,14 @@ case "$APT_POLICY" in
     PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
         NOME_EFETIVO="$(_resolver_proxy_nome_efetivo)"
         if [ -z "$NOME_EFETIVO" ]; then
-            echo ">>> ERRO: APT_POLICY=$APT_POLICY mas nenhum proxy configurado (APT_PROXY_NAME vazio e PROXY_DEFAULT_NAME vazio)."
-            echo ">>> Configurando apt como DIRECT para nao travar o bundle."
+            log_nivel ERRO "APT_POLICY=$APT_POLICY mas nenhum proxy configurado (APT_PROXY_NAME vazio e PROXY_DEFAULT_NAME vazio)."
+            log_nivel INFO "Configurando apt como DIRECT para nao travar o bundle."
             APT_POLICY="DIRECT"
         else
             APT_PROXY_URL="$(_resolver_proxy_url "$NOME_EFETIVO")" || APT_PROXY_URL=""
             if [ -z "$APT_PROXY_URL" ]; then
-                echo ">>> ERRO: proxy '$NOME_EFETIVO' nao encontrado na lista de proxies da OM."
-                echo ">>> Configurando apt como DIRECT para nao travar o bundle."
+                log_nivel ERRO "proxy '$NOME_EFETIVO' nao encontrado na lista de proxies da OM."
+                log_nivel INFO "Configurando apt como DIRECT para nao travar o bundle."
                 APT_POLICY="DIRECT"
             else
                 _escrever_proxy_apt "$APT_PROXY_URL"
@@ -245,19 +248,19 @@ backup_sources() {
 case "$APT_POLICY" in
 
     DIRECT|PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
-        echo ">>> Policy: mirrors oficiais da distro ($DISTRO)."
-        echo ">>> Nenhuma alteracao em sources.list (mantendo o que ja esta)."
+        log_nivel INFO "Policy: mirrors oficiais da distro ($DISTRO)."
+        log_nivel INFO "Nenhuma alteracao em sources.list (mantendo o que ja esta)."
         # Nao mexe: a estacao ja veio com sources.list da distro
         ;;
 
     MIRROR_OFFICIAL)
-        echo ">>> Policy: mirrors oficiais explicitos."
-        echo ">>> Nenhuma alteracao em sources.list."
+        log_nivel INFO "Policy: mirrors oficiais explicitos."
+        log_nivel INFO "Nenhuma alteracao em sources.list."
         ;;
 
     MIRROR_LOCAL_SEEDER)
-        echo ">>> Policy: mirror local hospedado no SeederLinux."
-        echo ">>> Base: ${SEEDER_SERVER}${MIRROR_LOCAL_SEEDER_PATH}"
+        log_nivel INFO "Policy: mirror local hospedado no SeederLinux."
+        log_nivel INFO "Base: ${SEEDER_SERVER}${MIRROR_LOCAL_SEEDER_PATH}"
 
         backup_sources
 
@@ -297,17 +300,17 @@ deb ${SEEDER_SERVER}${MIRROR_LOCAL_SEEDER_PATH}ubuntu $UBUNTU_CODENAME-security 
 EOF
                 ;;
             *)
-                echo ">>> AVISO: distro '$DISTRO' nao reconhecida. Mantendo sources.list atual."
+                log_nivel AVISO "distro '$DISTRO' nao reconhecida. Mantendo sources.list atual."
                 ;;
         esac
         ;;
 
     MIRROR_LOCAL_OM)
         if [ -z "$MIRROR_LOCAL_OM_URL" ]; then
-            echo ">>> ERRO: APT_POLICY=MIRROR_LOCAL_OM mas MIRROR_LOCAL_OM_URL esta vazio."
-            echo ">>> Mantendo sources.list atual."
+            log_nivel ERRO "APT_POLICY=MIRROR_LOCAL_OM mas MIRROR_LOCAL_OM_URL esta vazio."
+            log_nivel INFO "Mantendo sources.list atual."
         else
-            echo ">>> Policy: mirror local da OM ($MIRROR_LOCAL_OM_URL)"
+            log_nivel INFO "Policy: mirror local da OM ($MIRROR_LOCAL_OM_URL)"
             backup_sources
 
             MIRROR_BASE="${MIRROR_LOCAL_OM_URL%/}"
@@ -339,14 +342,14 @@ deb ${MIRROR_BASE}/debian $DEBIAN_CODENAME-updates main contrib non-free non-fre
 EOF
                     ;;
                 *)
-                    echo ">>> AVISO: distro '$DISTRO' nao reconhecida. Mantendo sources.list atual."
+                    log_nivel AVISO "distro '$DISTRO' nao reconhecida. Mantendo sources.list atual."
                     ;;
             esac
         fi
         ;;
 
     *)
-        echo ">>> AVISO: APT_POLICY desconhecida '$APT_POLICY'. Tratando como DIRECT."
+        log_nivel AVISO "APT_POLICY desconhecida '$APT_POLICY'. Tratando como DIRECT."
         ;;
 esac
 
@@ -361,8 +364,8 @@ esac
 #
 # Nao toleramos falha aqui: queremos saber se o APT nao esta funcional
 # ANTES de tentar instalar pacotes no script 04.
-echo ">>> Atualizando apt-get update..."
+log_nivel INFO "Atualizando apt-get update..."
 apt-get update
 
-echo ">>> Repositorios configurados com sucesso (policy: $APT_POLICY)!"
+log_nivel OK "Repositorios configurados com sucesso (policy: $APT_POLICY)!"
 echo "============================================================"

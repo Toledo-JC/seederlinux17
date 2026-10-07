@@ -47,6 +47,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="19-logon"
+
 echo "============================================================"
 echo "Logon minimalista (via autostart)"
 echo "============================================================"
@@ -78,7 +81,7 @@ MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
 # Isso da uma superficie de ataque MENOR que a versao anterior com
 # wildcards - e funciona em qualquer versao de sudo.
 # ============================================================
-echo ">>> Criando wrappers de mount/umount (compat sudo 1.9.x+)..."
+log_nivel INFO "Criando wrappers de mount/umount (compat sudo 1.9.x+)..."
 mkdir -p /usr/local/bin
 
 cat > /usr/local/bin/seederlinux-mount-share <<'MOUNT_WRAPPER'
@@ -180,7 +183,7 @@ chmod 0755 /usr/local/bin/seederlinux-umount-share
 # ============================================================
 # 2. sudoers restrito (sem wildcards - compat sudo 1.9.x+)
 # ============================================================
-echo ">>> Configurando sudoers restrito para logon..."
+log_nivel INFO "Configurando sudoers restrito para logon..."
 SUDOERS_FILE="/etc/sudoers.d/seederlinux-logon"
 cat > "$SUDOERS_FILE" <<EOF
 # SeederLinux - permissoes minimas para o logon do usuario.
@@ -197,11 +200,11 @@ ALL ALL=(root) NOPASSWD: SEEDERLINUX_MOUNT, SEEDERLINUX_UMOUNT, SEEDERLINUX_SYNC
 EOF
 chmod 440 "$SUDOERS_FILE"
 if ! visudo -cf "$SUDOERS_FILE"; then
-    echo ">>> ERRO: sintaxe invalida no sudoers gerado. Removendo."
+    log_nivel ERRO "sintaxe invalida no sudoers gerado. Removendo."
     rm -f "$SUDOERS_FILE"
     exit 1
 fi
-echo ">>> sudoers configurado: $SUDOERS_FILE"
+log_nivel INFO "sudoers configurado: $SUDOERS_FILE"
 
 # ============================================================
 # 3. Preparar diretorio de log (mundo-gravavel com sticky bit)
@@ -225,7 +228,7 @@ chmod 755 "$MOUNT_DIR"
 #    Sera chamado via autostart XDG a cada login, DENTRO da sessao
 #    do usuario (nao mais como hook do display manager).
 # ============================================================
-echo ">>> Criando script permanente: /usr/local/bin/seederlinux-logon"
+log_nivel INFO "Criando script permanente: /usr/local/bin/seederlinux-logon"
 
 cat > /usr/local/bin/seederlinux-logon <<'PERMSCRIPT'
 #!/bin/bash
@@ -387,13 +390,13 @@ exit 0
 PERMSCRIPT
 
 chmod 755 /usr/local/bin/seederlinux-logon
-echo ">>> Script permanente criado: /usr/local/bin/seederlinux-logon"
+log_nivel INFO "Script permanente criado: /usr/local/bin/seederlinux-logon"
 
 # ============================================================
 # 6. Registrar via autostart XDG (funciona em GNOME, Cinnamon, MATE,
 #    XFCE, KDE, LXDE/LXQt de forma padronizada - um mecanismo so)
 # ============================================================
-echo ">>> Registrando autostart..."
+log_nivel INFO "Registrando autostart..."
 mkdir -p /etc/xdg/autostart
 cat > /etc/xdg/autostart/seederlinux-logon.desktop <<EOF
 [Desktop Entry]
@@ -407,5 +410,5 @@ X-GNOME-Autostart-enabled=true
 X-KDE-autostart-after=panel
 EOF
 
-echo ">>> Logon minimalista instalado (via autostart)!"
+log_nivel OK "Logon minimalista instalado (via autostart)!"
 echo "============================================================"

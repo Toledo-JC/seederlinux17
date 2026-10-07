@@ -23,6 +23,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="24-sync"
+
 echo "============================================================"
 echo "Instalar seeder-sync (aplicador GPO) + timer systemd"
 echo "============================================================"
@@ -33,7 +36,7 @@ mkdir -p /var/log/seederlinux
 # ============================================================
 # 1. Script principal /usr/local/bin/seeder-sync
 # ============================================================
-echo ">>> Criando /usr/local/bin/seeder-sync..."
+log_nivel INFO "Criando /usr/local/bin/seeder-sync..."
 
 cat > /usr/local/bin/seeder-sync <<'SYNCSCRIPT'
 #!/bin/bash
@@ -1004,7 +1007,7 @@ echo "=== seeder-sync concluido: $(date -Is) ==="
 SYNCSCRIPT
 
 chmod 750 /usr/local/bin/seeder-sync
-echo ">>> /usr/local/bin/seeder-sync criado"
+log_nivel INFO "/usr/local/bin/seeder-sync criado"
 
 # ============================================================
 # 2. Units systemd
@@ -1037,5 +1040,5 @@ systemctl daemon-reload
 systemctl enable --now seeder-sync.timer
 systemctl start seeder-sync.service 2>/dev/null || true
 
-echo ">>> seeder-sync instalado e timer ativo (10min)"
+log_nivel INFO "seeder-sync instalado e timer ativo (10min)"
 echo "============================================================"

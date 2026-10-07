@@ -32,6 +32,9 @@
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="18-session-sddm"
+
 echo "============================================================"
 echo "Configurar SDDM (KDE)"
 echo "============================================================"
@@ -95,9 +98,9 @@ if [ -z "$DESKTOP_ENV" ] && [ -f "$CONFIG_FILE" ]; then
 fi
 if [ -z "$DESKTOP_ENV" ]; then
     DESKTOP_ENV="$(detectar_de)"
-    echo ">>> DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
 else
-    echo ">>> DESKTOP_ENV: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV: $DESKTOP_ENV"
 fi
 
 # ============================================================
@@ -110,9 +113,9 @@ if [ -z "$DISPLAY_MANAGER" ]; then
     DISPLAY_MANAGER="$(detectar_dm_ativo)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(detectar_dm_instalado)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(dm_padrao_para_de "$DESKTOP_ENV")"
-    echo ">>> DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
 else
-    echo ">>> DISPLAY_MANAGER: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER: $DISPLAY_MANAGER"
 fi
 
 # ============================================================
@@ -132,13 +135,13 @@ sed -i '/^DESKTOP_ENV=/d;/^DISPLAY_MANAGER=/d' "$CONFIG_FILE"
 #    encerra este bloco (nao o bundle).
 # ============================================================
 if [ "$DISPLAY_MANAGER" != "sddm" ]; then
-    echo ">>> DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e sddm). Pulando."
+    log_nivel INFO "DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e sddm). Pulando."
     echo "============================================================"
     exit 0
 fi
 
-echo ">>> Display Manager: $DISPLAY_MANAGER"
-echo ">>> Ambiente: $DESKTOP_ENV"
+log_nivel INFO "Display Manager: $DISPLAY_MANAGER"
+log_nivel INFO "Ambiente: $DESKTOP_ENV"
 
 # ============================================================
 # Verificar se SDDM esta presente.
@@ -149,8 +152,8 @@ echo ">>> Ambiente: $DESKTOP_ENV"
 # esta ativo.
 # ============================================================
 if ! dpkg -l sddm 2>/dev/null | grep -q "^ii"; then
-    echo ">>> ERRO: sddm nao instalado (deveria ter sido no core_packages.sh)."
-    echo ">>> Pulando configuracao do SDDM."
+    log_nivel ERRO "sddm nao instalado (deveria ter sido no core_packages.sh)."
+    log_nivel INFO "Pulando configuracao do SDDM."
     echo "============================================================"
     exit 0
 fi
@@ -162,7 +165,7 @@ echo "/usr/sbin/sddm" > /etc/X11/default-display-manager
 # ============================================================
 # Configurar SDDM
 # ============================================================
-echo ">>> Configurando SDDM..."
+log_nivel INFO "Configurando SDDM..."
 mkdir -p /etc/sddm.conf.d
 
 cat > /etc/sddm.conf.d/seederlinux.conf <<EOF
@@ -180,7 +183,7 @@ User=
 Session=
 EOF
 
-echo ">>> SDDM configurado"
+log_nivel INFO "SDDM configurado"
 
 # ============================================================
 # Configurar script de logoff via Xstop
@@ -192,7 +195,7 @@ echo ">>> SDDM configurado"
 # logon passou a rodar via autostart XDG dentro da sessao (ver
 # core_logon.sh). Logoff continua aqui pois so desmonta/mata processo
 # (tolerante a rodar como root).
-echo ">>> Configurando script de logoff no SDDM..."
+log_nivel INFO "Configurando script de logoff no SDDM..."
 
 mkdir -p /usr/share/sddm/scripts
 
@@ -209,23 +212,23 @@ exit "${EXIT_STATUS:-0}"
 XSTOP
 chmod +x "$XSTOP_FILE"
 
-echo ">>> Scripts de logon/logoff configurados no SDDM"
+log_nivel INFO "Scripts de logon/logoff configurados no SDDM"
 
 # ============================================================
 # Garantir que os scripts de logon/logoff existam
 # ============================================================
-echo ">>> Verificando scripts de logon/logoff..."
+log_nivel INFO "Verificando scripts de logon/logoff..."
 for SCRIPT in seederlinux-logon seederlinux-logoff; do
     if [ ! -f "/usr/local/bin/${SCRIPT}" ]; then
-        echo ">>> AVISO: /usr/local/bin/${SCRIPT} nao encontrado."
-        echo ">>> Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
+        log_nivel AVISO "/usr/local/bin/${SCRIPT} nao encontrado."
+        log_nivel INFO "Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
     fi
 done
 
 # ============================================================
 # Desabilitar outros display managers
 # ============================================================
-echo ">>> Desabilitando outros display managers..."
+log_nivel INFO "Desabilitando outros display managers..."
 systemctl disable lightdm 2>/dev/null || true
 systemctl disable gdm3 2>/dev/null || true
 
@@ -238,9 +241,9 @@ ln -sf /lib/systemd/system/sddm.service /etc/systemd/system/display-manager.serv
 # em $DISPLAY/$SSH_CONNECTION falha quando o bundle roda via cron
 # (agente Python), matando a sessao do usuario logado.
 # ============================================================
-echo ">>> Configuracao de SDDM sera aplicada no proximo boot."
-echo ">>> (NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
+log_nivel INFO "Configuracao de SDDM sera aplicada no proximo boot."
+log_nivel INFO "(NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
 
-echo ">>> SDDM configurado!"
+log_nivel OK "SDDM configurado!"
 echo "============================================================"
 )

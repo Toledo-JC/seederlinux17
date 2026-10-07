@@ -43,6 +43,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="07-domain"
+
 echo "============================================================"
 echo "Gerenciador de Estado do Active Directory"
 echo "============================================================"
@@ -75,11 +78,11 @@ AUTH_METHOD="{{AUTH_METHOD}}"
 # silenciosamente mais adiante.
 # ============================================================
 if [[ "$ADMIN_USERNAME" == *"{{"* ]]; then
-    echo ">>> ERRO: placeholder ADMIN_USERNAME nao foi substituido pelo backend."
+    log_nivel ERRO "placeholder ADMIN_USERNAME nao foi substituido pelo backend."
     exit 1
 fi
 if [[ "$ADMIN_PASSWORD_B64" == "__"* && "$ADMIN_PASSWORD_B64" == *"__" ]]; then
-    echo ">>> ERRO: placeholder ADMIN_PASSWORD_B64 nao foi substituido pelo backend."
+    log_nivel ERRO "placeholder ADMIN_PASSWORD_B64 nao foi substituido pelo backend."
     exit 1
 fi
 
@@ -91,12 +94,12 @@ unset ADMIN_PASSWORD_B64
 
 NON_INTERACTIVE="${NON_INTERACTIVE:-false}"
 if [ "$NON_INTERACTIVE" = "true" ]; then
-    echo ">>> Modo não interativo ativado."
+    log_nivel INFO "Modo não interativo ativado."
 fi
 
-echo ">>> Dominio: $DOMINIO"
-echo ">>> NetBIOS: $DOMINIO_NETBIOS"
-echo ">>> DC principal: $DC_IP"
+log_nivel INFO "Dominio: $DOMINIO"
+log_nivel INFO "NetBIOS: $DOMINIO_NETBIOS"
+log_nivel INFO "DC principal: $DC_IP"
 [ -n "$DC_IP_LIST" ] && echo ">>> DCs adicionais: $DC_IP_LIST"
 
 # ============================================================
@@ -116,7 +119,7 @@ echo ">>> DC principal: $DC_IP"
 # Idempotente: pode rodar N vezes sem efeito colateral.
 # ============================================================
 echo "============================================================"
-echo ">>> FASE 2: Aplicando DNS do AD (incondicional)"
+log_nivel INFO "FASE 2: Aplicando DNS do AD (incondicional)"
 echo "============================================================"
 
 # Guarda o resolv.conf da Fase 1 para auditoria/debug
@@ -129,11 +132,11 @@ fi
 #    sem DNS do AD nao ha como ingressar nem manter o ingresso.
 if [ -z "$DNS_PRIMARIO" ] || [ "$DNS_PRIMARIO" = "" ]; then
     if [ -n "$DC_IP" ] && [ "$DC_IP" != "" ]; then
-        echo ">>> AVISO: DNS_PRIMARIO vazio - usando DC_IP ($DC_IP) como fallback."
+        log_nivel AVISO "DNS_PRIMARIO vazio - usando DC_IP ($DC_IP) como fallback."
         DNS_PRIMARIO="$DC_IP"
     else
-        echo ">>> ERRO: DNS_PRIMARIO e DC_IP vazios. Ingresso impossivel."
-        echo ">>> Configure DNS_PRIMARIO na OM antes de gerar o bundle."
+        log_nivel ERRO "DNS_PRIMARIO e DC_IP vazios. Ingresso impossivel."
+        log_nivel INFO "Configure DNS_PRIMARIO na OM antes de gerar o bundle."
         exit 1
     fi
 fi
@@ -167,7 +170,7 @@ rm -f /etc/resolv.conf
     echo "options timeout:2 attempts:2 rotate"
 } > /etc/resolv.conf
 
-echo ">>> /etc/resolv.conf agora:"
+log_nivel INFO "/etc/resolv.conf agora:"
 sed 's/^/    /' /etc/resolv.conf
 
 # -- Travar /etc/resolv.conf com chattr +i.
@@ -191,16 +194,16 @@ sed 's/^/    /' /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
 
 if lsattr /etc/resolv.conf 2>/dev/null | grep -q 'i'; then
-    echo ">>> /etc/resolv.conf travado (chattr +i) - NetworkManager nao pode sobrescrever"
+    log_nivel INFO "/etc/resolv.conf travado (chattr +i) - NetworkManager nao pode sobrescrever"
 else
-    echo ">>> AVISO: chattr +i nao aplicou (filesystem sem suporte? ex: overlayfs em container)"
+    log_nivel AVISO "chattr +i nao aplicou (filesystem sem suporte? ex: overlayfs em container)"
 fi
 
 # -- Gate: confirmar que o DNS do AD responde ao SRV do dominio
 #    antes de seguir. Melhor abortar aqui (erro claro) do que deixar
 #    a estacao meio-ingressada.
 if command -v host >/dev/null 2>&1; then
-    echo ">>> [DNS] Validando SRV _ldap._tcp.dc._msdcs.${DOMINIO} ..."
+    log_nivel INFO "[DNS] Validando SRV _ldap._tcp.dc._msdcs.${DOMINIO} ..."
     if ! host -t SRV "_ldap._tcp.dc._msdcs.${DOMINIO}" >/dev/null 2>&1; then
         # Heuristica: se ja ha artefatos de ingresso, apenas avisar
         # (a estacao pode estar ingressada e o DNS e' "menos bom"
@@ -216,31 +219,35 @@ if command -v host >/dev/null 2>&1; then
         fi
 
         if [ "$ALREADY_JOINED_HEURISTIC" = "true" ]; then
-            echo ">>> AVISO: SRV nao resolve, mas a estacao parece ja ingressada."
-            echo ">>> Verifique DNS_PRIMARIO/DNS_SECUNDARIO da OM."
-            echo ">>> Seguindo para validacao do estado atual."
+            log_nivel AVISO "SRV nao resolve, mas a estacao parece ja ingressada"
+            log_nivel DIAG "Verificar DNS_PRIMARIO/DNS_SECUNDARIO no painel"
+            log_nivel DIAG "Seguindo para validacao do estado atual"
         else
-            echo ">>> ERRO: SRV _ldap._tcp.dc._msdcs.${DOMINIO} nao resolve."
-            echo ">>> DNS configurado: ${DNS_PRIMARIO} / ${DNS_SECUNDARIO:-<vazio>}"
-            echo ">>> Verifique conectividade L3 com os DCs antes de reexecutar."
+            log_nivel ERRO "SRV _ldap._tcp.dc._msdcs.${DOMINIO} nao resolve"
+            log_nivel DIAG "DNS configurado: ${DNS_PRIMARIO} / ${DNS_SECUNDARIO:-<vazio>}"
+            log_nivel DIAG "O core_ntp.sh deveria ter rodado antes e sincronizado o relogio"
+            log_nivel DIAG "mas o DNS do AD tambem depende de conectividade L3"
+            log_nivel ACAO "Verificar conectividade L3 com o DC: ping $DC_IP"
+            log_nivel ACAO "Verificar DNS: host $DOMINIO  (deve responder o IP do DC)"
+            log_nivel ACAO "Se DNS nao responde: revisar DNS_PRIMARIO no painel"
             exit 1
         fi
     else
-        echo ">>> [DNS] SRV OK - dominio visivel via DNS do AD."
+        log_nivel OK "[DNS] SRV OK - dominio visivel via DNS do AD"
     fi
 else
-    echo ">>> AVISO: comando 'host' nao encontrado - pulando gate de SRV."
-    echo ">>> (isso nao deveria acontecer: 'dnsutils' e' pacote base do bundle)"
+    log_nivel AVISO "comando 'host' nao encontrado - pulando gate de SRV."
+    log_nivel INFO "(isso nao deveria acontecer: 'dnsutils' e' pacote base do bundle)"
 fi
 
-echo ">>> [FASE 2] DNS do AD aplicado."
+log_nivel INFO "[FASE 2] DNS do AD aplicado."
 echo "============================================================"
 
 # ============================================================
 # ESTÁGIO 1: DIAGNÓSTICO
 # ============================================================
 echo "============================================================"
-echo ">>> ESTÁGIO 1: Diagnóstico do ambiente AD"
+log_nivel INFO "ESTÁGIO 1: Diagnóstico do ambiente AD"
 echo "============================================================"
 
 # Funções de diagnóstico
@@ -378,7 +385,7 @@ net_ads_leave_safe() {
 # ESTÁGIO 2: CLASSIFICAR ESTADO
 # ============================================================
 echo ""
-echo ">>> ESTÁGIO 2: Classificando estado atual"
+log_nivel INFO "ESTÁGIO 2: Classificando estado atual"
 
 if [ "$REALM_OK" = "true" ] && [ "$SSSD_OK" = "true" ] && [ "$KEYTAB_OK" = "true" ]; then
     if [ "$WINBIND_OK" = "true" ]; then
@@ -404,7 +411,7 @@ else
     ESTADO="INDETERMINADO"
 fi
 
-echo ">>> Estado detectado: $ESTADO"
+log_nivel INFO "Estado detectado: $ESTADO"
 
 # ============================================================
 # Bloqueio preventivo: tempo quebrado antes de tentar ingresso.
@@ -414,14 +421,14 @@ echo ">>> Estado detectado: $ESTADO"
 if [ "$ESTADO" = "NAO_INGRESSADO" ] || [ "$ESTADO" = "INDETERMINADO" ]; then
     if [ "$TIME_OK" = "false" ]; then
         echo ""
-        echo ">>> AVISO: relogio fora de sincronia (Kerberos rejeita diferenca > 5min)."
-        echo ">>>         O kinit provavelmente vai falhar com 'Clock skew too great'."
+        log_nivel AVISO "relogio fora de sincronia (Kerberos rejeita diferenca > 5min)."
+        log_nivel INFO "O kinit provavelmente vai falhar com 'Clock skew too great'."
         if [ "$NON_INTERACTIVE" = "true" ]; then
-            echo ">>> Modo nao interativo: prosseguindo mesmo assim (provavel falha adiante)."
+            log_nivel INFO "Modo nao interativo: prosseguindo mesmo assim (provavel falha adiante)."
         else
             read -p ">>> Deseja continuar mesmo assim? (s/N): " CONTINUE_APESAR_DE
             if [[ ! "$CONTINUE_APESAR_DE" =~ ^[Ss]$ ]]; then
-                echo ">>> Instalação abortada pelo usuário."
+                log_nivel INFO "Instalação abortada pelo usuário."
                 exit 1
             fi
         fi
@@ -432,54 +439,54 @@ fi
 # ESTÁGIO 3: DECISÃO
 # ============================================================
 echo ""
-echo ">>> ESTÁGIO 3: Decisão sobre ação necessária"
+log_nivel INFO "ESTÁGIO 3: Decisão sobre ação necessária"
 
 case "$ESTADO" in
     INGRESSADO_SSSD|INGRESSADO_HIBRIDO)
-        echo ">>> A máquina já está ingressada via SSSD."
+        log_nivel INFO "A máquina já está ingressada via SSSD."
         if [ "$NON_INTERACTIVE" = "true" ]; then
             REINGRESSAR="n"
         else
             read -p ">>> Deseja reingressar (remover e ingressar novamente)? (s/N): " REINGRESSAR
         fi
         if [[ "$REINGRESSAR" =~ ^[Ss]$ ]]; then
-            echo ">>> Removendo ingresso existente..."
+            log_nivel INFO "Removendo ingresso existente..."
             realm_leave_safe
             net_ads_leave_safe
             ESTADO="NAO_INGRESSADO"
         else
-            echo ">>> Mantendo ingresso existente. Pulando ingresso."
+            log_nivel INFO "Mantendo ingresso existente. Pulando ingresso."
         fi
         ;;
 
     INGRESSADO_WINBIND)
-        echo ">>> A máquina está ingressada via Winbind (método legado)."
-        echo ">>> Recomenda-se migrar para SSSD."
+        log_nivel INFO "A máquina está ingressada via Winbind (método legado)."
+        log_nivel INFO "Recomenda-se migrar para SSSD."
         if [ "$NON_INTERACTIVE" = "true" ]; then
             MIGRAR="s"
         else
             read -p ">>> Deseja migrar para SSSD (remover Winbind e ingressar via realm)? (S/n): " MIGRAR
         fi
         if [[ ! "$MIGRAR" =~ ^[Nn]$ ]]; then
-            echo ">>> Removendo ingresso Winbind..."
+            log_nivel INFO "Removendo ingresso Winbind..."
             net_ads_leave_safe
             systemctl stop winbind 2>/dev/null || true
             ESTADO="NAO_INGRESSADO"
         else
-            echo ">>> Mantendo Winbind. Pulando ingresso."
+            log_nivel INFO "Mantendo Winbind. Pulando ingresso."
         fi
         ;;
 
     CORROMPIDO|PARCIAL)
-        echo ">>> AVISO: Estado inconsistente detectado ($ESTADO)."
-        echo ">>> Possíveis causas: keytab ausente, SSSD parado, ou ingresso parcial."
+        log_nivel AVISO "Estado inconsistente detectado ($ESTADO)."
+        log_nivel INFO "Possíveis causas: keytab ausente, SSSD parado, ou ingresso parcial."
         if [ "$NON_INTERACTIVE" = "true" ]; then
             REPARAR="s"
         else
             read -p ">>> Deseja reparar automaticamente? (S/n): " REPARAR
         fi
         if [[ ! "$REPARAR" =~ ^[Nn]$ ]]; then
-            echo ">>> Executando limpeza completa..."
+            log_nivel INFO "Executando limpeza completa..."
             realm_leave_safe
             net_ads_leave_safe
             rm -f /etc/krb5.keytab
@@ -489,14 +496,14 @@ case "$ESTADO" in
             rm -rf /var/lib/sss/db/* 2>/dev/null || true
             rm -rf /var/lib/sss/mc/* 2>/dev/null || true
             ESTADO="NAO_INGRESSADO"
-            echo ">>> Limpeza concluída."
+            log_nivel INFO "Limpeza concluída."
         else
-            echo ">>> Prosseguindo sem reparar (pode falhar)."
+            log_nivel INFO "Prosseguindo sem reparar (pode falhar)."
         fi
         ;;
 
     INDETERMINADO)
-        echo ">>> Estado indeterminado. Tentando ingresso como máquina nova."
+        log_nivel INFO "Estado indeterminado. Tentando ingresso como máquina nova."
         ESTADO="NAO_INGRESSADO"
         ;;
 esac
@@ -511,10 +518,10 @@ esac
 # ============================================================
 if [ "$ESTADO" = "NAO_INGRESSADO" ]; then
     echo ""
-    echo ">>> ESTÁGIO 4: Executando ingresso no domínio"
+    log_nivel INFO "ESTÁGIO 4: Executando ingresso no domínio"
 
     # Configurar Kerberos
-    echo ">>> Configurando Kerberos..."
+    log_nivel INFO "Configurando Kerberos..."
     REALM="${DOMINIO^^}"
     # CORRECAO: dns_lookup_kdc=false (era true) - nao depender de SRV
     # ja que acabamos de desativar o encaminhamento via
@@ -547,7 +554,7 @@ if [ "$ESTADO" = "NAO_INGRESSADO" ]; then
 EOF
 
     # Configurar Samba
-    echo ">>> Configurando Samba..."
+    log_nivel INFO "Configurando Samba..."
     cat > /etc/samba/smb.conf <<EOF
 [global]
     workgroup = ${DOMINIO_NETBIOS}
@@ -573,64 +580,64 @@ EOF
 EOF
 
     # Obter ticket Kerberos
-    echo ">>> Obtendo ticket Kerberos..."
+    log_nivel INFO "Obtendo ticket Kerberos..."
     KINIT_OK=false
 
     # Tentar com pipe se ADMIN_PASSWORD estiver disponível
     if [ -n "$ADMIN_PASSWORD" ]; then
-        echo ">>> Tentando obter ticket com senha pre-definida..."
+        log_nivel INFO "Tentando obter ticket com senha pre-definida..."
         KINIT_HAS_PWFILE=false
         if kinit --help 2>&1 | grep -q -- '--password-file'; then
             KINIT_HAS_PWFILE=true
         fi
-        echo ">>>   suporte a --password-file: $KINIT_HAS_PWFILE"
+        log_nivel INFO "suporte a --password-file: $KINIT_HAS_PWFILE"
 
         for TRY_USER in \
             "${ADMIN_USERNAME}@${REALM}" \
             "${ADMIN_USERNAME}@${DOMINIO_NETBIOS}" \
             "${ADMIN_USERNAME,,}@${REALM}" \
             "${ADMIN_USERNAME,,}@${DOMINIO,,}"; do
-            echo ">>>   tentando kinit para ${TRY_USER}..."
+            log_nivel INFO "tentando kinit para ${TRY_USER}..."
             if [ "$KINIT_HAS_PWFILE" = "true" ]; then
                 if printf '%s\n' "$ADMIN_PASSWORD" | kinit --password-file=- "$TRY_USER" >/tmp/kinit-out.txt 2>&1; then
                     KINIT_OK=true
-                    echo ">>>   OK"
+                    log_nivel INFO "OK"
                     break
                 else
-                    echo ">>>   falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
+                    log_nivel INFO "falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
                 fi
             else
                 if printf '%s\n' "$ADMIN_PASSWORD" | kinit "$TRY_USER" >/tmp/kinit-out.txt 2>&1; then
                     KINIT_OK=true
-                    echo ">>>   OK"
+                    log_nivel INFO "OK"
                     break
                 else
-                    echo ">>>   falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
+                    log_nivel INFO "falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
                 fi
             fi
         done
         rm -f /tmp/kinit-out.txt
     elif [ "$NON_INTERACTIVE" = "true" ]; then
-        echo ">>> ERRO: ADMIN_PASSWORD nao definido em modo nao interativo."
+        log_nivel ERRO "ADMIN_PASSWORD nao definido em modo nao interativo."
     fi
 
     # Modo interativo se pipe falhou
     if [ "$KINIT_OK" != "true" ] && [ "$NON_INTERACTIVE" != "true" ]; then
-        echo ">>> Não foi possível obter ticket automaticamente."
-        echo ">>> Solicitando credenciais interativamente..."
+        log_nivel INFO "Não foi possível obter ticket automaticamente."
+        log_nivel INFO "Solicitando credenciais interativamente..."
         while [ "$KINIT_OK" != "true" ]; do
             if [ -z "$ADMIN_USERNAME" ] || [ "$ADMIN_USERNAME" = "Administrator" ]; then
                 read -p ">>> Usuário do domínio: " input_user
                 [ -n "$input_user" ] && ADMIN_USERNAME="$input_user"
             else
-                echo ">>> Usuário: ${ADMIN_USERNAME}"
+                log_nivel INFO "Usuário: ${ADMIN_USERNAME}"
             fi
 
-            echo ">>> Tentando kinit para ${ADMIN_USERNAME}@${REALM} ..."
+            log_nivel INFO "Tentando kinit para ${ADMIN_USERNAME}@${REALM} ..."
             if kinit "${ADMIN_USERNAME}@${REALM}"; then
                 KINIT_OK=true
             else
-                echo ">>> Falhou. Verifique a senha e conectividade com o DC."
+                log_nivel INFO "Falhou. Verifique a senha e conectividade com o DC."
                 read -p ">>> Tentar novamente? (S/n): " try_again
                 [[ "$try_again" =~ ^[Nn]$ ]] && break
                 ADMIN_USERNAME=""
@@ -642,11 +649,11 @@ EOF
     # script segue com JOIN_METHOD=nenhum e deixa a estacao em estado
     # "meio-ingressada" (pior cenario para depurar).
     if [ "$KINIT_OK" != "true" ]; then
-        echo ">>> ERRO: Falha ao obter ticket Kerberos."
-        echo ">>> Verifique as credenciais e conectividade com o DC."
+        log_nivel ERRO "Falha ao obter ticket Kerberos."
+        log_nivel INFO "Verifique as credenciais e conectividade com o DC."
         exit 1
     fi
-    echo ">>> Ticket Kerberos obtido com sucesso!"
+    log_nivel OK "Ticket Kerberos obtido com sucesso!"
 
     # Tentar ingresso via realm join (SSSD)
     JOIN_OK=false
@@ -659,18 +666,26 @@ EOF
         REALM_JOIN_ARGS+=(--computer-ou="$OU_PADRAO")
     fi
 
-    echo ">>> Ingressando no domínio via realm join (SSSD)..."
+    log_nivel INFO "Ingressando no dominio via realm join (SSSD)..."
     if echo "$ADMIN_PASSWORD" | realm join "$DOMINIO" "${REALM_JOIN_ARGS[@]}" 2>&1; then
         JOIN_OK=true
         JOIN_METHOD="sssd"
-        echo ">>> Ingresso via SSSD (realm join) bem-sucedido!"
+        log_nivel OK "Ingresso via SSSD (realm join) bem-sucedido!"
     else
-        echo ">>> realm join falhou."
+        log_nivel ERRO "realm join falhou"
+        log_nivel DIAG "Kerberos rejeitou o ticket antes de validar a senha"
+        log_nivel DIAG "3 causas provaveis, em ordem de probabilidade:"
+        log_nivel DIAG "  1. Clock skew > 5min (servidor e estacao fora de sincronia)"
+        log_nivel DIAG "  2. Senha do admin de ingresso incorreta no painel"
+        log_nivel DIAG "  3. Conta bloqueada ou sem permissao para ingresso"
+        log_nivel ACAO "Confirmar horario: seederlinux-sync-ntp  (ou 'date' vs horario do AD)"
+        log_nivel ACAO "Se senha: refazer bundle no painel com a senha correta"
+        log_nivel ACAO "Se conta: desbloquear no AD (ADUC / Set-ADAccount -Enabled)"
     fi
 
     # Fallback: net ads join (Winbind)
     if [ "$JOIN_OK" != "true" ]; then
-        echo ">>> Tentando fallback com net ads join (Winbind)..."
+        log_nivel INFO "Tentando fallback com net ads join (Winbind)..."
 
         if ! grep -q "kerberos method" /etc/samba/smb.conf; then
             sed -i '/\[global\]/a\    kerberos method = secrets and keytab' /etc/samba/smb.conf
@@ -686,36 +701,42 @@ EOF
         if echo "$ADMIN_PASSWORD" | net ads join "$DOMINIO" "${NET_JOIN_ARGS[@]}" 2>&1; then
             JOIN_OK=true
             JOIN_METHOD="winbind"
-            echo ">>> Ingresso via Winbind (net ads join) bem-sucedido!"
+            log_nivel OK "Ingresso via Winbind (net ads join) bem-sucedido!"
 
             # net ads join NAO gera o keytab de maquina sozinho.
             # Como ja temos um ticket Kerberos valido em cache (kinit
             # acima), "net ads keytab create" usa esse cache
             # automaticamente - nao aceita/precisa de senha via -P.
-            echo ">>> Gerando keytab..."
+            log_nivel INFO "Gerando keytab..."
             if ! net ads keytab create 2>/dev/null; then
-                echo ">>> net ads keytab create falhou. Tentando via adcli..."
+                log_nivel INFO "net ads keytab create falhou. Tentando via adcli..."
                 echo "$ADMIN_PASSWORD" | adcli join "$DOMINIO" \
                     --login-user="$ADMIN_USERNAME" \
                     ${OU_PADRAO:+--domain-ou="$OU_PADRAO"} \
                     --stdin-password 2>&1 || {
-                    echo ">>> AVISO: Falha ao gerar keytab. Login offline pode nao funcionar."
+                    log_nivel AVISO "Falha ao gerar keytab. Login offline pode nao funcionar."
                 }
             fi
         else
-            echo ">>> net ads join falhou."
+            log_nivel ERRO "net ads join falhou"
+            log_nivel DIAG "SSSD falhou E Winbind tambem falhou - problema e' mais fundo"
+            log_nivel DIAG "Provavel: DNS do AD nao resolve, ou firewall L3 bloqueando,"
+            log_nivel DIAG "         ou conta de maquina ja existe no AD (duplicata)"
+            log_nivel ACAO "Verificar: host -t SRV _ldap._tcp.dc._msdcs.$DOMINIO"
+            log_nivel ACAO "Verificar: ping ao DC e portas 389/445/88 abertas"
+            log_nivel ACAO "Se conta duplicada: remover do AD e reexecutar bundle"
         fi
     fi
 
     if [ "$JOIN_OK" != "true" ]; then
-        echo ">>> ERRO: Falha ao ingressar no domínio com todos os métodos."
+        log_nivel ERRO "Falha ao ingressar no domínio com todos os métodos."
         if [ "$NON_INTERACTIVE" = "true" ]; then
             CONTINUE="s"
         else
             read -p ">>> Deseja continuar mesmo assim? (S/n): " CONTINUE
         fi
         if [[ "$CONTINUE" =~ ^[Nn]$ ]]; then
-            echo ">>> Instalação abortada pelo usuário."
+            log_nivel INFO "Instalação abortada pelo usuário."
             exit 1
         fi
         JOIN_METHOD="nenhum"
@@ -726,11 +747,11 @@ fi  # Fim do bloco de ingresso
 # ESTÁGIO 5: CONFIGURAÇÃO PÓS-INGRESSO E VALIDAÇÃO
 # ============================================================
 echo ""
-echo ">>> ESTÁGIO 5: Configuração e validação"
+log_nivel INFO "ESTÁGIO 5: Configuração e validação"
 
 # Configurar SSSD (se método for sssd)
 if [ "$JOIN_METHOD" = "sssd" ] || [ "$ESTADO" = "INGRESSADO_SSSD" ] || [ "$ESTADO" = "INGRESSADO_HIBRIDO" ]; then
-    echo ">>> Configurando SSSD..."
+    log_nivel INFO "Configurando SSSD..."
     OFFLINE_CACHE=""
     if [ "$OFFLINE_AUTH_ENABLED" = "true" ]; then
         OFFLINE_CACHE="$(printf '    cache_credentials = true\n    krb5_store_password_if_offline = true\n    offline_credentials_expiration = %s' "${OFFLINE_AUTH_DAYS:-3}")"
@@ -780,7 +801,7 @@ ${OFFLINE_CACHE}
 EOF
 
     chmod 600 /etc/sssd/sssd.conf
-    echo ">>> SSSD configurado (ad_hostname=${SSSD_AD_HOSTNAME})"
+    log_nivel INFO "SSSD configurado (ad_hostname=${SSSD_AD_HOSTNAME})"
 
     # SSSD 2.9+ (Ubuntu 24.04+): o aviso "Misconfiguration found for
     # the 'nss' responder" entre services= e socket activation e'
@@ -788,11 +809,11 @@ EOF
     # os sockets: no Ubuntu 24.04 o sssd.service depende deles para
     # alguns responders e disable --now quebra o start.
     # Mantemos services = nss, pam, sudo E os sockets convivendo.
-    echo ">>> SSSD: mantendo socket activation (nao desabilitar sockets)."
+    log_nivel INFO "SSSD: mantendo socket activation (nao desabilitar sockets)."
 fi
 
 # Configurar NSS
-echo ">>> Configurando NSS..."
+log_nivel INFO "Configurando NSS..."
 if [ "$JOIN_METHOD" = "winbind" ]; then
     cat > /etc/nsswitch.conf <<EOF
 passwd:     files systemd winbind
@@ -825,10 +846,10 @@ automount:  files sss
 EOF
 fi
 
-echo ">>> NSS configurado"
+log_nivel INFO "NSS configurado"
 
 # Configurar PAM (mkhomedir)
-echo ">>> Configurando PAM e mkhomedir..."
+log_nivel INFO "Configurando PAM e mkhomedir..."
 pam-auth-update --enable mkhomedir --force 2>/dev/null || true
 
 if [ -f /etc/pam.d/common-session ]; then
@@ -836,10 +857,10 @@ if [ -f /etc/pam.d/common-session ]; then
         echo "session required pam_mkhomedir.so skel=/etc/skel umask=0022" >> /etc/pam.d/common-session
 fi
 
-echo ">>> PAM configurado"
+log_nivel INFO "PAM configurado"
 
 # Configurar sudo para grupos do domínio
-echo ">>> Configurando sudo..."
+log_nivel INFO "Configurando sudo..."
 SUDO_FILE="/etc/sudoers.d/seederlinux-domain"
 cat > "$SUDO_FILE" <<EOF
 # SeederLinux - Acesso sudo para grupos do domínio
@@ -853,14 +874,14 @@ fi
 
 chmod 440 "$SUDO_FILE"
 visudo -cf "$SUDO_FILE" || {
-    echo ">>> ERRO: sintaxe do sudoers inválida"
+    log_nivel ERRO "sintaxe do sudoers inválida"
     exit 1
 }
 
-echo ">>> Sudo configurado"
+log_nivel INFO "Sudo configurado"
 
 # Reiniciar serviços
-echo ">>> Reiniciando serviços..."
+log_nivel INFO "Reiniciando serviços..."
 if [ "$JOIN_METHOD" = "sssd" ] || [ "$ESTADO" = "INGRESSADO_SSSD" ] || [ "$ESTADO" = "INGRESSADO_HIBRIDO" ]; then
     systemctl restart sssd 2>/dev/null || true
     systemctl enable sssd
@@ -877,7 +898,7 @@ systemctl restart samba 2>/dev/null || true
 # VALIDAÇÃO FINAL
 # ============================================================
 echo ""
-echo ">>> Validação final..."
+log_nivel INFO "Validação final..."
 
 VALIDATION_OK=true
 
@@ -931,8 +952,8 @@ fi
 
 if [ "$VALIDATION_OK" = "false" ]; then
     echo ""
-    echo ">>> AVISO: Alguns testes de validação falharam."
-    echo ">>> O ingresso pode não estar completamente funcional."
+    log_nivel AVISO "Alguns testes de validação falharam."
+    log_nivel INFO "O ingresso pode não estar completamente funcional."
     if [ "$NON_INTERACTIVE" = "true" ]; then
         CONTINUE="s"
     else
@@ -941,5 +962,5 @@ if [ "$VALIDATION_OK" = "false" ]; then
 fi
 
 echo ""
-echo ">>> Gerenciamento de AD concluído! Método: ${JOIN_METHOD:-$ESTADO}"
+log_nivel INFO "Gerenciamento de AD concluído! Método: ${JOIN_METHOD:-$ESTADO}"
 echo "============================================================="

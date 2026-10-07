@@ -32,6 +32,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="22-proxy"
+
 echo "============================================================"
 echo "Configurar proxy de CLI"
 echo "============================================================"
@@ -54,9 +57,9 @@ PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
 [ -z "$CLI_POLICY" ] && CLI_POLICY="DIRECT"
 SEEDER_SERVER="${SEEDER_SERVER%/}"
 
-echo ">>> CLI_POLICY: $CLI_POLICY"
-echo ">>> CLI_PROXY_NAME: ${CLI_PROXY_NAME:-<default>}"
-echo ">>> Proxies cadastrados: $PROXY_COUNT"
+log_nivel INFO "CLI_POLICY: $CLI_POLICY"
+log_nivel INFO "CLI_PROXY_NAME: ${CLI_PROXY_NAME:-<default>}"
+log_nivel INFO "Proxies cadastrados: $PROXY_COUNT"
 
 # ============================================================
 # Helper: resolver proxy por nome -> URL com user:pass
@@ -217,9 +220,9 @@ _escrever_environment_proxy() {
 
     chmod 644 /etc/environment
 
-    echo ">>> /etc/environment atualizado"
-    echo ">>>   http_proxy=${url}"
-    echo ">>>   no_proxy=${no_proxy}"
+    log_nivel INFO "/etc/environment atualizado"
+    log_nivel INFO "http_proxy=${url}"
+    log_nivel INFO "no_proxy=${no_proxy}"
 }
 
 # ============================================================
@@ -231,7 +234,7 @@ _limpar_environment_proxy() {
         sed -i '/^HTTP_PROXY=/d;/^HTTPS_PROXY=/d;/^FTP_PROXY=/d;/^NO_PROXY=/d' /etc/environment 2>/dev/null || true
         sed -i '/^all_proxy=/d;/^ALL_PROXY=/d' /etc/environment 2>/dev/null || true
         sed -i '/^# Proxy configurado por SeederLinux/d' /etc/environment 2>/dev/null || true
-        echo ">>> /etc/environment limpo (sem proxy)"
+        log_nivel INFO "/etc/environment limpo (sem proxy)"
     fi
 }
 
@@ -241,21 +244,21 @@ _limpar_environment_proxy() {
 case "$CLI_POLICY" in
 
     DIRECT|"")
-        echo ">>> Policy: DIRECT - sem proxy para CLI."
+        log_nivel INFO "Policy: DIRECT - sem proxy para CLI."
         _limpar_environment_proxy
         ;;
 
     PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
         NOME_EFETIVO="$(_resolver_proxy_nome_efetivo)"
         if [ -z "$NOME_EFETIVO" ]; then
-            echo ">>> ERRO: CLI_POLICY=$CLI_POLICY mas nenhum proxy configurado."
-            echo ">>> Configurando CLI como DIRECT para nao travar o bundle."
+            log_nivel ERRO "CLI_POLICY=$CLI_POLICY mas nenhum proxy configurado."
+            log_nivel INFO "Configurando CLI como DIRECT para nao travar o bundle."
             _limpar_environment_proxy
         else
             URL="$(_resolver_proxy_url "$NOME_EFETIVO")" || URL=""
             if [ -z "$URL" ]; then
-                echo ">>> ERRO: proxy '$NOME_EFETIVO' nao encontrado na lista de proxies da OM."
-                echo ">>> Configurando CLI como DIRECT para nao travar o bundle."
+                log_nivel ERRO "proxy '$NOME_EFETIVO' nao encontrado na lista de proxies da OM."
+                log_nivel INFO "Configurando CLI como DIRECT para nao travar o bundle."
                 _limpar_environment_proxy
             else
                 NO_PROXY_ESPECIFICO="$(_resolver_proxy_no_proxy "$NOME_EFETIVO")" || NO_PROXY_ESPECIFICO=""
@@ -266,26 +269,26 @@ case "$CLI_POLICY" in
         ;;
 
     PAC)
-        echo ">>> AVISO: PAC nao e suportado por wget/curl/git."
-        echo ">>>        Ferramentas de CLI so entendem proxy explicito, nao PAC."
-        echo ">>>        Para browsers (que suportam PAC), configure BROWSER_POLICY=PAC."
-        echo ">>>        Aplicando DIRECT para CLI."
+        log_nivel AVISO "PAC nao e suportado por wget/curl/git."
+        log_nivel INFO "Ferramentas de CLI so entendem proxy explicito, nao PAC."
+        log_nivel INFO "Para browsers (que suportam PAC), configure BROWSER_POLICY=PAC."
+        log_nivel INFO "Aplicando DIRECT para CLI."
         _limpar_environment_proxy
         ;;
 
     *)
-        echo ">>> AVISO: CLI_POLICY desconhecida '$CLI_POLICY'. Tratando como DIRECT."
+        log_nivel AVISO "CLI_POLICY desconhecida '$CLI_POLICY'. Tratando como DIRECT."
         _limpar_environment_proxy
         ;;
 esac
 
-echo ">>> Proxy de CLI configurado!"
+log_nivel OK "Proxy de CLI configurado!"
 
 # ============================================================
 # Gerar resolve-proxy.sh — funções compartilhadas para
 # core_logon.sh e seeder-sync resolverem o proxy por grupo do AD.
 # ============================================================
-echo ">>> Gerando /usr/local/lib/seederlinux/resolve-proxy.sh..."
+log_nivel INFO "Gerando /usr/local/lib/seederlinux/resolve-proxy.sh..."
 mkdir -p /usr/local/lib/seederlinux
 cat > /usr/local/lib/seederlinux/resolve-proxy.sh <<'RESOLVE_EOF'
 # resolve-proxy.sh — funções compartilhadas entre core_logon e seeder-sync.
@@ -341,6 +344,6 @@ _proxy_no_proxy_por_index() {
 }
 RESOLVE_EOF
 chmod 644 /usr/local/lib/seederlinux/resolve-proxy.sh
-echo ">>> resolve-proxy.sh gerado."
+log_nivel INFO "resolve-proxy.sh gerado."
 
 echo "============================================================"
