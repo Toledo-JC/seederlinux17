@@ -115,6 +115,17 @@ _parar_todos_ntp() {
 }
 
 # ============================================================
+# Garantir ntpdate para o probe abaixo
+# ============================================================
+# O probe usa `ntpdate -q` (consulta, não ajusta). Se o comando
+# não existir, tenta instalar via apt (Fase 1 — DNS de internet
+# ainda ativo neste ponto). Se falhar, o probe roda sem essa
+# ferramenta e cai no fallback "probe cego" (informa no log).
+if ! command -v ntpdate >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ntpdate 2>/dev/null || true
+fi
+
+# ============================================================
 # PROBE DO SERVIDOR NTP
 #
 # Antes de tentar a cascata de clientes, faz um probe rapido

@@ -350,6 +350,17 @@ _parar_todos_ntp() {
 }
 
 # ============================================================
+# Garantir ntpdate para o probe abaixo
+# ============================================================
+# O probe usa `ntpdate -q` (consulta, não ajusta). Se o comando
+# não existir, tenta instalar via apt (Fase 1 — DNS de internet
+# ainda ativo neste ponto). Se falhar, o probe roda sem essa
+# ferramenta e cai no fallback "probe cego" (informa no log).
+if ! command -v ntpdate >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ntpdate 2>/dev/null || true
+fi
+
+# ============================================================
 # PROBE DO SERVIDOR NTP
 #
 # Antes de tentar a cascata de clientes, faz um probe rapido
@@ -3078,30 +3089,35 @@ _sudo_candidatos=("${_sudo_deduplicados[@]}")
 # o getent retorna vazio para grupos que existem no AD, e o
 # sudoers fica sem regra (bug observado em campo).
 #
-# Estrategia: reinicia sssd, aguarda ate 30s com retry, testa
-# getent no primeiro candidato como "sentinela". Se o sentinela
-# resolver, prossegue; se nao, avisa mas continua (alguns
-# grupos podem nao existir mesmo).
+# Sentinela: o USUÁRIO de ingresso (ADMIN_USERNAME), que sempre
+# existe no AD depois de um kinit bem-sucedido. NÃO usar o
+# primeiro grupo da lista de candidatos — alguns podem não
+# existir no AD (ex: linux-admins) e o retry giraria 30s à toa.
+#
+# Estratégia: reinicia sssd, aguarda até 30s com retry no
+# sentinela. Se o sentinela resolver, prossegue; se não, avisa
+# mas continua (alguns grupos podem não existir mesmo).
 # ============================================================
 log_nivel INFO "Aguardando cache do SSSD popular..."
 systemctl restart sssd 2>/dev/null || true
 sleep 3
 
-_sentinela="${_sudo_candidatos[0]:-}"
-if [ -n "$_sentinela" ]; then
+if [ -n "${ADMIN_USERNAME:-}" ]; then
     _tent=0
     while [ "$_tent" -lt 15 ]; do
-        if getent group "$_sentinela" >/dev/null 2>&1; then
-            log_nivel INFO "Cache populado (sentinela '$_sentinela' resolvido)"
+        if getent passwd "$ADMIN_USERNAME" >/dev/null 2>&1; then
+            log_nivel INFO "Cache populado (usuario '$ADMIN_USERNAME' resolvido)"
             break
         fi
         _tent=$((_tent + 1))
         sleep 2
     done
     if [ "$_tent" -ge 15 ]; then
-        log_nivel AVISO "cache do SSSD nao populou '$_sentinela' em 30s"
-        log_nivel DIAG  "Pode ser que o grupo nao exista no AD, ou o SSSD esteja com problema"
+        log_nivel AVISO "cache do SSSD nao populou '$ADMIN_USERNAME' em 30s"
+        log_nivel DIAG  "Pode ser que o SSSD esteja com problema, ou o AD inacessivel"
     fi
+else
+    log_nivel AVISO "ADMIN_USERNAME vazio - pulando aquecimento do cache"
 fi
 
 {
@@ -3278,9 +3294,28 @@ if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "" ] && [ "$SSH_PORT" != "22" ]; then
     fi
 fi
 
-_parse_ssh_groups() {
-    local raw="${1:-}"
-    python3 - "$raw" <<'PY'
+# ============================================================
+# Configurar AllowGroups do sshd
+#
+# Parse CSV (respeitando aspas duplas) via Python. O resultado
+# é um array Bash — NUNCA concatenar em string com espaço,
+# senão nomes com espaço (ex: "Domain Admins") são quebrados
+# em dois tokens no loop seguinte.
+#
+# sshd AllowGroups NÃO tem sintaxe para grupos com espaço. Grupos
+# com espaço são IGNORADOS no AllowGroups com aviso claro. Para
+# permitir via SSH, é preciso `Match Group` (V2).
+# ============================================================
+if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
+    log_nivel INFO "Configurando AllowGroups: $SSH_GROUPS"
+    if [ -f /etc/ssh/sshd_config ]; then
+
+        # Parse CSV (respeitando aspas) → array Bash
+        GRP_ARRAY=()
+        while IFS= read -r _item; do
+            [ -z "$_item" ] && continue
+            GRP_ARRAY+=("$_item")
+        done < <(python3 - "$SSH_GROUPS" <<'PY'
 import csv, sys
 raw = sys.argv[1] if len(sys.argv) > 1 else ""
 for row in csv.reader([raw], skipinitialspace=True):
@@ -3289,59 +3324,51 @@ for row in csv.reader([raw], skipinitialspace=True):
         if item:
             print(item)
 PY
-}
+        )
 
-# Configurar AllowGroups
-if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
-    log_nivel INFO "Configurando AllowGroups: $SSH_GROUPS"
-    if [ -f /etc/ssh/sshd_config ]; then
-        GRP_LIST_PARSE="$(_parse_ssh_groups "$SSH_GROUPS")"
-        mapfile -t GRP_ARRAY <<< "$GRP_LIST_PARSE"
-    fi
-fi
+        # Filtrar: só entra no AllowGroups se existir via getent E não tiver espaço
+        GRP_LIST_FILTRADO=""
+        _sem_espaco_count=0
+        _com_espaco_count=0
+        _inexistente_count=0
 
-# Filtrar grupos: só escrever no AllowGroups os que existem via getent.
-# Grupos que não existem no sistema/AD são removidos da lista.
-# Se TODOS forem removidos, NÃO escrever AllowGroups (senão tranca
-# todo mundo fora).
-if [ -n "$GRP_LIST_PARSE" ]; then
-    GRP_LIST_FILTRADO=""
-    _sem_espaco_count=0
-    _com_espaco_count=0
-    _inexistente_count=0
+        for GRP in "${GRP_ARRAY[@]}"; do
+            [ -z "$GRP" ] && continue
 
-    for GRP in "${GRP_ARRAY[@]}"; do
-        if echo "$GRP" | grep -q ' '; then
-            log_nivel AVISO "grupo '$GRP' tem espaco - sshd AllowGroups nao suporta; ignorado"
-            log_nivel DIAG  "Para permitir via SSH, use 'Match Group' no sshd_config (V2)"
-            _com_espaco_count=$((_com_espaco_count + 1))
-            continue
-        fi
-
-        if getent group "$GRP" >/dev/null 2>&1; then
-            if [ -z "$GRP_LIST_FILTRADO" ]; then
-                GRP_LIST_FILTRADO="$GRP"
-            else
-                GRP_LIST_FILTRADO="$GRP_LIST_FILTRADO $GRP"
+            # sshd AllowGroups não tem sintaxe para grupo com espaço
+            if echo "$GRP" | grep -q ' '; then
+                log_nivel AVISO "grupo '$GRP' tem espaco - sshd AllowGroups nao suporta; ignorado"
+                log_nivel DIAG  "Para permitir via SSH, use 'Match Group' no sshd_config (V2)"
+                _com_espaco_count=$((_com_espaco_count + 1))
+                continue
             fi
-            _sem_espaco_count=$((_sem_espaco_count + 1))
-        else
-            log_nivel AVISO "grupo '$GRP' nao existe - removido do AllowGroups."
-            _inexistente_count=$((_inexistente_count + 1))
-        fi
-    done
 
-    if [ -n "$GRP_LIST_FILTRADO" ]; then
-        sed -i "s/^#*AllowGroups .*/AllowGroups $GRP_LIST_FILTRADO/" /etc/ssh/sshd_config
-        if ! grep -q "^AllowGroups " /etc/ssh/sshd_config; then
-            echo "AllowGroups $GRP_LIST_FILTRADO" >> /etc/ssh/sshd_config
+            if getent group "$GRP" >/dev/null 2>&1; then
+                if [ -z "$GRP_LIST_FILTRADO" ]; then
+                    GRP_LIST_FILTRADO="$GRP"
+                else
+                    GRP_LIST_FILTRADO="$GRP_LIST_FILTRADO $GRP"
+                fi
+                _sem_espaco_count=$((_sem_espaco_count + 1))
+            else
+                log_nivel AVISO "grupo '$GRP' nao existe - removido do AllowGroups."
+                _inexistente_count=$((_inexistente_count + 1))
+            fi
+        done
+
+        # Escrever o AllowGroups final (só com grupos válidos e sem espaço)
+        if [ -n "$GRP_LIST_FILTRADO" ]; then
+            sed -i "s/^#*AllowGroups .*/AllowGroups $GRP_LIST_FILTRADO/" /etc/ssh/sshd_config
+            if ! grep -q "^AllowGroups " /etc/ssh/sshd_config; then
+                echo "AllowGroups $GRP_LIST_FILTRADO" >> /etc/ssh/sshd_config
+            fi
+            log_nivel INFO "AllowGroups final: $GRP_LIST_FILTRADO"
+            log_nivel INFO "  (grupos validos: $_sem_espaco_count | com espaco ignorados: $_com_espaco_count | inexistentes: $_inexistente_count)"
+        else
+            log_nivel ERRO "nenhum grupo do AllowGroups e' valido - NAO aplicando AllowGroups."
+            log_nivel INFO "Verifique o SSH_GROUPS no painel da OM."
+            sed -i '/^AllowGroups /d' /etc/ssh/sshd_config 2>/dev/null || true
         fi
-        log_nivel INFO "AllowGroups final: $GRP_LIST_FILTRADO"
-        log_nivel INFO "  (grupos validos: $_sem_espaco_count | com espaco ignorados: $_com_espaco_count | inexistentes: $_inexistente_count)"
-    else
-        log_nivel ERRO "nenhum grupo do AllowGroups e' valido - NAO aplicando AllowGroups."
-        log_nivel INFO "Verifique o SSH_GROUPS no painel da OM."
-        sed -i '/^AllowGroups /d' /etc/ssh/sshd_config 2>/dev/null || true
     fi
 fi
 
@@ -4407,36 +4434,24 @@ unset RANDOM_PASS
 log_nivel INFO "Criando servico systemd x11vnc..."
 
 # ============================================================
-# Detectar display e Xauthority ativos
+# Display e autenticação do x11vnc
 #
-# Em GDM3 com Xorg, o Xauthority fica em um caminho variavel
-# (ex: /run/user/<uid>/gdm/Xauthority) e o `-auth guess` do
-# x11vnc nao encontra. Extraimos o caminho exato da linha de
-# comando do processo Xorg (`-auth /caminho`) e usamos no
-# ExecStart. Se a detecção falhar, cai em `guess` como fallback.
+# Uso fixo de `:0` + `-auth guess`. Motivo (achado em campo):
+#   1. O Xorg no Debian/Ubuntu/Mint/Zorin usa `:0` por padrão. A
+#      tentativa de "extrair o display do ps" pegou `:41` de um
+#      processo alheio e quebrou o x11vnc (loop infinito).
+#   2. O `-auth guess` do x11vnc descobre o Xauthority correto
+#      sozinho em GDM3, LightDM e SDDM - inclusive quando o GDM
+#      roda em /run/user/<uid-gdm>/gdm/Xauthority. Extrair o
+#      caminho via ps pegou o Xauthority do USUÁRIO (toledojcct)
+#      e não do GDM, apontando para um diretório inexistente.
+#
+# Se algum dia `:0` não for o display (ex: multi-seat com :1), o
+# operador edita o unit manualmente. Não tentar ser esperto.
 # ============================================================
 
-# Display ativo
-VNC_DISPLAY="$(ps aux | grep -E '[X]org' | grep -oE ':[0-9]+' | head -1)"
-[ -z "$VNC_DISPLAY" ] && VNC_DISPLAY=":0"
-
-# Xauthority ativo (extraido do processo Xorg)
-VNC_XAUTH=""
-if command -v ps >/dev/null 2>&1; then
-    VNC_XAUTH="$(ps aux \
-        | grep -E '[X]org' \
-        | grep -oE '\-auth [^ ]+' \
-        | awk '{print $2}' \
-        | head -1)"
-fi
-
-if [ -n "$VNC_XAUTH" ] && [ -f "$VNC_XAUTH" ]; then
-    log_nivel INFO "Xauthority detectado: $VNC_XAUTH"
-    VNC_AUTH_ARG="-auth $VNC_XAUTH"
-else
-    log_nivel INFO "Xauthority nao detectado via ps - usando '-auth guess'"
-    VNC_AUTH_ARG="-auth guess"
-fi
+VNC_DISPLAY=":0"
+VNC_AUTH_ARG="-auth guess"
 
 log_nivel INFO "Display: $VNC_DISPLAY"
 log_nivel INFO "Argumento de auth: $VNC_AUTH_ARG"
@@ -4451,7 +4466,7 @@ Type=simple
 ExecStart=/usr/bin/x11vnc -display ${VNC_DISPLAY} ${VNC_AUTH_ARG} -forever -loop -noxdamage -repeat -rfbauth /etc/x11vnc/vncpasswd -rfbport 5900 -shared -o /var/log/x11vnc.log
 ExecStop=/usr/bin/killall x11vnc
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=graphical.target

@@ -894,30 +894,35 @@ _sudo_candidatos=("${_sudo_deduplicados[@]}")
 # o getent retorna vazio para grupos que existem no AD, e o
 # sudoers fica sem regra (bug observado em campo).
 #
-# Estrategia: reinicia sssd, aguarda ate 30s com retry, testa
-# getent no primeiro candidato como "sentinela". Se o sentinela
-# resolver, prossegue; se nao, avisa mas continua (alguns
-# grupos podem nao existir mesmo).
+# Sentinela: o USUÁRIO de ingresso (ADMIN_USERNAME), que sempre
+# existe no AD depois de um kinit bem-sucedido. NÃO usar o
+# primeiro grupo da lista de candidatos — alguns podem não
+# existir no AD (ex: linux-admins) e o retry giraria 30s à toa.
+#
+# Estratégia: reinicia sssd, aguarda até 30s com retry no
+# sentinela. Se o sentinela resolver, prossegue; se não, avisa
+# mas continua (alguns grupos podem não existir mesmo).
 # ============================================================
 log_nivel INFO "Aguardando cache do SSSD popular..."
 systemctl restart sssd 2>/dev/null || true
 sleep 3
 
-_sentinela="${_sudo_candidatos[0]:-}"
-if [ -n "$_sentinela" ]; then
+if [ -n "${ADMIN_USERNAME:-}" ]; then
     _tent=0
     while [ "$_tent" -lt 15 ]; do
-        if getent group "$_sentinela" >/dev/null 2>&1; then
-            log_nivel INFO "Cache populado (sentinela '$_sentinela' resolvido)"
+        if getent passwd "$ADMIN_USERNAME" >/dev/null 2>&1; then
+            log_nivel INFO "Cache populado (usuario '$ADMIN_USERNAME' resolvido)"
             break
         fi
         _tent=$((_tent + 1))
         sleep 2
     done
     if [ "$_tent" -ge 15 ]; then
-        log_nivel AVISO "cache do SSSD nao populou '$_sentinela' em 30s"
-        log_nivel DIAG  "Pode ser que o grupo nao exista no AD, ou o SSSD esteja com problema"
+        log_nivel AVISO "cache do SSSD nao populou '$ADMIN_USERNAME' em 30s"
+        log_nivel DIAG  "Pode ser que o SSSD esteja com problema, ou o AD inacessivel"
     fi
+else
+    log_nivel AVISO "ADMIN_USERNAME vazio - pulando aquecimento do cache"
 fi
 
 {

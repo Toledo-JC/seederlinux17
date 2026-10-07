@@ -108,36 +108,24 @@ unset RANDOM_PASS
 log_nivel INFO "Criando servico systemd x11vnc..."
 
 # ============================================================
-# Detectar display e Xauthority ativos
+# Display e autenticação do x11vnc
 #
-# Em GDM3 com Xorg, o Xauthority fica em um caminho variavel
-# (ex: /run/user/<uid>/gdm/Xauthority) e o `-auth guess` do
-# x11vnc nao encontra. Extraimos o caminho exato da linha de
-# comando do processo Xorg (`-auth /caminho`) e usamos no
-# ExecStart. Se a detecção falhar, cai em `guess` como fallback.
+# Uso fixo de `:0` + `-auth guess`. Motivo (achado em campo):
+#   1. O Xorg no Debian/Ubuntu/Mint/Zorin usa `:0` por padrão. A
+#      tentativa de "extrair o display do ps" pegou `:41` de um
+#      processo alheio e quebrou o x11vnc (loop infinito).
+#   2. O `-auth guess` do x11vnc descobre o Xauthority correto
+#      sozinho em GDM3, LightDM e SDDM - inclusive quando o GDM
+#      roda em /run/user/<uid-gdm>/gdm/Xauthority. Extrair o
+#      caminho via ps pegou o Xauthority do USUÁRIO (toledojcct)
+#      e não do GDM, apontando para um diretório inexistente.
+#
+# Se algum dia `:0` não for o display (ex: multi-seat com :1), o
+# operador edita o unit manualmente. Não tentar ser esperto.
 # ============================================================
 
-# Display ativo
-VNC_DISPLAY="$(ps aux | grep -E '[X]org' | grep -oE ':[0-9]+' | head -1)"
-[ -z "$VNC_DISPLAY" ] && VNC_DISPLAY=":0"
-
-# Xauthority ativo (extraido do processo Xorg)
-VNC_XAUTH=""
-if command -v ps >/dev/null 2>&1; then
-    VNC_XAUTH="$(ps aux \
-        | grep -E '[X]org' \
-        | grep -oE '\-auth [^ ]+' \
-        | awk '{print $2}' \
-        | head -1)"
-fi
-
-if [ -n "$VNC_XAUTH" ] && [ -f "$VNC_XAUTH" ]; then
-    log_nivel INFO "Xauthority detectado: $VNC_XAUTH"
-    VNC_AUTH_ARG="-auth $VNC_XAUTH"
-else
-    log_nivel INFO "Xauthority nao detectado via ps - usando '-auth guess'"
-    VNC_AUTH_ARG="-auth guess"
-fi
+VNC_DISPLAY=":0"
+VNC_AUTH_ARG="-auth guess"
 
 log_nivel INFO "Display: $VNC_DISPLAY"
 log_nivel INFO "Argumento de auth: $VNC_AUTH_ARG"
@@ -152,7 +140,7 @@ Type=simple
 ExecStart=/usr/bin/x11vnc -display ${VNC_DISPLAY} ${VNC_AUTH_ARG} -forever -loop -noxdamage -repeat -rfbauth /etc/x11vnc/vncpasswd -rfbport 5900 -shared -o /var/log/x11vnc.log
 ExecStop=/usr/bin/killall x11vnc
 Restart=on-failure
-RestartSec=5
+RestartSec=10
 
 [Install]
 WantedBy=graphical.target
