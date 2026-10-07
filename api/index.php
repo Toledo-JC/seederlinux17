@@ -2592,11 +2592,6 @@ function handleGenerateBundle($input) {
         $org = Database::fetchOne("SELECT id, acronym, domain, serial_config FROM organizations WHERE id = ?", [$orgId]);
         if (!$org) jsonError('Organizacao nao encontrada', 404);
 
-        // Bump serial BEFORE generating bundle content so the header
-        // carries the new serial, not the old one.
-        $newSerial = bumpOrgSerial($orgId);
-        $org['serial_config'] = $newSerial;
-
         // Sanitizar URLs dinâmicas baseadas na sigla da OM
         $org = sanitize_org_urls($org);
 
@@ -2611,7 +2606,7 @@ function handleGenerateBundle($input) {
 
     if (empty($selectedScripts)) {
         $scripts = Database::fetchAll(
-            "SELECT s.id, s.name, s.filename, s.content, s.is_core,
+            "SELECT s.id, s.name, s.filename, s.content, s.is_core, s.depends_on,
                     COALESCE(osv.execution_order, s.execution_order) AS execution_order,
                     COALESCE(osv.is_active, TRUE) AS om_is_active
              FROM scripts s
@@ -2626,7 +2621,7 @@ function handleGenerateBundle($input) {
         $placeholders = implode(',', array_fill(0, count($selectedScripts), '?'));
         $params = array_merge($selectedScripts, [$orgId, $orgId]);
         $scripts = Database::fetchAll(
-            "SELECT s.id, s.name, s.filename, s.content, s.is_core,
+            "SELECT s.id, s.name, s.filename, s.content, s.is_core, s.depends_on,
                     COALESCE(osv.execution_order, s.execution_order) AS execution_order,
                     COALESCE(osv.is_active, TRUE) AS om_is_active
              FROM scripts s
@@ -2637,6 +2632,41 @@ function handleGenerateBundle($input) {
             $params
         );
     }
+
+    $actualOrder = [];
+    $positions = [];
+    foreach ($scripts as $script) {
+        $order = (int)($script['execution_order'] ?? 0);
+        $actualOrder[] = $order;
+        $positions[$script['filename']] = $order;
+    }
+    sort($actualOrder, SORT_NUMERIC);
+    $expectedOrder = count($scripts) > 0 ? range(1, count($scripts)) : [];
+    if ($actualOrder !== $expectedOrder) {
+        jsonError('Ordem de scripts invalida: ' . json_encode($actualOrder));
+    }
+
+    foreach ($scripts as $script) {
+        $dependencies = $script['depends_on'] ?? [];
+        if (is_string($dependencies)) {
+            $dependencies = trim($dependencies, '{}');
+            $dependencies = $dependencies === '' ? [] : explode(',', $dependencies);
+        }
+        foreach ($dependencies as $dependency) {
+            $dependency = trim($dependency);
+            if ($dependency === '') continue;
+            if (!isset($positions[$dependency])) {
+                jsonError("Script {$script['filename']} depende de $dependency, que nao esta no bundle.");
+            }
+            if ($positions[$dependency] >= (int)$script['execution_order']) {
+                jsonError("Script {$script['filename']} (posicao {$script['execution_order']}) depende de $dependency (posicao {$positions[$dependency]}), mas a dependencia vem depois.");
+            }
+        }
+    }
+
+    // Atualizar o serial somente depois de validar a ordem e as dependencias.
+    $newSerial = bumpOrgSerial($orgId);
+    $org['serial_config'] = $newSerial;
 
     // Todos os 24 scripts Core são incluídos no bundle.
     // Cada script de sessão (lightdm, gdm3, sddm) decide internamente se executa ou não.
@@ -4092,16 +4122,25 @@ function handleUpdateScriptOrder($input) {
 
     Database::beginTransaction();
     try {
+        $oldOrder = Database::fetchAll(
+            "SELECT id, execution_order FROM scripts ORDER BY execution_order ASC, id ASC"
+        );
+        $newOrder = [];
         foreach ($input['scripts'] as $item) {
             $id = (int)($item['id'] ?? 0);
             $order = (int)($item['order'] ?? 0);
             if (!$id) continue;
+            $newOrder[] = ['id' => $id, 'execution_order' => $order];
             Database::execute(
                 "UPDATE scripts SET execution_order = ? WHERE id = ?",
                 [$order, $id]
             );
             log_audit('UPDATE', 'scripts', $id, ['new_execution_order' => $order]);
         }
+        log_audit('script_order_changed', 'scripts', null, [
+            'old_order' => $oldOrder,
+            'new_order' => $newOrder,
+        ]);
         Database::commit();
         jsonSuccess(null, 'Ordem atualizada');
     } catch (Exception $e) {

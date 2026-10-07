@@ -17,7 +17,7 @@ O SeederLinux Lite automatiza a preparação e a personalização de estações 
 
 - Gestão de múltiplas organizações (OMs) com isolamento de dados
 - Catálogo de variáveis tipadas, com valores por organização
-- 22 scripts Core de provisionamento
+- 24 scripts Core de provisionamento
 - Geração dinâmica de bundles com substituição de placeholders
 - Edição e versionamento de scripts Core
 - Overrides locais por OM com herança do padrão global
@@ -26,34 +26,36 @@ O SeederLinux Lite automatiza a preparação e a personalização de estações 
 - Modo de execução não interativo (`NON_INTERACTIVE`)
 - Sanitização de URLs, NTP, grupos SSH e assets
 
-## Ordem oficial dos scripts
+## Ordem canônica dos 24 scripts
 
-O bundle inclui os 22 scripts Core na ordem abaixo. Os scripts de sessão (`core_session_*.sh`) são condicionais internamente: cada um verifica o display manager da estação e executa apenas o fluxo correspondente.
+O bundle inclui os 24 scripts Core na ordem abaixo. Os scripts de sessão (`core_session_*.sh`) são condicionais internamente: cada um verifica o display manager da estação e executa apenas o fluxo correspondente.
 
 | Ordem | Script | Responsabilidade |
 |---:|---|---|
-| 1 | `core_dns.sh` | DNS, NTP e hostname |
-| 2 | `core_repositories.sh` | Repositórios APT |
-| 3 | `core_packages.sh` | Pacotes base e dependências |
-| 4 | `core_legados.sh` | Compatibilidade com sistemas legados |
-| 5 | `core_apps.sh` | Aplicações corporativas |
-| 6 | `core_domain.sh` | Integração com domínio AD |
-| 7 | `core_ssh.sh` | Acesso e políticas SSH |
-| 8 | `core_browser.sh` | Políticas de navegadores |
-| 9 | `core_inventory.sh` | Agente OCS Inventory |
-| 10 | `core_printers.sh` | CUPS e impressoras |
-| 11 | `core_vnc.sh` | Acesso remoto VNC |
-| 12 | `core_conky.sh` | Monitor Conky |
-| 13 | `core_config.sh` | Configurações persistentes |
-| 14 | `core_branding.sh` | Wallpaper, logo e tema |
-| 15 | `core_logon.sh` | Ações de entrada do usuário |
-| 16 | `core_password_change.sh` | Alteração de senha |
-| 17 | `core_logoff.sh` | Ações de saída do usuário |
-| 18 | `core_session_lightdm.sh` | Sessão LightDM |
-| 19 | `core_session_gdm3.sh` | Sessão GDM3 |
-| 20 | `core_session_sddm.sh` | Sessão SDDM |
-| 21 | `core_agent.sh` | Agente SeederLinux |
-| 22 | `core_proxy.sh` | Proxy do sistema |
+| 1 | `core_dns.sh` | DNS, hosts e hostname |
+| 2 | `core_ntp.sh` | Sincronização NTP adaptativa |
+| 3 | `core_repositories.sh` | Repositórios APT |
+| 4 | `core_packages.sh` | Pacotes base, autenticação e display manager |
+| 5 | `core_legados.sh` | Java 8 e Firefox 52.7 legado |
+| 6 | `core_apps.sh` | Chrome e OnlyOffice |
+| 7 | `core_domain.sh` | Ingresso no domínio AD |
+| 8 | `core_ssh.sh` | SSH e grupos permitidos |
+| 9 | `core_browser.sh` | Políticas de navegadores |
+| 10 | `core_inventory.sh` | OCS Inventory |
+| 11 | `core_printers.sh` | CUPS e impressoras |
+| 12 | `core_vnc.sh` | x11vnc |
+| 13 | `core_conky.sh` | Monitor Conky |
+| 14 | `core_config.sh` | Configurações persistentes |
+| 15 | `core_branding.sh` | Wallpaper, logo e tema |
+| 16 | `core_session_lightdm.sh` | Sessão LightDM |
+| 17 | `core_session_gdm3.sh` | Sessão GDM3 |
+| 18 | `core_session_sddm.sh` | Sessão SDDM |
+| 19 | `core_logon.sh` | Ações de entrada do usuário |
+| 20 | `core_password_change.sh` | Alteração de senha AD |
+| 21 | `core_logoff.sh` | Ações de saída do usuário |
+| 22 | `core_proxy.sh` | Proxy CLI |
+| 23 | `core_agent.sh` | Agente SeederLinux |
+| 24 | `core_sync.sh` | seeder-sync e políticas periódicas |
 
 ## Instalação
 
@@ -74,7 +76,7 @@ O catálogo inicial é gerado a partir dos arquivos em `scripts/core/`:
 python3 install/gen_insert_core.py
 ```
 
-Isso recria `install/insert_core_scripts.sql` com os 22 scripts e a ordem oficial. Depois, aplique o SQL no banco de instalação ou use o procedimento de sincronização descrito em `SERVIDOR.md`.
+Isso recria `install/insert_core_scripts.sql` com os 24 scripts e a ordem canônica. Depois, aplique o SQL no banco de instalação ou use o procedimento de sincronização descrito em `SERVIDOR.md`.
 
 ## Gerar um bundle
 

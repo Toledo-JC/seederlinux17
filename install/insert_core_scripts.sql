@@ -16,7 +16,7 @@
 -- ============================================================================
 -- DNS e resolucao de nomes (ordem 1) - core_dns.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'DNS e resolucao de nomes',
     'core_dns.sh',
@@ -49,6 +49,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="01-dns"
+
 echo "============================================================"
 echo "Configurar DNS e resolucao de nomes"
 echo "============================================================"
@@ -63,28 +66,20 @@ DNS_PRIMARIO="{{DNS_PRIMARIO}}"
 DNS_SECUNDARIO="{{DNS_SECUNDARIO}}"
 DNS_INTERNET="{{DNS_INTERNET}}"
 OM_ACRONYM="{{OM_ACRONYM}}"
-
-# Remover protocolo indevido do NTP_SERVER (a OM pode ter cadastrado
-# "http://host" em vez de "host"; normalizamos aqui para nao quebrar
-# o chrony/ntp, que esperam apenas hostname/IP).
-NTP_SERVER="${NTP_SERVER#http://}"
-NTP_SERVER="${NTP_SERVER#https://}"
-
 NON_INTERACTIVE="${NON_INTERACTIVE:-false}"
 
 # ============================================================
 # Exibir informacoes
 # ============================================================
-echo ">>> Dominio: $DOMINIO"
-echo ">>> DNS primario: $DNS_PRIMARIO"
-echo ">>> DNS secundario: ${DNS_SECUNDARIO}"
-echo ">>> NTP: $NTP_SERVER"
+log_nivel INFO "Dominio: $DOMINIO"
+log_nivel INFO "DNS primario: $DNS_PRIMARIO"
+log_nivel INFO "DNS secundario: ${DNS_SECUNDARIO}"
 
 # ============================================================
 # Hostname interativo
 # ============================================================
 CURRENT_HOSTNAME=$(hostname)
-echo ">>> Hostname atual: $CURRENT_HOSTNAME"
+log_nivel INFO "Hostname atual: $CURRENT_HOSTNAME"
 
 if [ "$NON_INTERACTIVE" = "true" ]; then
     CHANGE_HOST="n"
@@ -94,11 +89,11 @@ fi
 
 if [[ "$CHANGE_HOST" =~ ^[Ss]$ ]]; then
     if [ "$NON_INTERACTIVE" = "true" ]; then
-        echo ">>> Modo não interativo: mantendo hostname atual."
+        log_nivel INFO "Modo não interativo: mantendo hostname atual."
     else
         read -p ">>> Novo hostname: " NEW_HOSTNAME
         hostnamectl set-hostname "$NEW_HOSTNAME"
-        echo ">>> Hostname alterado para: $NEW_HOSTNAME"
+        log_nivel INFO "Hostname alterado para: $NEW_HOSTNAME"
     fi
 fi
 
@@ -118,7 +113,7 @@ HOSTNAME_FQDN="${HOSTNAME_SHORT}.${DOMINIO}"
 # antes (chattr -i), trata o caso de symlink do systemd-resolved e
 # reescreve do zero.
 # ============================================================
-echo ">>> Configurando DNS temporario (Fase 1: internet primeiro para baixar pacotes)..."
+log_nivel INFO "Configurando DNS temporario (Fase 1: internet primeiro para baixar pacotes)..."
 
 # 1) Remover imutabilidade eventualmente deixada pelo core_domain.sh
 #    (Fase 2 usa chattr +i para proteger o resolv.conf do AD).
@@ -159,13 +154,13 @@ fi
 chmod 644 /etc/resolv.conf
 
 # 5) Log do conteudo real (util para debug em bundle)
-echo ">>> DNS temporario configurado:"
+log_nivel INFO "DNS temporario configurado:"
 sed 's/^/    /' /etc/resolv.conf
 
 # ============================================================
 # /etc/hosts - garantir resolucao do proprio host e do dominio
 # ============================================================
-echo ">>> Configurando /etc/hosts..."
+log_nivel INFO "Configurando /etc/hosts..."
 
 cp /etc/hosts /etc/hosts.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
 
@@ -183,7 +178,7 @@ for DC in $DC_IP_LIST; do
     echo "$DC    ${DC_HOSTNAME}.${DOMINIO} ${DC_HOSTNAME}" >> /etc/hosts
 done
 
-echo ">>> /etc/hosts configurado"
+log_nivel INFO "/etc/hosts configurado"
 
 # ============================================================
 # Aviso de contexto: sem mirror local
@@ -204,18 +199,19 @@ echo ">>> /etc/hosts configurado"
 # Se um tecnico reordenar os scripts na UI, manter essa restricao.
 # ============================================================
 if [ "${REPOSITORY_MODE:-PUBLIC}" = "PUBLIC" ]; then
-    echo "[INFO]  [01-dns] REPOSITORY_MODE=PUBLIC (sem mirror local)"
-    echo "[INFO]  [01-dns] Fase 1 exige internet real (DNS de internet na frente)"
-    echo "[DIAG]  [01-dns] Se a OM tiver mirror interno, mudar REPOSITORY_MODE no painel"
-    echo "[DIAG]  [01-dns] Ordem obrigatoria: core_dns (01) antes de core_ntp (02) antes de core_domain (07)"
+    log_nivel INFO "REPOSITORY_MODE=PUBLIC (sem mirror local)"
+    log_nivel INFO "Fase 1 exige internet real (DNS de internet na frente)"
+    log_nivel DIAG "Se a OM tiver mirror interno, mudar REPOSITORY_MODE no painel"
+    log_nivel DIAG "Ordem obrigatoria: core_dns (01) antes de core_ntp (02) antes de core_domain (07)"
 fi
 
-echo ">>> DNS e resolucao de nomes configurados!"
+log_nivel OK "DNS e resolucao de nomes configurados!"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     1,
+    ARRAY[]::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -223,6 +219,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -231,7 +228,7 @@ $SeederScript$,
 -- ============================================================================
 -- Sincronizacao de Horario (NTP adaptativo) (ordem 2) - core_ntp.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Sincronizacao de Horario (NTP adaptativo)',
     'core_ntp.sh',
@@ -269,6 +266,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="02-ntp"
+
 echo "============================================================"
 echo "Sincronizar horario (NTP adaptativo)"
 echo "============================================================"
@@ -289,39 +289,30 @@ NTP_SERVER="${NTP_SERVER#https://}"
 NTP_STATE_DIR="/etc/seederlinux"
 NTP_STATE_FILE="${NTP_STATE_DIR}/ntp-state.env"
 mkdir -p "$NTP_STATE_DIR"
-
-# ============================================================
-# Helpers de log estruturado (prefixo literal - o lib/diag.sh
-# será usado a partir do Commit 3, quando todos os scripts forem
-# instrumentados juntos).
-# ============================================================
-_dns_tag="02-ntp"
-log_dns() { local _nivel="$1"; shift; printf '[%-5s] [%s] %s\n' "$_nivel" "$_dns_tag" "$*"; }
-
 # ============================================================
 # Exibir informacoes
 # ============================================================
-echo ">>> Servidor NTP: $NTP_SERVER"
-echo ">>> Fallback:     $DNS_INTERNET"
+log_nivel INFO "Servidor NTP: $NTP_SERVER"
+log_nivel INFO "Fallback:     $DNS_INTERNET"
 
 if [ -z "$NTP_SERVER" ] || [ "$NTP_SERVER" = "" ]; then
-    log_dns AVISO "NTP_SERVER vazio. Pulando configuracao NTP."
-    log_dns ACAO  "Defina NTP_SERVER no painel (IP ou FQDN do servidor NTP/DC)."
+    log_nivel AVISO "NTP_SERVER vazio. Pulando configuracao NTP."
+    log_nivel ACAO  "Defina NTP_SERVER no painel (IP ou FQDN do servidor NTP/DC)."
     exit 0
 fi
 
 # ============================================================
 # Pre-flight: L3 (informativo apenas - ICMP bloqueado nao impede NTP)
 # ============================================================
-log_dns TESTE "Pre-flight: testando alcance do servidor NTP $NTP_SERVER"
+log_nivel TESTE "Pre-flight: testando alcance do servidor NTP $NTP_SERVER"
 
 if command -v ping >/dev/null 2>&1; then
     if ping -c 2 -W 2 "$NTP_SERVER" >/dev/null 2>&1; then
-        log_dns OK    "L3 (ICMP): $NTP_SERVER responde"
+        log_nivel OK    "L3 (ICMP): $NTP_SERVER responde"
     else
-        log_dns AVISO "L3 (ICMP): $NTP_SERVER NAO responde a ping"
-        log_dns DIAG  "Isso NAO impede NTP - muitos servidores bloqueiam ICMP"
-        log_dns DIAG  "Prosseguindo para o teste NTP real"
+        log_nivel AVISO "L3 (ICMP): $NTP_SERVER NAO responde a ping"
+        log_nivel DIAG  "Isso NAO impede NTP - muitos servidores bloqueiam ICMP"
+        log_nivel DIAG  "Prosseguindo para o teste NTP real"
     fi
 fi
 
@@ -362,10 +353,10 @@ _parar_todos_ntp() {
 # Tentativa 1: systemd-timesyncd
 # ============================================================
 _try_systemd_timesyncd() {
-    log_dns TENT  "Tentativa 1/5: systemd-timesyncd (default Ubuntu)"
+    log_nivel TENT  "Tentativa 1/5: systemd-timesyncd (default Ubuntu)"
 
     if ! systemctl list-unit-files systemd-timesyncd.service >/dev/null 2>&1; then
-        log_dns DIAG  "systemd-timesyncd nao disponivel nesta distro"
+        log_nivel DIAG  "systemd-timesyncd nao disponivel nesta distro"
         return 1
     fi
 
@@ -378,22 +369,22 @@ _try_systemd_timesyncd() {
 NTP=$NTP_SERVER
 FallbackNTP=$DNS_INTERNET
 EOF
-        log_dns DIAG  "Config: /etc/systemd/timesyncd.conf -> NTP=$NTP_SERVER"
+        log_nivel DIAG  "Config: /etc/systemd/timesyncd.conf -> NTP=$NTP_SERVER"
     fi
 
     systemctl enable systemd-timesyncd 2>/dev/null || true
     systemctl restart systemd-timesyncd 2>/dev/null || true
 
-    log_dns TESTE "Aguardando 20s por sincronizacao..."
+    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         if _ntp_sincronizado; then
-            log_dns OK    "Sincronizado em $((i*2))s via systemd-timesyncd"
+            log_nivel OK    "Sincronizado em $((i*2))s via systemd-timesyncd"
             return 0
         fi
     done
-    log_dns AVISO "systemd-timesyncd nao sincronizou em 20s"
-    log_dns DIAG  "Provavel causa: DC Windows (w32time) incompativel com systemd-timesyncd"
+    log_nivel AVISO "systemd-timesyncd nao sincronizou em 20s"
+    log_nivel DIAG  "Provavel causa: DC Windows (w32time) incompativel com systemd-timesyncd"
     return 1
 }
 
@@ -401,12 +392,12 @@ EOF
 # Tentativa 2: chrony
 # ============================================================
 _try_chrony() {
-    log_dns TENT  "Tentativa 2/5: chrony"
+    log_nivel TENT  "Tentativa 2/5: chrony"
 
     if ! command -v chronyd >/dev/null 2>&1; then
-        log_dns DIAG  "chrony nao instalado - instalando..."
+        log_nivel DIAG  "chrony nao instalado - instalando..."
         DEBIAN_FRONTEND=noninteractive apt-get install -y chrony 2>/dev/null || {
-            log_dns AVISO "Falha ao instalar chrony. Pulando."
+            log_nivel AVISO "Falha ao instalar chrony. Pulando."
             return 1
         }
     fi
@@ -419,25 +410,25 @@ driftfile /var/lib/chrony/chrony.drift
 makestep 1.0 3
 rtcsync
 EOF
-    log_dns DIAG  "Config: /etc/chrony/chrony.conf -> server $NTP_SERVER iburst trust"
+    log_nivel DIAG  "Config: /etc/chrony/chrony.conf -> server $NTP_SERVER iburst trust"
 
     systemctl enable chrony 2>/dev/null || true
     systemctl restart chrony 2>/dev/null || true
 
-    log_dns TESTE "Aguardando 20s por sincronizacao..."
+    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         chronyc makestep 2>/dev/null || true
         if _ntp_sincronizado; then
-            log_dns OK    "Sincronizado em $((i*2))s via chrony"
+            log_nivel OK    "Sincronizado em $((i*2))s via chrony"
             return 0
         fi
     done
-    log_dns AVISO "chrony nao sincronizou em 20s"
-    log_dns DIAG  "chronyc sources abaixo (para o tecnico ver o motivo):"
+    log_nivel AVISO "chrony nao sincronizou em 20s"
+    log_nivel DIAG  "chronyc sources abaixo (para o tecnico ver o motivo):"
     chronyc sources -v 2>/dev/null | sed 's/^/    /' || true
-    log_dns DIAG  "Causa tipica: DC Windows se declara stratum 1 sem refid valido"
-    log_dns DIAG  "chrony rejeita por padrao. NTPsec aceita. Avancando."
+    log_nivel DIAG  "Causa tipica: DC Windows se declara stratum 1 sem refid valido"
+    log_nivel DIAG  "chrony rejeita por padrao. NTPsec aceita. Avancando."
     return 1
 }
 
@@ -445,12 +436,12 @@ EOF
 # Tentativa 3: ntpsec
 # ============================================================
 _try_ntpsec() {
-    log_dns TENT  "Tentativa 3/5: ntpsec"
+    log_nivel TENT  "Tentativa 3/5: ntpsec"
 
     if ! dpkg -l ntpsec 2>/dev/null | grep -q "^ii"; then
-        log_dns DIAG  "ntpsec nao instalado - instalando..."
+        log_nivel DIAG  "ntpsec nao instalado - instalando..."
         DEBIAN_FRONTEND=noninteractive apt-get install -y ntpsec 2>/dev/null || {
-            log_dns AVISO "Falha ao instalar ntpsec. Pulando."
+            log_nivel AVISO "Falha ao instalar ntpsec. Pulando."
             return 1
         }
     fi
@@ -465,21 +456,21 @@ restrict -4 default kod notrap nomodify nopeer noquery limited
 restrict -6 default kod notrap nomodify nopeer noquery limited
 restrict 127.0.0.1
 EOF
-    log_dns DIAG  "Config: /etc/ntpsec/ntp.conf -> server $NTP_SERVER iburst"
+    log_nivel DIAG  "Config: /etc/ntpsec/ntp.conf -> server $NTP_SERVER iburst"
 
     systemctl enable ntpsec 2>/dev/null || true
     systemctl restart ntpsec 2>/dev/null || true
 
-    log_dns TESTE "Aguardando 20s por sincronizacao..."
+    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         if _ntp_sincronizado; then
-            log_dns OK    "Sincronizado em $((i*2))s via ntpsec"
+            log_nivel OK    "Sincronizado em $((i*2))s via ntpsec"
             return 0
         fi
     done
-    log_dns AVISO "ntpsec nao sincronizou em 20s"
-    log_dns DIAG  "ntpq -p abaixo:"
+    log_nivel AVISO "ntpsec nao sincronizou em 20s"
+    log_nivel DIAG  "ntpq -p abaixo:"
     ntpq -p 2>/dev/null | sed 's/^/    /' || true
     return 1
 }
@@ -488,19 +479,19 @@ EOF
 # Tentativa 4: ntp (ISC classico)
 # ============================================================
 _try_ntp_isc() {
-    log_dns TENT  "Tentativa 4/5: ntp (ISC classico)"
+    log_nivel TENT  "Tentativa 4/5: ntp (ISC classico)"
 
     # Se ntpsec esta instalado, ele ja fornece /usr/sbin/ntpd.
     # Removemos ntpsec antes de instalar o ntp ISC para evitar conflito.
     if dpkg -l ntpsec 2>/dev/null | grep -q "^ii"; then
-        log_dns DIAG  "Removendo ntpsec para instalar ntp ISC..."
+        log_nivel DIAG  "Removendo ntpsec para instalar ntp ISC..."
         DEBIAN_FRONTEND=noninteractive apt-get remove -y ntpsec 2>/dev/null || true
     fi
 
     if ! dpkg -l ntp 2>/dev/null | grep -q "^ii"; then
-        log_dns DIAG  "ntp ISC nao instalado - instalando..."
+        log_nivel DIAG  "ntp ISC nao instalado - instalando..."
         DEBIAN_FRONTEND=noninteractive apt-get install -y ntp 2>/dev/null || {
-            log_dns AVISO "Falha ao instalar ntp ISC. Pulando."
+            log_nivel AVISO "Falha ao instalar ntp ISC. Pulando."
             return 1
         }
     fi
@@ -513,20 +504,20 @@ driftfile /var/lib/ntp/ntp.drift
 restrict default kod nomodify notrap nopeer noquery
 restrict 127.0.0.1
 EOF
-    log_dns DIAG  "Config: /etc/ntp.conf -> server $NTP_SERVER iburst"
+    log_nivel DIAG  "Config: /etc/ntp.conf -> server $NTP_SERVER iburst"
 
     systemctl enable ntp 2>/dev/null || true
     systemctl restart ntp 2>/dev/null || true
 
-    log_dns TESTE "Aguardando 20s por sincronizacao..."
+    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         if _ntp_sincronizado; then
-            log_dns OK    "Sincronizado em $((i*2))s via ntp ISC"
+            log_nivel OK    "Sincronizado em $((i*2))s via ntp ISC"
             return 0
         fi
     done
-    log_dns AVISO "ntp ISC nao sincronizou em 20s"
+    log_nivel AVISO "ntp ISC nao sincronizou em 20s"
     return 1
 }
 
@@ -534,27 +525,27 @@ EOF
 # Tentativa 5: ntpdate + cron (ultimo recurso)
 # ============================================================
 _try_ntpdate_cron() {
-    log_dns TENT  "Tentativa 5/5: ntpdate + cron (step one-shot)"
+    log_nivel TENT  "Tentativa 5/5: ntpdate + cron (step one-shot)"
 
     if ! command -v ntpdate >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y ntpdate 2>/dev/null || {
-            log_dns AVISO "Falha ao instalar ntpdate. Desistindo."
+            log_nivel AVISO "Falha ao instalar ntpdate. Desistindo."
             return 1
         }
     fi
 
     _parar_todos_ntp
 
-    log_dns TESTE "Executando ntpdate -u $NTP_SERVER (step unico)..."
+    log_nivel TESTE "Executando ntpdate -u $NTP_SERVER (step unico)..."
     local _out
     _out="$(ntpdate -u "$NTP_SERVER" 2>&1 || true)"
     echo "$_out" | sed 's/^/    /'
 
     if echo "$_out" | grep -qiE "step|adjust"; then
-        log_dns OK    "Relogio ajustado via ntpdate"
-        log_dns DIAG  "ntpdate e' one-shot; sera reagendado via cron a cada 5min"
-        log_dns DIAG  "Isso NAO substitui um daemon NTP - e' paliativo"
-        log_dns ACAO  "Corrigir o NTP do servidor ($NTP_SERVER) para o daemon funcionar"
+        log_nivel OK    "Relogio ajustado via ntpdate"
+        log_nivel DIAG  "ntpdate e' one-shot; sera reagendado via cron a cada 5min"
+        log_nivel DIAG  "Isso NAO substitui um daemon NTP - e' paliativo"
+        log_nivel ACAO  "Corrigir o NTP do servidor ($NTP_SERVER) para o daemon funcionar"
 
         mkdir -p /var/lib/seederlinux
         touch /var/lib/seederlinux/ntpdate-last-ok
@@ -570,7 +561,7 @@ EOF
         chmod 644 /etc/cron.d/seederlinux-ntpdate
         return 0
     fi
-    log_dns AVISO "ntpdate falhou"
+    log_nivel AVISO "ntpdate falhou"
     return 1
 }
 
@@ -597,8 +588,8 @@ fi
 # ============================================================
 echo ""
 if [ "$NTP_RESULT" = "OK" ]; then
-    log_dns OK    "NTP sincronizado via: $NTP_CLIENT"
-    log_dns DIAG  "Horario local: $(date -Is)"
+    log_nivel OK    "NTP sincronizado via: $NTP_CLIENT"
+    log_nivel DIAG  "Horario local: $(date -Is)"
 
     cat > "$NTP_STATE_FILE" <<EOF
 # SeederLinux - Estado do NTP
@@ -609,16 +600,16 @@ NTP_LAST_OK="$(date +%s)"
 EOF
     chmod 644 "$NTP_STATE_FILE"
 else
-    log_dns ERRO  "NTP NAO sincronizou com nenhum dos 5 clientes"
-    log_dns DIAG  "Causas mais provaveis:"
-    log_dns DIAG  "  1. Firewall do servidor bloqueando UDP/123 inbound"
-    log_dns DIAG  "  2. w32time (Windows) desconfigurado no servidor"
-    log_dns DIAG  "  3. Servidor NTP incorreto no painel"
-    log_dns DIAG  "  4. Rede L3 indisponivel entre estacao e servidor"
-    log_dns ACAO  "No servidor (Windows, como admin): w32tm /query /status"
-    log_dns ACAO  "Abrir firewall UDP 123 inbound no servidor"
-    log_dns ACAO  "Na estacao: ntpdate -q $NTP_SERVER"
-    log_dns DIAG  "O bundle continua, mas Kerberos pode falhar com 'Clock skew too great'"
+    log_nivel ERRO  "NTP NAO sincronizou com nenhum dos 5 clientes"
+    log_nivel DIAG  "Causas mais provaveis:"
+    log_nivel DIAG  "  1. Firewall do servidor bloqueando UDP/123 inbound"
+    log_nivel DIAG  "  2. w32time (Windows) desconfigurado no servidor"
+    log_nivel DIAG  "  3. Servidor NTP incorreto no painel"
+    log_nivel DIAG  "  4. Rede L3 indisponivel entre estacao e servidor"
+    log_nivel ACAO  "No servidor (Windows, como admin): w32tm /query /status"
+    log_nivel ACAO  "Abrir firewall UDP 123 inbound no servidor"
+    log_nivel ACAO  "Na estacao: ntpdate -q $NTP_SERVER"
+    log_nivel DIAG  "O bundle continua, mas Kerberos pode falhar com 'Clock skew too great'"
 
     cat > "$NTP_STATE_FILE" <<EOF
 # SeederLinux - Estado do NTP (NAO SINCRONIZADO)
@@ -631,12 +622,13 @@ EOF
     chmod 644 "$NTP_STATE_FILE"
 fi
 
-echo ">>> NTP configurado!"
+log_nivel OK "NTP configurado!"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     2,
+    ARRAY['core_dns.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -644,6 +636,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -652,7 +645,7 @@ $SeederScript$,
 -- ============================================================================
 -- Configuracao de Repositorios APT (ordem 3) - core_repositories.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Configuracao de Repositorios APT',
     'core_repositories.sh',
@@ -687,6 +680,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="03-repositories"
+
 echo "============================================================"
 echo "Configurar repositorios APT"
 echo "============================================================"
@@ -709,9 +705,9 @@ PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
 [ -z "$MIRROR_LOCAL_SEEDER_PATH" ] && MIRROR_LOCAL_SEEDER_PATH="/mirror/"
 SEEDER_SERVER="${SEEDER_SERVER%/}"
 
-echo ">>> APT_POLICY: $APT_POLICY"
-echo ">>> APT_PROXY_NAME: ${APT_PROXY_NAME:-<default>}"
-echo ">>> Proxies cadastrados: $PROXY_COUNT"
+log_nivel INFO "APT_POLICY: $APT_POLICY"
+log_nivel INFO "APT_PROXY_NAME: ${APT_PROXY_NAME:-<default>}"
+log_nivel INFO "Proxies cadastrados: $PROXY_COUNT"
 
 # ============================================================
 # Fase 1 — limpar estado de proxy herdado
@@ -724,7 +720,7 @@ echo ">>> Proxies cadastrados: $PROXY_COUNT"
 # Comecamos SEMPRE limpo. Se a policy escolhida for PROXY_*, o
 # arquivo sera reescrito no fim deste script, ANTES do apt-get
 # update.
-echo ">>> Limpando config de proxy do apt de execucoes anteriores..."
+log_nivel INFO "Limpando config de proxy do apt de execucoes anteriores..."
 rm -f /etc/apt/apt.conf.d/95seederlinux-proxy 2>/dev/null || true
 
 # ============================================================
@@ -745,7 +741,7 @@ detect_distro() {
 }
 
 DISTRO="$(detect_distro)"
-echo ">>> Distribuicao detectada: $DISTRO"
+log_nivel INFO "Distribuicao detectada: $DISTRO"
 
 # ============================================================
 # Obter codename da distro
@@ -761,7 +757,7 @@ get_codename() {
         codename="$(lsb_release -cs 2>/dev/null)"
     fi
     if [ -z "$codename" ]; then
-        echo ">>> AVISO: nao foi possivel detectar o codename. Usando fallback: $fallback" >&2
+        log_nivel AVISO "nao foi possivel detectar o codename. Usando fallback: $fallback"
         codename="$fallback"
     fi
     echo "$codename"
@@ -791,7 +787,7 @@ _resolver_proxy_url() {
             local pass_b64="${!v_pass_b64}"
 
             if [ -z "$url" ]; then
-                echo ">>> AVISO: proxy '$name' encontrado mas URL vazia." >&2
+                log_nivel AVISO "proxy '$name' encontrado mas URL vazia."
                 return 1
             fi
 
@@ -842,7 +838,7 @@ _resolver_proxy_nome_efetivo() {
 # ============================================================
 _escrever_proxy_apt() {
     local url="$1"
-    echo ">>> Configurando apt via proxy: $url"
+    log_nivel INFO "Configurando apt via proxy: $url"
     cat > /etc/apt/apt.conf.d/95seederlinux-proxy <<EOF
 Acquire::http::Proxy "${url}";
 Acquire::https::Proxy "${url}";
@@ -859,14 +855,14 @@ case "$APT_POLICY" in
     PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
         NOME_EFETIVO="$(_resolver_proxy_nome_efetivo)"
         if [ -z "$NOME_EFETIVO" ]; then
-            echo ">>> ERRO: APT_POLICY=$APT_POLICY mas nenhum proxy configurado (APT_PROXY_NAME vazio e PROXY_DEFAULT_NAME vazio)."
-            echo ">>> Configurando apt como DIRECT para nao travar o bundle."
+            log_nivel ERRO "APT_POLICY=$APT_POLICY mas nenhum proxy configurado (APT_PROXY_NAME vazio e PROXY_DEFAULT_NAME vazio)."
+            log_nivel INFO "Configurando apt como DIRECT para nao travar o bundle."
             APT_POLICY="DIRECT"
         else
             APT_PROXY_URL="$(_resolver_proxy_url "$NOME_EFETIVO")" || APT_PROXY_URL=""
             if [ -z "$APT_PROXY_URL" ]; then
-                echo ">>> ERRO: proxy '$NOME_EFETIVO' nao encontrado na lista de proxies da OM."
-                echo ">>> Configurando apt como DIRECT para nao travar o bundle."
+                log_nivel ERRO "proxy '$NOME_EFETIVO' nao encontrado na lista de proxies da OM."
+                log_nivel INFO "Configurando apt como DIRECT para nao travar o bundle."
                 APT_POLICY="DIRECT"
             else
                 _escrever_proxy_apt "$APT_PROXY_URL"
@@ -904,19 +900,19 @@ backup_sources() {
 case "$APT_POLICY" in
 
     DIRECT|PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
-        echo ">>> Policy: mirrors oficiais da distro ($DISTRO)."
-        echo ">>> Nenhuma alteracao em sources.list (mantendo o que ja esta)."
+        log_nivel INFO "Policy: mirrors oficiais da distro ($DISTRO)."
+        log_nivel INFO "Nenhuma alteracao em sources.list (mantendo o que ja esta)."
         # Nao mexe: a estacao ja veio com sources.list da distro
         ;;
 
     MIRROR_OFFICIAL)
-        echo ">>> Policy: mirrors oficiais explicitos."
-        echo ">>> Nenhuma alteracao em sources.list."
+        log_nivel INFO "Policy: mirrors oficiais explicitos."
+        log_nivel INFO "Nenhuma alteracao em sources.list."
         ;;
 
     MIRROR_LOCAL_SEEDER)
-        echo ">>> Policy: mirror local hospedado no SeederLinux."
-        echo ">>> Base: ${SEEDER_SERVER}${MIRROR_LOCAL_SEEDER_PATH}"
+        log_nivel INFO "Policy: mirror local hospedado no SeederLinux."
+        log_nivel INFO "Base: ${SEEDER_SERVER}${MIRROR_LOCAL_SEEDER_PATH}"
 
         backup_sources
 
@@ -956,17 +952,17 @@ deb ${SEEDER_SERVER}${MIRROR_LOCAL_SEEDER_PATH}ubuntu $UBUNTU_CODENAME-security 
 EOF
                 ;;
             *)
-                echo ">>> AVISO: distro '$DISTRO' nao reconhecida. Mantendo sources.list atual."
+                log_nivel AVISO "distro '$DISTRO' nao reconhecida. Mantendo sources.list atual."
                 ;;
         esac
         ;;
 
     MIRROR_LOCAL_OM)
         if [ -z "$MIRROR_LOCAL_OM_URL" ]; then
-            echo ">>> ERRO: APT_POLICY=MIRROR_LOCAL_OM mas MIRROR_LOCAL_OM_URL esta vazio."
-            echo ">>> Mantendo sources.list atual."
+            log_nivel ERRO "APT_POLICY=MIRROR_LOCAL_OM mas MIRROR_LOCAL_OM_URL esta vazio."
+            log_nivel INFO "Mantendo sources.list atual."
         else
-            echo ">>> Policy: mirror local da OM ($MIRROR_LOCAL_OM_URL)"
+            log_nivel INFO "Policy: mirror local da OM ($MIRROR_LOCAL_OM_URL)"
             backup_sources
 
             MIRROR_BASE="${MIRROR_LOCAL_OM_URL%/}"
@@ -998,14 +994,14 @@ deb ${MIRROR_BASE}/debian $DEBIAN_CODENAME-updates main contrib non-free non-fre
 EOF
                     ;;
                 *)
-                    echo ">>> AVISO: distro '$DISTRO' nao reconhecida. Mantendo sources.list atual."
+                    log_nivel AVISO "distro '$DISTRO' nao reconhecida. Mantendo sources.list atual."
                     ;;
             esac
         fi
         ;;
 
     *)
-        echo ">>> AVISO: APT_POLICY desconhecida '$APT_POLICY'. Tratando como DIRECT."
+        log_nivel AVISO "APT_POLICY desconhecida '$APT_POLICY'. Tratando como DIRECT."
         ;;
 esac
 
@@ -1020,15 +1016,16 @@ esac
 #
 # Nao toleramos falha aqui: queremos saber se o APT nao esta funcional
 # ANTES de tentar instalar pacotes no script 04.
-echo ">>> Atualizando apt-get update..."
+log_nivel INFO "Atualizando apt-get update..."
 apt-get update
 
-echo ">>> Repositorios configurados com sucesso (policy: $APT_POLICY)!"
+log_nivel OK "Repositorios configurados com sucesso (policy: $APT_POLICY)!"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     3,
+    ARRAY['core_dns.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -1036,6 +1033,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -1044,7 +1042,7 @@ $SeederScript$,
 -- ============================================================================
 -- Instalacao de Pacotes Essenciais (ordem 4) - core_packages.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Instalacao de Pacotes Essenciais',
     'core_packages.sh',
@@ -1073,6 +1071,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="04-packages"
+
 echo "============================================================"
 echo "Instalar pacotes essenciais"
 echo "============================================================"
@@ -1083,8 +1084,8 @@ echo "============================================================"
 DESKTOP_ENV=""
 INSTALL_DESKTOP="false"
 
-echo ">>> Ambiente grafico solicitado (opcional): $DESKTOP_ENV"
-echo ">>> Instalar ambiente grafico: $INSTALL_DESKTOP"
+log_nivel INFO "Ambiente grafico solicitado (opcional): $DESKTOP_ENV"
+log_nivel INFO "Instalar ambiente grafico: $INSTALL_DESKTOP"
 
 # ============================================================
 # Detectar ambiente grafico ja instalado
@@ -1115,8 +1116,8 @@ DETECTED_DE="$(detectar_de)"
 DETECTED_DM="$(detectar_dm)"
 export DETECTED_DE DETECTED_DM
 
-echo ">>> DE detectado na estacao: $DETECTED_DE"
-echo ">>> DM detectado na estacao: $DETECTED_DM"
+log_nivel INFO "DE detectado na estacao: $DETECTED_DE"
+log_nivel INFO "DM detectado na estacao: $DETECTED_DM"
 
 # ============================================================
 # Instalar pacotes com fallback por item
@@ -1126,19 +1127,19 @@ instalar_pacotes() {
     local falhou=0
     for pkg in "$@"; do
         if ! apt-get install -y "$pkg" 2>/dev/null; then
-            echo ">>> AVISO [$grupo]: falha ao instalar pacote '$pkg'"
+            log_nivel INFO "AVISO [$grupo]: falha ao instalar pacote '$pkg'"
             falhou=$((falhou + 1))
         fi
     done
     if [ "$falhou" -gt 0 ]; then
-        echo ">>> [$grupo] concluido com $falhou pacote(s) nao instalado(s)."
+        log_nivel INFO "[$grupo] concluido com $falhou pacote(s) nao instalado(s)."
     fi
 }
 
 # ============================================================
 # Atualizar sistema
 # ============================================================
-echo ">>> Atualizando pacotes do sistema..."
+log_nivel INFO "Atualizando pacotes do sistema..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get -y upgrade
@@ -1146,7 +1147,7 @@ apt-get -y upgrade
 # ============================================================
 # Pacotes base do sistema
 # ============================================================
-echo ">>> Instalando pacotes base..."
+log_nivel INFO "Instalando pacotes base..."
 BASE_PACKAGES=(
     wget
     curl
@@ -1201,7 +1202,7 @@ instalar_pacotes "base" "${BASE_PACKAGES[@]}"
 # ============================================================
 # Garantir repositorio universe
 # ============================================================
-echo ">>> Garantindo repositorio universe..."
+log_nivel INFO "Garantindo repositorio universe..."
 if command -v add-apt-repository &>/dev/null; then
     add-apt-repository -y universe 2>/dev/null || true
 fi
@@ -1210,7 +1211,7 @@ apt-get update -qq
 # ============================================================
 # Pacotes de autenticacao (AD/Kerberos/SSSD)
 # ============================================================
-echo ">>> Instalando pacotes de autenticacao..."
+log_nivel INFO "Instalando pacotes de autenticacao..."
 AUTH_PACKAGES=(
     krb5-user
     samba
@@ -1238,7 +1239,7 @@ instalar_pacotes "auth" "${AUTH_PACKAGES[@]}"
 # Pacotes do ambiente grafico (OPCIONAL)
 # ============================================================
 if [ "$INSTALL_DESKTOP" = "true" ] && [ -n "$DESKTOP_ENV" ] && [ "$DESKTOP_ENV" != "" ]; then
-    echo ">>> Instalando ambiente grafico solicitado: $DESKTOP_ENV"
+    log_nivel INFO "Instalando ambiente grafico solicitado: $DESKTOP_ENV"
     case "$DESKTOP_ENV" in
         cinnamon)
             instalar_pacotes "DE-cinnamon" cinnamon cinnamon-common lightdm lightdm-gtk-greeter
@@ -1262,19 +1263,19 @@ if [ "$INSTALL_DESKTOP" = "true" ] && [ -n "$DESKTOP_ENV" ] && [ "$DESKTOP_ENV" 
             instalar_pacotes "DE-lxde" lxde lightdm lightdm-gtk-greeter
             ;;
         *)
-            echo ">>> AVISO: Ambiente grafico nao reconhecido: $DESKTOP_ENV"
-            echo ">>> Nenhum DE sera instalado. Usando o ja presente: $DETECTED_DE"
+            log_nivel AVISO "Ambiente grafico nao reconhecido: $DESKTOP_ENV"
+            log_nivel INFO "Nenhum DE sera instalado. Usando o ja presente: $DETECTED_DE"
             ;;
     esac
 else
-    echo ">>> INSTALL_DESKTOP != true. Nao instalando DE."
-    echo ">>> Utilizando ambiente grafico ja presente: $DETECTED_DE"
+    log_nivel INFO "INSTALL_DESKTOP != true. Nao instalando DE."
+    log_nivel INFO "Utilizando ambiente grafico ja presente: $DETECTED_DE"
 fi
 
 # ============================================================
 # Pacotes complementares
 # ============================================================
-echo ">>> Instalando pacotes complementares..."
+log_nivel INFO "Instalando pacotes complementares..."
 EXTRA_PACKAGES=(
     cups
     cups-client
@@ -1340,14 +1341,14 @@ DE_EFFECTIVE="${DESKTOP_ENV:-}"
 DM_EFFECTIVE="${DISPLAY_MANAGER:-}"
 [ -z "$DM_EFFECTIVE" ] && DM_EFFECTIVE="$(dm_padrao_de "$DE_EFFECTIVE")"
 
-echo ">>> DE efetivo: $DE_EFFECTIVE"
-echo ">>> DM efetivo: $DM_EFFECTIVE"
+log_nivel INFO "DE efetivo: $DE_EFFECTIVE"
+log_nivel INFO "DM efetivo: $DM_EFFECTIVE"
 
 case "$DM_EFFECTIVE" in
     lightdm)
         instalar_pacotes "dm-lightdm" lightdm lightdm-slick-greeter
         if ! dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
-            echo ">>> slick-greeter indisponivel - tentando lightdm-gtk-greeter..."
+            log_nivel INFO "slick-greeter indisponivel - tentando lightdm-gtk-greeter..."
             instalar_pacotes "dm-lightdm-gtk" lightdm-gtk-greeter
         fi
         ;;
@@ -1358,7 +1359,7 @@ case "$DM_EFFECTIVE" in
         instalar_pacotes "dm-sddm" sddm sddm-theme-breeze
         ;;
     *)
-        echo ">>> AVISO: DM '$DM_EFFECTIVE' desconhecido - instalando lightdm."
+        log_nivel AVISO "DM '$DM_EFFECTIVE' desconhecido - instalando lightdm."
         instalar_pacotes "dm-lightdm" lightdm lightdm-slick-greeter
         if ! dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
             instalar_pacotes "dm-lightdm-gtk" lightdm-gtk-greeter
@@ -1371,19 +1372,19 @@ command -v lightdm &>/dev/null && DM_OK=true
 command -v gdm3    &>/dev/null && DM_OK=true
 command -v sddm    &>/dev/null && DM_OK=true
 if [ "$DM_OK" != "true" ]; then
-    echo ">>> ERRO: nenhum display manager foi instalado com sucesso."
+    log_nivel ERRO "nenhum display manager foi instalado com sucesso."
 else
-    echo ">>> Display manager instalado com sucesso."
+    log_nivel INFO "Display manager instalado com sucesso."
 fi
 
 # ============================================================
 # OCS Inventory Agent
 # ============================================================
-echo ">>> Instalando OCS Inventory Agent..."
+log_nivel INFO "Instalando OCS Inventory Agent..."
 if ! apt-get install -y ocsinventory-agent 2>/dev/null; then
-    echo ">>> AVISO: Falha ao instalar ocsinventory-agent."
+    log_nivel AVISO "Falha ao instalar ocsinventory-agent."
 else
-    echo ">>> OCS Inventory Agent instalado com sucesso"
+    log_nivel INFO "OCS Inventory Agent instalado com sucesso"
 fi
 
 # ============================================================
@@ -1402,7 +1403,7 @@ fi
 # nem de apt) e instalar em /opt/firefox. O snap (se presente) e
 # mantido — o usuario pode remove-lo manualmente depois se quiser.
 # O tarball le policies.json normalmente.
-echo ">>> Verificando instalacao existente do Firefox..."
+log_nivel INFO "Verificando instalacao existente do Firefox..."
 FIREFOX_TARBALL="/tmp/firefox-latest.tar.xz"
 FIREFOX_URL="https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=pt-BR"
 
@@ -1419,11 +1420,11 @@ fi
 
 if [ "$TEM_DEB" = "true" ] && [ "$TEM_SNAP" != "true" ]; then
     # Ja existe Firefox .deb nativo e nenhum snap — nada a fazer
-    echo ">>> Firefox .deb nativo ja instalado. Nenhuma acao necessaria."
+    log_nivel INFO "Firefox .deb nativo ja instalado. Nenhuma acao necessaria."
 elif [ "$TEM_SNAP" = "true" ]; then
     # Snap presente — baixar tarball da Mozilla em /opt/firefox-moderno
     # (NAO remover o snap)
-    echo ">>> Firefox snap detectado. Instalando tarball da Mozilla em /opt/firefox-moderno..."
+    log_nivel INFO "Firefox snap detectado. Instalando tarball da Mozilla em /opt/firefox-moderno..."
     if wget -q --no-proxy -O "$FIREFOX_TARBALL" "$FIREFOX_URL" 2>/dev/null; then
         tar xJf "$FIREFOX_TARBALL" -C /opt/ 2>/dev/null
         rm -f "$FIREFOX_TARBALL"
@@ -1446,13 +1447,13 @@ Categories=Network;WebBrowser;
 MimeType=text/html;text/xml;application/xhtml+xml;application/vnd.mozilla.xul+xml;text/mml;x-scheme-handler/http;x-scheme-handler/https;
 DESKTOP
 
-        echo ">>> Firefox tarball instalado em /opt/firefox-moderno (snap mantido)."
+        log_nivel INFO "Firefox tarball instalado em /opt/firefox-moderno (snap mantido)."
     else
-        echo ">>> AVISO: Falha ao baixar tarball do Firefox. Snap mantido."
+        log_nivel AVISO "Falha ao baixar tarball do Firefox. Snap mantido."
     fi
 else
     # Nenhum Firefox instalado — baixar tarball da Mozilla
-    echo ">>> Nenhum Firefox detectado. Instalando tarball da Mozilla..."
+    log_nivel INFO "Nenhum Firefox detectado. Instalando tarball da Mozilla..."
     if wget -q --no-proxy -O "$FIREFOX_TARBALL" "$FIREFOX_URL" 2>/dev/null; then
         tar xJf "$FIREFOX_TARBALL" -C /opt/ 2>/dev/null
         rm -f "$FIREFOX_TARBALL"
@@ -1475,10 +1476,10 @@ Categories=Network;WebBrowser;
 MimeType=text/html;text/xml;application/xhtml+xml;application/vnd.mozilla.xul+xml;text/mml;x-scheme-handler/http;x-scheme-handler/https;
 DESKTOP
 
-        echo ">>> Firefox tarball instalado em /opt/firefox-moderno."
+        log_nivel INFO "Firefox tarball instalado em /opt/firefox-moderno."
     else
-        echo ">>> AVISO: Falha ao baixar tarball do Firefox."
-        echo ">>> Tentando firefox-esr via apt..."
+        log_nivel AVISO "Falha ao baixar tarball do Firefox."
+        log_nivel INFO "Tentando firefox-esr via apt..."
         apt-get install -y firefox-esr firefox-esr-l10n-pt-br 2>/dev/null || \
             apt-get install -y firefox firefox-l10n-pt-br 2>/dev/null || true
     fi
@@ -1491,41 +1492,42 @@ apt-get install -y firmware-linux-nonfree 2>/dev/null || true
 # ============================================================
 # Detectar GPU e instalar drivers
 # ============================================================
-echo ">>> Detectando placa de video..."
+log_nivel INFO "Detectando placa de video..."
 if lspci | grep -qi nvidia; then
-    echo ">>> Placa NVIDIA detectada. Instalando drivers..."
+    log_nivel INFO "Placa NVIDIA detectada. Instalando drivers..."
     apt-get install -y nvidia-driver-550 2>/dev/null || {
-        echo ">>> AVISO: Falha ao instalar driver NVIDIA. Tentando ubuntu-drivers..."
+        log_nivel AVISO "Falha ao instalar driver NVIDIA. Tentando ubuntu-drivers..."
         ubuntu-drivers autoinstall 2>/dev/null || true
     }
 elif lspci | grep -qi amd; then
-    echo ">>> Placa AMD detectada. Instalando drivers..."
+    log_nivel INFO "Placa AMD detectada. Instalando drivers..."
     apt-get install -y mesa-utils xserver-xorg-video-amdgpu 2>/dev/null || true
 else
-    echo ">>> GPU NVIDIA/AMD nao detectada. Usando driver generico."
+    log_nivel INFO "GPU NVIDIA/AMD nao detectada. Usando driver generico."
 fi
 
 # ============================================================
 # Remover LibreOffice (opcional)
 # ============================================================
 if [ "{{REMOVER_LIBREOFFICE}}" = "true" ]; then
-    echo ">>> Removendo LibreOffice..."
+    log_nivel INFO "Removendo LibreOffice..."
     apt-get remove --purge -y libreoffice* libreoffice-core libreoffice-common
 fi
 
 # ============================================================
 # Limpar cache do APT
 # ============================================================
-echo ">>> Limpando cache do APT..."
+log_nivel INFO "Limpando cache do APT..."
 apt-get clean
 apt-get autoremove -y
 
-echo ">>> Pacotes essenciais instalados!"
+log_nivel OK "Pacotes essenciais instalados!"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     4,
+    ARRAY['core_dns.sh', 'core_repositories.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -1533,6 +1535,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -1541,7 +1544,7 @@ $SeederScript$,
 -- ============================================================================
 -- Suporte a Sistemas Legados (ordem 5) - core_legados.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Suporte a Sistemas Legados',
     'core_legados.sh',
@@ -1584,6 +1587,9 @@ VALUES (
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="05-legados"
+
 echo "============================================================"
 echo "Configurar sistemas legados (Java 8, Firefox 52.7)"
 echo "============================================================"
@@ -1598,16 +1604,16 @@ JAVA_EXCEPTIONS="{{JAVA_EXCEPTIONS}}"
 
 BASE_URL="${BASE_URL%/}"
 
-echo ">>> Instalar Java 8: $INSTALL_JAVA8"
-echo ">>> Instalar Firefox 52.7: $INSTALL_FIREFOX52"
-echo ">>> Excecoes Java: ${JAVA_EXCEPTIONS:-nenhuma}"
+log_nivel INFO "Instalar Java 8: $INSTALL_JAVA8"
+log_nivel INFO "Instalar Firefox 52.7: $INSTALL_FIREFOX52"
+log_nivel INFO "Excecoes Java: ${JAVA_EXCEPTIONS:-nenhuma}"
 
 # ============================================================
 # Verificar se pelo menos um toggle esta ativo
 # ============================================================
 if [ "$INSTALL_JAVA8" != "true" ] && [ "$INSTALL_FIREFOX52" != "true" ]; then
-    echo ">>> Sistemas legados desativados. Pulando."
-    echo ">>> [05] Sistemas legados nao instalados (desativado)."
+    log_nivel INFO "Sistemas legados desativados. Pulando."
+    log_nivel INFO "[05] Sistemas legados nao instalados (desativado)."
     echo "============================================================"
     exit 0
 fi
@@ -1618,13 +1624,13 @@ export DEBIAN_FRONTEND=noninteractive
 # Java 8 (OpenJDK) - apenas se INSTALL_JAVA8=true
 # ============================================================
 if [ "$INSTALL_JAVA8" = "true" ]; then
-    echo ">>> Instalando Java 8 (OpenJDK 8)..."
+    log_nivel INFO "Instalando Java 8 (OpenJDK 8)..."
 
     if command -v java &>/dev/null; then
         JAVA_VERSION=$(java -version 2>&1 | head -1)
-        echo ">>> Java ja instalado: $JAVA_VERSION"
+        log_nivel INFO "Java ja instalado: $JAVA_VERSION"
     else
-        echo ">>> Java 8 nao encontrado. Tentando repositorio Adoptium/Temurin..."
+        log_nivel INFO "Java 8 nao encontrado. Tentando repositorio Adoptium/Temurin..."
 
         # ------------------------------------------------------------------
         # Determinar codename da distro para o repositorio Adoptium.
@@ -1638,10 +1644,10 @@ if [ "$INSTALL_JAVA8" = "true" ]; then
             ADOPTIUM_CODENAME="$(lsb_release -cs 2>/dev/null)"
         fi
         if [ -z "$ADOPTIUM_CODENAME" ]; then
-            echo ">>> AVISO: nao foi possivel detectar codename. Usando bookworm."
+            log_nivel AVISO "nao foi possivel detectar codename. Usando bookworm."
             ADOPTIUM_CODENAME="bookworm"
         fi
-        echo ">>> Codename Adoptium: $ADOPTIUM_CODENAME"
+        log_nivel INFO "Codename Adoptium: $ADOPTIUM_CODENAME"
 
         # ------------------------------------------------------------------
         # Adicionar chave GPG do Adoptium.
@@ -1658,17 +1664,17 @@ if [ "$INSTALL_JAVA8" = "true" ]; then
 
             apt-get update -qq
             if apt-get install -y temurin-8-jre; then
-                echo ">>> Temurin 8 instalado via Adoptium"
+                log_nivel INFO "Temurin 8 instalado via Adoptium"
             else
-                echo ">>> AVISO: Falha ao instalar temurin-8-jre."
-                echo ">>>        Verifique se Adoptium tem suite '$ADOPTIUM_CODENAME'."
+                log_nivel AVISO "Falha ao instalar temurin-8-jre."
+                log_nivel INFO "Verifique se Adoptium tem suite '$ADOPTIUM_CODENAME'."
                 # Limpa o repo para nao atrapalhar proximos apt-get update
                 rm -f /etc/apt/sources.list.d/adoptium.list
                 apt-get update -qq 2>/dev/null || true
             fi
         else
-            echo ">>> AVISO: Nao foi possivel baixar a chave GPG do Adoptium."
-            echo ">>>        Java 8 legado nao sera instalado por aqui."
+            log_nivel AVISO "Nao foi possivel baixar a chave GPG do Adoptium."
+            log_nivel INFO "Java 8 legado nao sera instalado por aqui."
         fi
     fi
 
@@ -1676,7 +1682,7 @@ if [ "$INSTALL_JAVA8" = "true" ]; then
     # Excecoes Java (deployment.properties) - se fornecidas
     # ------------------------------------------------------------------
     if [ -n "$JAVA_EXCEPTIONS" ]; then
-        echo ">>> Configurando excecoes Java..."
+        log_nivel INFO "Configurando excecoes Java..."
         DEPLOY_DIR="/usr/lib/jvm/.deployment"
         mkdir -p "$DEPLOY_DIR"
         DEPLOY_FILE="$DEPLOY_DIR/deployment.properties"
@@ -1694,34 +1700,34 @@ if [ "$INSTALL_JAVA8" = "true" ]; then
                 IDX=$((IDX+1))
             fi
         done
-        echo ">>> Excecoes Java configuradas ($IDX URLs)"
+        log_nivel INFO "Excecoes Java configuradas ($IDX URLs)"
     fi
 
     if command -v java &>/dev/null; then
-        echo ">>> Java instalado: $(java -version 2>&1 | head -1)"
+        log_nivel INFO "Java instalado: $(java -version 2>&1 | head -1)"
     else
-        echo ">>> AVISO: Java nao instalado."
+        log_nivel AVISO "Java nao instalado."
     fi
 else
-    echo ">>> Java 8 desativado (INSTALL_JAVA8=false). Pulando."
+    log_nivel INFO "Java 8 desativado (INSTALL_JAVA8=false). Pulando."
 fi
 
 # ============================================================
 # Firefox 52.7 ESR - apenas se INSTALL_FIREFOX52=true
 # ============================================================
 if [ "$INSTALL_FIREFOX52" = "true" ]; then
-    echo ">>> Instalando Firefox 52.7 ESR..."
+    log_nivel INFO "Instalando Firefox 52.7 ESR..."
 
     # ------------------------------------------------------------------
     # Pre-requisito: bzip2 para extrair .tar.bz2
     # ------------------------------------------------------------------
     if ! command -v bzip2 &>/dev/null; then
-        echo ">>> bzip2 nao instalado. Tentando instalar..."
+        log_nivel INFO "bzip2 nao instalado. Tentando instalar..."
         apt-get install -y bzip2 2>/dev/null || true
     fi
     if ! command -v bzip2 &>/dev/null; then
-        echo ">>> AVISO: bzip2 indisponivel - impossivel extrair o tarball do Firefox 52.7."
-        echo ">>>        Pulando instalacao do Firefox legado (nao e' critico para o ingresso AD)."
+        log_nivel AVISO "bzip2 indisponivel - impossivel extrair o tarball do Firefox 52.7."
+        log_nivel INFO "Pulando instalacao do Firefox legado (nao e' critico para o ingresso AD)."
         INSTALL_FIREFOX52="false"
     fi
 fi
@@ -1740,14 +1746,14 @@ if [ "$INSTALL_FIREFOX52" = "true" ]; then
     # ------------------------------------------------------------------
     if wget -q --no-proxy --timeout=30 -O "$FF_LEGADO_TARBALL" "$FF_LEGADO_URL" 2>/dev/null; then
         if [ -s "$FF_LEGADO_TARBALL" ]; then
-            echo ">>> Firefox 52.7 baixado do repositorio interno do Seeder"
+            log_nivel INFO "Firefox 52.7 baixado do repositorio interno do Seeder"
             if tar xjf "$FF_LEGADO_TARBALL" -C /opt/ 2>/dev/null; then
                 mv /opt/firefox "$FF_LEGADO_DIR" 2>/dev/null || true
             else
-                echo ">>> AVISO: falha ao extrair tarball do Seeder."
+                log_nivel AVISO "falha ao extrair tarball do Seeder."
             fi
         else
-            echo ">>> AVISO: tarball do Seeder baixou vazio."
+            log_nivel AVISO "tarball do Seeder baixou vazio."
         fi
         rm -f "$FF_LEGADO_TARBALL"
     else
@@ -1755,24 +1761,24 @@ if [ "$INSTALL_FIREFOX52" = "true" ]; then
         # Fallback: Mozilla (download publico)
         # Respeita proxy do ambiente se houver.
         # ------------------------------------------------------------------
-        echo ">>> AVISO: Nao foi possivel baixar do repositorio interno."
-        echo ">>>        Tentando Mozilla (ftp.mozilla.org)..."
+        log_nivel AVISO "Nao foi possivel baixar do repositorio interno."
+        log_nivel INFO "Tentando Mozilla (ftp.mozilla.org)..."
 
         FF_MOZILLA_URL="https://ftp.mozilla.org/pub/firefox/releases/52.7.3esr/linux-x86_64/en-US/firefox-52.7.3esr.tar.bz2"
         if wget -q --timeout=60 -O "$FF_LEGADO_TARBALL" "$FF_MOZILLA_URL" 2>/dev/null; then
             if [ -s "$FF_LEGADO_TARBALL" ]; then
-                echo ">>> Firefox 52.7 baixado da Mozilla"
+                log_nivel INFO "Firefox 52.7 baixado da Mozilla"
                 if tar xjf "$FF_LEGADO_TARBALL" -C /opt/ 2>/dev/null; then
                     mv /opt/firefox "$FF_LEGADO_DIR" 2>/dev/null || true
                 else
-                    echo ">>> AVISO: falha ao extrair tarball da Mozilla."
+                    log_nivel AVISO "falha ao extrair tarball da Mozilla."
                 fi
             else
-                echo ">>> AVISO: tarball da Mozilla baixou vazio."
+                log_nivel AVISO "tarball da Mozilla baixou vazio."
             fi
             rm -f "$FF_LEGADO_TARBALL"
         else
-            echo ">>> AVISO: Nao foi possivel baixar Firefox 52.7 de nenhuma fonte."
+            log_nivel AVISO "Nao foi possivel baixar Firefox 52.7 de nenhuma fonte."
         fi
     fi
 
@@ -1781,7 +1787,7 @@ if [ "$INSTALL_FIREFOX52" = "true" ]; then
     # ------------------------------------------------------------------
     if [ -d "$FF_LEGADO_DIR" ]; then
         ln -sf "${FF_LEGADO_DIR}/firefox" /usr/local/bin/firefox-legado
-        echo ">>> Firefox 52.7 ESR instalado em: $FF_LEGADO_DIR"
+        log_nivel INFO "Firefox 52.7 ESR instalado em: $FF_LEGADO_DIR"
 
         mkdir -p /usr/share/applications
         cat > /usr/share/applications/firefox-legado.desktop <<EOF
@@ -1796,34 +1802,35 @@ Type=Application
 Categories=Network;WebBrowser;
 EOF
         chmod 644 /usr/share/applications/firefox-legado.desktop
-        echo ">>> Entrada de desktop criada"
+        log_nivel INFO "Entrada de desktop criada"
 
         # Plugin Java (para applets)
         if command -v java &>/dev/null; then
-            echo ">>> Configurando plugin Java para Firefox legado..."
+            log_nivel INFO "Configurando plugin Java para Firefox legado..."
             JAVA_HOME_DIR="$(dirname "$(dirname "$(readlink -f "$(which java)")")")"
             PLUGIN_DIR="${FF_LEGADO_DIR}/browser/plugins"
             mkdir -p "$PLUGIN_DIR"
             if find "$JAVA_HOME_DIR" -name "libnpjp2.so" -exec ln -sf {} "$PLUGIN_DIR/libnpjp2.so" \; 2>/dev/null; then
-                echo ">>> Plugin Java configurado"
+                log_nivel INFO "Plugin Java configurado"
             else
-                echo ">>> AVISO: Plugin Java (libnpjp2.so) nao encontrado."
+                log_nivel AVISO "Plugin Java (libnpjp2.so) nao encontrado."
             fi
         fi
     else
-        echo ">>> AVISO: Firefox 52.7 ESR nao instalado (nenhuma fonte funcionou)."
+        log_nivel AVISO "Firefox 52.7 ESR nao instalado (nenhuma fonte funcionou)."
     fi
 else
-    echo ">>> Firefox 52.7 desativado (INSTALL_FIREFOX52=false). Pulando."
+    log_nivel INFO "Firefox 52.7 desativado (INSTALL_FIREFOX52=false). Pulando."
 fi
 
-echo ">>> Sistemas legados configurados!"
+log_nivel OK "Sistemas legados configurados!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     5,
+    ARRAY['core_dns.sh', 'core_repositories.sh', 'core_packages.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -1831,6 +1838,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -1839,7 +1847,7 @@ $SeederScript$,
 -- ============================================================================
 -- Instalacao de Aplicativos Extras (ordem 6) - core_apps.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Instalacao de Aplicativos Extras',
     'core_apps.sh',
@@ -1880,6 +1888,9 @@ VALUES (
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="06-apps"
+
 echo "============================================================"
 echo "Instalar aplicativos (Chrome, OnlyOffice via .deb/wget)"
 echo "============================================================"
@@ -1895,16 +1906,16 @@ PROXY_MODE="{{PROXY_MODE}}"
 PROXY_HTTP="{{PROXY_HTTP}}"
 PROXY_PORTA="{{PROXY_PORTA}}"
 
-echo ">>> Instalar OnlyOffice: $INSTALL_ONLYOFFICE"
-echo ">>> Instalar Chrome: $INSTALL_CHROME"
-echo ">>> Instalar Chromium: $INSTALL_CHROMIUM"
+log_nivel INFO "Instalar OnlyOffice: $INSTALL_ONLYOFFICE"
+log_nivel INFO "Instalar Chrome: $INSTALL_CHROME"
+log_nivel INFO "Instalar Chromium: $INSTALL_CHROMIUM"
 
 # ============================================================
 # Verificar se pelo menos um toggle esta ativo
 # ============================================================
 if [ "$INSTALL_ONLYOFFICE" != "true" ] && [ "$INSTALL_CHROME" != "true" ] && [ "$INSTALL_CHROMIUM" != "true" ]; then
-    echo ">>> Instalacao de apps desativada. Pulando."
-    echo ">>> [10] Aplicativos nao instalados (desativado)."
+    log_nivel INFO "Instalacao de apps desativada. Pulando."
+    log_nivel INFO "[10] Aplicativos nao instalados (desativado)."
     echo "============================================================"
     exit 0
 fi
@@ -1915,56 +1926,63 @@ export DEBIAN_FRONTEND=noninteractive
 # Google Chrome (instalado via .deb/wget, nao via apt-get)
 # ============================================================
 if [ "$INSTALL_CHROME" = "true" ]; then
-    echo ">>> Instalando Google Chrome..."
-    CHROME_DEB="/tmp/google-chrome-stable.deb"
-
-    if wget -q -O "$CHROME_DEB" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"; then
-        dpkg -i "$CHROME_DEB" || apt-get install -y -f
-        rm -f "$CHROME_DEB"
+    if command -v google-chrome &>/dev/null || command -v google-chrome-stable &>/dev/null; then
+        log_nivel INFO "Google Chrome ja instalado - pulando download."
     else
-        echo ">>> AVISO: Nao foi possivel baixar Google Chrome."
-        echo ">>> Verifique conectividade e configuracao de proxy."
+        log_nivel INFO "Instalando Google Chrome..."
+        CHROME_DEB="/tmp/google-chrome-stable.deb"
+
+        if wget -q -O "$CHROME_DEB" "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"; then
+            dpkg -i "$CHROME_DEB" || apt-get install -y -f
+            rm -f "$CHROME_DEB"
+        else
+            log_nivel AVISO "Nao foi possivel baixar Google Chrome."
+            log_nivel INFO "Verifique conectividade e configuracao de proxy."
+        fi
     fi
 else
-    echo ">>> Google Chrome desativado (INSTALL_CHROME=false). Pulando."
+    log_nivel INFO "Google Chrome desativado (INSTALL_CHROME=false). Pulando."
 fi
 
 # ============================================================
 # Chromium (via apt-get)
 # ============================================================
 if [ "$INSTALL_CHROMIUM" = "true" ]; then
-    echo ">>> Instalando Chromium..."
+    log_nivel INFO "Instalando Chromium..."
     apt-get install -y chromium 2>/dev/null || \
         apt-get install -y chromium-browser 2>/dev/null || {
-        echo ">>> AVISO: Nao foi possivel instalar Chromium."
+        log_nivel AVISO "Nao foi possivel instalar Chromium."
     }
 else
-    echo ">>> Chromium desativado (INSTALL_CHROMIUM=false). Pulando."
+    log_nivel INFO "Chromium desativado (INSTALL_CHROMIUM=false). Pulando."
 fi
 
 # ============================================================
 # OnlyOffice Desktop Editors
 # ============================================================
 if [ "$INSTALL_ONLYOFFICE" = "true" ]; then
-    echo ">>> Instalando OnlyOffice Desktop Editors..."
+    if command -v onlyoffice-desktopeditors &>/dev/null; then
+        log_nivel INFO "OnlyOffice ja instalado - pulando download."
+    else
+        log_nivel INFO "Instalando OnlyOffice Desktop Editors..."
 
-    # Metodo 1: Via repositorio APT oficial
-    ONLYOFFICE_KEY="/tmp/onlyoffice-key.asc"
-    ONLYOFFICE_REPO_LIST="/etc/apt/sources.list.d/onlyoffice.list"
+        # Metodo 1: Via repositorio APT oficial
+        ONLYOFFICE_KEY="/tmp/onlyoffice-key.asc"
+        ONLYOFFICE_REPO_LIST="/etc/apt/sources.list.d/onlyoffice.list"
 
-    # Baixar e adicionar chave GPG
-    if wget -q -O "$ONLYOFFICE_KEY" "https://download.onlyoffice.com/GPG-KEY-ONLYOFFICE"; then
-        gpg --dearmor < "$ONLYOFFICE_KEY" > /usr/share/keyrings/onlyoffice-keyring.gpg 2>/dev/null || \
-            apt-key add "$ONLYOFFICE_KEY" 2>/dev/null || true
+        # Baixar e adicionar chave GPG
+        if wget -q -O "$ONLYOFFICE_KEY" "https://download.onlyoffice.com/GPG-KEY-ONLYOFFICE"; then
+            gpg --dearmor < "$ONLYOFFICE_KEY" > /usr/share/keyrings/onlyoffice-keyring.gpg 2>/dev/null || \
+                apt-key add "$ONLYOFFICE_KEY" 2>/dev/null || true
 
-        cat > "$ONLYOFFICE_REPO_LIST" <<EOF
+            cat > "$ONLYOFFICE_REPO_LIST" <<EOF
 deb [signed-by=/usr/share/keyrings/onlyoffice-keyring.gpg] https://download.onlyoffice.com/repo/debian squeeze main
 EOF
 
         apt-get update
         apt-get install -y onlyoffice-desktopeditors || {
-            echo ">>> AVISO: Falha ao instalar OnlyOffice via repositorio."
-            echo ">>> Tentando download direto..."
+            log_nivel AVISO "Falha ao instalar OnlyOffice via repositorio."
+            log_nivel INFO "Tentando download direto..."
 
             # Metodo 2: Download direto do .deb
             ONLYOFFICE_DEB="/tmp/onlyoffice-desktopeditors.deb"
@@ -1972,20 +1990,21 @@ EOF
                 dpkg -i "$ONLYOFFICE_DEB" || apt-get install -y -f
                 rm -f "$ONLYOFFICE_DEB"
             else
-                echo ">>> AVISO: Nao foi possivel baixar OnlyOffice."
+                log_nivel AVISO "Nao foi possivel baixar OnlyOffice."
             fi
         }
         rm -f "$ONLYOFFICE_KEY"
     else
-        echo ">>> AVISO: Nao foi possivel obter chave do OnlyOffice."
-        echo ">>> Tentando instalar via repositorio Debian..."
+        log_nivel AVISO "Nao foi possivel obter chave do OnlyOffice."
+        log_nivel INFO "Tentando instalar via repositorio Debian..."
 
         apt-get install -y onlyoffice-desktopeditors 2>/dev/null || {
-            echo ">>> AVISO: OnlyOffice nao disponivel. Instalacao ignorada."
+            log_nivel AVISO "OnlyOffice nao disponivel. Instalacao ignorada."
         }
     fi
+    fi
 else
-    echo ">>> OnlyOffice desativado (INSTALL_ONLYOFFICE=false). Pulando."
+    log_nivel INFO "OnlyOffice desativado (INSTALL_ONLYOFFICE=false). Pulando."
 fi
 
 # ============================================================
@@ -1999,68 +2018,69 @@ fi
 #   - Chrome pode vir como `google-chrome` ou `google-chrome-stable`
 #     dependendo de como o .deb foi instalado.
 # ============================================================
-echo ">>> Verificando instalacoes..."
+log_nivel INFO "Verificando instalacoes..."
 
 # Firefox: aceita firefox-esr OU firefox (varia por distro)
 if command -v firefox-esr &>/dev/null; then
-    echo ">>> Firefox ESR: OK (firefox-esr)"
+    log_nivel INFO "Firefox ESR: OK (firefox-esr)"
 elif command -v firefox &>/dev/null; then
-    echo ">>> Firefox ESR: OK (firefox)"
+    log_nivel INFO "Firefox ESR: OK (firefox)"
 else
-    echo ">>> Firefox ESR: NAO INSTALADO"
+    log_nivel INFO "Firefox ESR: NAO INSTALADO"
 fi
 
 # Chrome: aceita google-chrome OU google-chrome-stable
 if command -v google-chrome &>/dev/null; then
-    echo ">>> Google Chrome: OK (google-chrome)"
+    log_nivel INFO "Google Chrome: OK (google-chrome)"
 elif command -v google-chrome-stable &>/dev/null; then
-    echo ">>> Google Chrome: OK (google-chrome-stable)"
+    log_nivel INFO "Google Chrome: OK (google-chrome-stable)"
 else
-    echo ">>> Google Chrome: NAO INSTALADO"
+    log_nivel INFO "Google Chrome: NAO INSTALADO"
 fi
 
 # Chromium: aceita chromium OU chromium-browser
 if command -v chromium &>/dev/null; then
-    echo ">>> Chromium: OK (chromium)"
+    log_nivel INFO "Chromium: OK (chromium)"
 elif command -v chromium-browser &>/dev/null; then
-    echo ">>> Chromium: OK (chromium-browser)"
+    log_nivel INFO "Chromium: OK (chromium-browser)"
 else
     # So reporta "nao instalado" se INSTALL_CHROMIUM=true. Caso
     # contrario, e' o comportamento esperado (toggle desligado).
     if [ "$INSTALL_CHROMIUM" = "true" ]; then
-        echo ">>> Chromium: NAO INSTALADO (toggle estava ativo)"
+        log_nivel INFO "Chromium: NAO INSTALADO (toggle estava ativo)"
     else
-        echo ">>> Chromium: desativado (toggle=false)"
+        log_nivel INFO "Chromium: desativado (toggle=false)"
     fi
 fi
 
 # OnlyOffice
 if command -v onlyoffice-desktopeditors &>/dev/null; then
-    echo ">>> OnlyOffice: OK"
+    log_nivel INFO "OnlyOffice: OK"
 else
     if [ "$INSTALL_ONLYOFFICE" = "true" ]; then
-        echo ">>> OnlyOffice: NAO INSTALADO (toggle estava ativo)"
+        log_nivel INFO "OnlyOffice: NAO INSTALADO (toggle estava ativo)"
     else
-        echo ">>> OnlyOffice: desativado (toggle=false)"
+        log_nivel INFO "OnlyOffice: desativado (toggle=false)"
     fi
 fi
 
 # Firefox 52.7 ESR legado (instalado pelo core_legados.sh, roda antes)
 if [ -x /opt/firefox-legado/firefox ]; then
-    echo ">>> Firefox 52.7 ESR (legado): OK (/opt/firefox-legado)"
+    log_nivel INFO "Firefox 52.7 ESR (legado): OK (/opt/firefox-legado)"
 elif [ -x /usr/local/bin/firefox-legado ]; then
-    echo ">>> Firefox 52.7 ESR (legado): OK (symlink em /usr/local/bin)"
+    log_nivel INFO "Firefox 52.7 ESR (legado): OK (symlink em /usr/local/bin)"
 else
-    echo ">>> Firefox 52.7 ESR (legado): nao instalado"
+    log_nivel INFO "Firefox 52.7 ESR (legado): nao instalado"
 fi
 
-echo ">>> Aplicativos instalados!"
+log_nivel OK "Aplicativos instalados!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     6,
+    ARRAY['core_dns.sh', 'core_repositories.sh', 'core_packages.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -2068,6 +2088,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -2076,7 +2097,7 @@ $SeederScript$,
 -- ============================================================================
 -- Ingresso em Dominio AD (ordem 7) - core_domain.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Ingresso em Dominio AD',
     'core_domain.sh',
@@ -2126,6 +2147,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="07-domain"
+
 echo "============================================================"
 echo "Gerenciador de Estado do Active Directory"
 echo "============================================================"
@@ -2158,11 +2182,11 @@ AUTH_METHOD="{{AUTH_METHOD}}"
 # silenciosamente mais adiante.
 # ============================================================
 if [[ "$ADMIN_USERNAME" == *"{{"* ]]; then
-    echo ">>> ERRO: placeholder ADMIN_USERNAME nao foi substituido pelo backend."
+    log_nivel ERRO "placeholder ADMIN_USERNAME nao foi substituido pelo backend."
     exit 1
 fi
 if [[ "$ADMIN_PASSWORD_B64" == "__"* && "$ADMIN_PASSWORD_B64" == *"__" ]]; then
-    echo ">>> ERRO: placeholder ADMIN_PASSWORD_B64 nao foi substituido pelo backend."
+    log_nivel ERRO "placeholder ADMIN_PASSWORD_B64 nao foi substituido pelo backend."
     exit 1
 fi
 
@@ -2174,12 +2198,12 @@ unset ADMIN_PASSWORD_B64
 
 NON_INTERACTIVE="${NON_INTERACTIVE:-false}"
 if [ "$NON_INTERACTIVE" = "true" ]; then
-    echo ">>> Modo não interativo ativado."
+    log_nivel INFO "Modo não interativo ativado."
 fi
 
-echo ">>> Dominio: $DOMINIO"
-echo ">>> NetBIOS: $DOMINIO_NETBIOS"
-echo ">>> DC principal: $DC_IP"
+log_nivel INFO "Dominio: $DOMINIO"
+log_nivel INFO "NetBIOS: $DOMINIO_NETBIOS"
+log_nivel INFO "DC principal: $DC_IP"
 [ -n "$DC_IP_LIST" ] && echo ">>> DCs adicionais: $DC_IP_LIST"
 
 # ============================================================
@@ -2199,7 +2223,7 @@ echo ">>> DC principal: $DC_IP"
 # Idempotente: pode rodar N vezes sem efeito colateral.
 # ============================================================
 echo "============================================================"
-echo ">>> FASE 2: Aplicando DNS do AD (incondicional)"
+log_nivel INFO "FASE 2: Aplicando DNS do AD (incondicional)"
 echo "============================================================"
 
 # Guarda o resolv.conf da Fase 1 para auditoria/debug
@@ -2212,11 +2236,11 @@ fi
 #    sem DNS do AD nao ha como ingressar nem manter o ingresso.
 if [ -z "$DNS_PRIMARIO" ] || [ "$DNS_PRIMARIO" = "" ]; then
     if [ -n "$DC_IP" ] && [ "$DC_IP" != "" ]; then
-        echo ">>> AVISO: DNS_PRIMARIO vazio - usando DC_IP ($DC_IP) como fallback."
+        log_nivel AVISO "DNS_PRIMARIO vazio - usando DC_IP ($DC_IP) como fallback."
         DNS_PRIMARIO="$DC_IP"
     else
-        echo ">>> ERRO: DNS_PRIMARIO e DC_IP vazios. Ingresso impossivel."
-        echo ">>> Configure DNS_PRIMARIO na OM antes de gerar o bundle."
+        log_nivel ERRO "DNS_PRIMARIO e DC_IP vazios. Ingresso impossivel."
+        log_nivel INFO "Configure DNS_PRIMARIO na OM antes de gerar o bundle."
         exit 1
     fi
 fi
@@ -2250,7 +2274,7 @@ rm -f /etc/resolv.conf
     echo "options timeout:2 attempts:2 rotate"
 } > /etc/resolv.conf
 
-echo ">>> /etc/resolv.conf agora:"
+log_nivel INFO "/etc/resolv.conf agora:"
 sed 's/^/    /' /etc/resolv.conf
 
 # -- Travar /etc/resolv.conf com chattr +i.
@@ -2274,16 +2298,16 @@ sed 's/^/    /' /etc/resolv.conf
 chattr +i /etc/resolv.conf 2>/dev/null || true
 
 if lsattr /etc/resolv.conf 2>/dev/null | grep -q 'i'; then
-    echo ">>> /etc/resolv.conf travado (chattr +i) - NetworkManager nao pode sobrescrever"
+    log_nivel INFO "/etc/resolv.conf travado (chattr +i) - NetworkManager nao pode sobrescrever"
 else
-    echo ">>> AVISO: chattr +i nao aplicou (filesystem sem suporte? ex: overlayfs em container)"
+    log_nivel AVISO "chattr +i nao aplicou (filesystem sem suporte? ex: overlayfs em container)"
 fi
 
 # -- Gate: confirmar que o DNS do AD responde ao SRV do dominio
 #    antes de seguir. Melhor abortar aqui (erro claro) do que deixar
 #    a estacao meio-ingressada.
 if command -v host >/dev/null 2>&1; then
-    echo ">>> [DNS] Validando SRV _ldap._tcp.dc._msdcs.${DOMINIO} ..."
+    log_nivel INFO "[DNS] Validando SRV _ldap._tcp.dc._msdcs.${DOMINIO} ..."
     if ! host -t SRV "_ldap._tcp.dc._msdcs.${DOMINIO}" >/dev/null 2>&1; then
         # Heuristica: se ja ha artefatos de ingresso, apenas avisar
         # (a estacao pode estar ingressada e o DNS e' "menos bom"
@@ -2299,31 +2323,35 @@ if command -v host >/dev/null 2>&1; then
         fi
 
         if [ "$ALREADY_JOINED_HEURISTIC" = "true" ]; then
-            echo ">>> AVISO: SRV nao resolve, mas a estacao parece ja ingressada."
-            echo ">>> Verifique DNS_PRIMARIO/DNS_SECUNDARIO da OM."
-            echo ">>> Seguindo para validacao do estado atual."
+            log_nivel AVISO "SRV nao resolve, mas a estacao parece ja ingressada"
+            log_nivel DIAG "Verificar DNS_PRIMARIO/DNS_SECUNDARIO no painel"
+            log_nivel DIAG "Seguindo para validacao do estado atual"
         else
-            echo ">>> ERRO: SRV _ldap._tcp.dc._msdcs.${DOMINIO} nao resolve."
-            echo ">>> DNS configurado: ${DNS_PRIMARIO} / ${DNS_SECUNDARIO:-<vazio>}"
-            echo ">>> Verifique conectividade L3 com os DCs antes de reexecutar."
+            log_nivel ERRO "SRV _ldap._tcp.dc._msdcs.${DOMINIO} nao resolve"
+            log_nivel DIAG "DNS configurado: ${DNS_PRIMARIO} / ${DNS_SECUNDARIO:-<vazio>}"
+            log_nivel DIAG "O core_ntp.sh deveria ter rodado antes e sincronizado o relogio"
+            log_nivel DIAG "mas o DNS do AD tambem depende de conectividade L3"
+            log_nivel ACAO "Verificar conectividade L3 com o DC: ping $DC_IP"
+            log_nivel ACAO "Verificar DNS: host $DOMINIO  (deve responder o IP do DC)"
+            log_nivel ACAO "Se DNS nao responde: revisar DNS_PRIMARIO no painel"
             exit 1
         fi
     else
-        echo ">>> [DNS] SRV OK - dominio visivel via DNS do AD."
+        log_nivel OK "[DNS] SRV OK - dominio visivel via DNS do AD"
     fi
 else
-    echo ">>> AVISO: comando 'host' nao encontrado - pulando gate de SRV."
-    echo ">>> (isso nao deveria acontecer: 'dnsutils' e' pacote base do bundle)"
+    log_nivel AVISO "comando 'host' nao encontrado - pulando gate de SRV."
+    log_nivel INFO "(isso nao deveria acontecer: 'dnsutils' e' pacote base do bundle)"
 fi
 
-echo ">>> [FASE 2] DNS do AD aplicado."
+log_nivel INFO "[FASE 2] DNS do AD aplicado."
 echo "============================================================"
 
 # ============================================================
 # ESTÁGIO 1: DIAGNÓSTICO
 # ============================================================
 echo "============================================================"
-echo ">>> ESTÁGIO 1: Diagnóstico do ambiente AD"
+log_nivel INFO "ESTÁGIO 1: Diagnóstico do ambiente AD"
 echo "============================================================"
 
 # Funções de diagnóstico
@@ -2461,7 +2489,7 @@ net_ads_leave_safe() {
 # ESTÁGIO 2: CLASSIFICAR ESTADO
 # ============================================================
 echo ""
-echo ">>> ESTÁGIO 2: Classificando estado atual"
+log_nivel INFO "ESTÁGIO 2: Classificando estado atual"
 
 if [ "$REALM_OK" = "true" ] && [ "$SSSD_OK" = "true" ] && [ "$KEYTAB_OK" = "true" ]; then
     if [ "$WINBIND_OK" = "true" ]; then
@@ -2487,7 +2515,7 @@ else
     ESTADO="INDETERMINADO"
 fi
 
-echo ">>> Estado detectado: $ESTADO"
+log_nivel INFO "Estado detectado: $ESTADO"
 
 # ============================================================
 # Bloqueio preventivo: tempo quebrado antes de tentar ingresso.
@@ -2497,14 +2525,14 @@ echo ">>> Estado detectado: $ESTADO"
 if [ "$ESTADO" = "NAO_INGRESSADO" ] || [ "$ESTADO" = "INDETERMINADO" ]; then
     if [ "$TIME_OK" = "false" ]; then
         echo ""
-        echo ">>> AVISO: relogio fora de sincronia (Kerberos rejeita diferenca > 5min)."
-        echo ">>>         O kinit provavelmente vai falhar com 'Clock skew too great'."
+        log_nivel AVISO "relogio fora de sincronia (Kerberos rejeita diferenca > 5min)."
+        log_nivel INFO "O kinit provavelmente vai falhar com 'Clock skew too great'."
         if [ "$NON_INTERACTIVE" = "true" ]; then
-            echo ">>> Modo nao interativo: prosseguindo mesmo assim (provavel falha adiante)."
+            log_nivel INFO "Modo nao interativo: prosseguindo mesmo assim (provavel falha adiante)."
         else
             read -p ">>> Deseja continuar mesmo assim? (s/N): " CONTINUE_APESAR_DE
             if [[ ! "$CONTINUE_APESAR_DE" =~ ^[Ss]$ ]]; then
-                echo ">>> Instalação abortada pelo usuário."
+                log_nivel INFO "Instalação abortada pelo usuário."
                 exit 1
             fi
         fi
@@ -2515,54 +2543,54 @@ fi
 # ESTÁGIO 3: DECISÃO
 # ============================================================
 echo ""
-echo ">>> ESTÁGIO 3: Decisão sobre ação necessária"
+log_nivel INFO "ESTÁGIO 3: Decisão sobre ação necessária"
 
 case "$ESTADO" in
     INGRESSADO_SSSD|INGRESSADO_HIBRIDO)
-        echo ">>> A máquina já está ingressada via SSSD."
+        log_nivel INFO "A máquina já está ingressada via SSSD."
         if [ "$NON_INTERACTIVE" = "true" ]; then
             REINGRESSAR="n"
         else
             read -p ">>> Deseja reingressar (remover e ingressar novamente)? (s/N): " REINGRESSAR
         fi
         if [[ "$REINGRESSAR" =~ ^[Ss]$ ]]; then
-            echo ">>> Removendo ingresso existente..."
+            log_nivel INFO "Removendo ingresso existente..."
             realm_leave_safe
             net_ads_leave_safe
             ESTADO="NAO_INGRESSADO"
         else
-            echo ">>> Mantendo ingresso existente. Pulando ingresso."
+            log_nivel INFO "Mantendo ingresso existente. Pulando ingresso."
         fi
         ;;
 
     INGRESSADO_WINBIND)
-        echo ">>> A máquina está ingressada via Winbind (método legado)."
-        echo ">>> Recomenda-se migrar para SSSD."
+        log_nivel INFO "A máquina está ingressada via Winbind (método legado)."
+        log_nivel INFO "Recomenda-se migrar para SSSD."
         if [ "$NON_INTERACTIVE" = "true" ]; then
             MIGRAR="s"
         else
             read -p ">>> Deseja migrar para SSSD (remover Winbind e ingressar via realm)? (S/n): " MIGRAR
         fi
         if [[ ! "$MIGRAR" =~ ^[Nn]$ ]]; then
-            echo ">>> Removendo ingresso Winbind..."
+            log_nivel INFO "Removendo ingresso Winbind..."
             net_ads_leave_safe
             systemctl stop winbind 2>/dev/null || true
             ESTADO="NAO_INGRESSADO"
         else
-            echo ">>> Mantendo Winbind. Pulando ingresso."
+            log_nivel INFO "Mantendo Winbind. Pulando ingresso."
         fi
         ;;
 
     CORROMPIDO|PARCIAL)
-        echo ">>> AVISO: Estado inconsistente detectado ($ESTADO)."
-        echo ">>> Possíveis causas: keytab ausente, SSSD parado, ou ingresso parcial."
+        log_nivel AVISO "Estado inconsistente detectado ($ESTADO)."
+        log_nivel INFO "Possíveis causas: keytab ausente, SSSD parado, ou ingresso parcial."
         if [ "$NON_INTERACTIVE" = "true" ]; then
             REPARAR="s"
         else
             read -p ">>> Deseja reparar automaticamente? (S/n): " REPARAR
         fi
         if [[ ! "$REPARAR" =~ ^[Nn]$ ]]; then
-            echo ">>> Executando limpeza completa..."
+            log_nivel INFO "Executando limpeza completa..."
             realm_leave_safe
             net_ads_leave_safe
             rm -f /etc/krb5.keytab
@@ -2572,14 +2600,14 @@ case "$ESTADO" in
             rm -rf /var/lib/sss/db/* 2>/dev/null || true
             rm -rf /var/lib/sss/mc/* 2>/dev/null || true
             ESTADO="NAO_INGRESSADO"
-            echo ">>> Limpeza concluída."
+            log_nivel INFO "Limpeza concluída."
         else
-            echo ">>> Prosseguindo sem reparar (pode falhar)."
+            log_nivel INFO "Prosseguindo sem reparar (pode falhar)."
         fi
         ;;
 
     INDETERMINADO)
-        echo ">>> Estado indeterminado. Tentando ingresso como máquina nova."
+        log_nivel INFO "Estado indeterminado. Tentando ingresso como máquina nova."
         ESTADO="NAO_INGRESSADO"
         ;;
 esac
@@ -2594,10 +2622,10 @@ esac
 # ============================================================
 if [ "$ESTADO" = "NAO_INGRESSADO" ]; then
     echo ""
-    echo ">>> ESTÁGIO 4: Executando ingresso no domínio"
+    log_nivel INFO "ESTÁGIO 4: Executando ingresso no domínio"
 
     # Configurar Kerberos
-    echo ">>> Configurando Kerberos..."
+    log_nivel INFO "Configurando Kerberos..."
     REALM="${DOMINIO^^}"
     # CORRECAO: dns_lookup_kdc=false (era true) - nao depender de SRV
     # ja que acabamos de desativar o encaminhamento via
@@ -2630,7 +2658,7 @@ if [ "$ESTADO" = "NAO_INGRESSADO" ]; then
 EOF
 
     # Configurar Samba
-    echo ">>> Configurando Samba..."
+    log_nivel INFO "Configurando Samba..."
     cat > /etc/samba/smb.conf <<EOF
 [global]
     workgroup = ${DOMINIO_NETBIOS}
@@ -2656,64 +2684,64 @@ EOF
 EOF
 
     # Obter ticket Kerberos
-    echo ">>> Obtendo ticket Kerberos..."
+    log_nivel INFO "Obtendo ticket Kerberos..."
     KINIT_OK=false
 
     # Tentar com pipe se ADMIN_PASSWORD estiver disponível
     if [ -n "$ADMIN_PASSWORD" ]; then
-        echo ">>> Tentando obter ticket com senha pre-definida..."
+        log_nivel INFO "Tentando obter ticket com senha pre-definida..."
         KINIT_HAS_PWFILE=false
         if kinit --help 2>&1 | grep -q -- '--password-file'; then
             KINIT_HAS_PWFILE=true
         fi
-        echo ">>>   suporte a --password-file: $KINIT_HAS_PWFILE"
+        log_nivel INFO "suporte a --password-file: $KINIT_HAS_PWFILE"
 
         for TRY_USER in \
             "${ADMIN_USERNAME}@${REALM}" \
             "${ADMIN_USERNAME}@${DOMINIO_NETBIOS}" \
             "${ADMIN_USERNAME,,}@${REALM}" \
             "${ADMIN_USERNAME,,}@${DOMINIO,,}"; do
-            echo ">>>   tentando kinit para ${TRY_USER}..."
+            log_nivel INFO "tentando kinit para ${TRY_USER}..."
             if [ "$KINIT_HAS_PWFILE" = "true" ]; then
                 if printf '%s\n' "$ADMIN_PASSWORD" | kinit --password-file=- "$TRY_USER" >/tmp/kinit-out.txt 2>&1; then
                     KINIT_OK=true
-                    echo ">>>   OK"
+                    log_nivel INFO "OK"
                     break
                 else
-                    echo ">>>   falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
+                    log_nivel INFO "falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
                 fi
             else
                 if printf '%s\n' "$ADMIN_PASSWORD" | kinit "$TRY_USER" >/tmp/kinit-out.txt 2>&1; then
                     KINIT_OK=true
-                    echo ">>>   OK"
+                    log_nivel INFO "OK"
                     break
                 else
-                    echo ">>>   falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
+                    log_nivel INFO "falhou: $(head -3 /tmp/kinit-out.txt 2>/dev/null | tr '\n' ' ')"
                 fi
             fi
         done
         rm -f /tmp/kinit-out.txt
     elif [ "$NON_INTERACTIVE" = "true" ]; then
-        echo ">>> ERRO: ADMIN_PASSWORD nao definido em modo nao interativo."
+        log_nivel ERRO "ADMIN_PASSWORD nao definido em modo nao interativo."
     fi
 
     # Modo interativo se pipe falhou
     if [ "$KINIT_OK" != "true" ] && [ "$NON_INTERACTIVE" != "true" ]; then
-        echo ">>> Não foi possível obter ticket automaticamente."
-        echo ">>> Solicitando credenciais interativamente..."
+        log_nivel INFO "Não foi possível obter ticket automaticamente."
+        log_nivel INFO "Solicitando credenciais interativamente..."
         while [ "$KINIT_OK" != "true" ]; do
             if [ -z "$ADMIN_USERNAME" ] || [ "$ADMIN_USERNAME" = "Administrator" ]; then
                 read -p ">>> Usuário do domínio: " input_user
                 [ -n "$input_user" ] && ADMIN_USERNAME="$input_user"
             else
-                echo ">>> Usuário: ${ADMIN_USERNAME}"
+                log_nivel INFO "Usuário: ${ADMIN_USERNAME}"
             fi
 
-            echo ">>> Tentando kinit para ${ADMIN_USERNAME}@${REALM} ..."
+            log_nivel INFO "Tentando kinit para ${ADMIN_USERNAME}@${REALM} ..."
             if kinit "${ADMIN_USERNAME}@${REALM}"; then
                 KINIT_OK=true
             else
-                echo ">>> Falhou. Verifique a senha e conectividade com o DC."
+                log_nivel INFO "Falhou. Verifique a senha e conectividade com o DC."
                 read -p ">>> Tentar novamente? (S/n): " try_again
                 [[ "$try_again" =~ ^[Nn]$ ]] && break
                 ADMIN_USERNAME=""
@@ -2725,11 +2753,11 @@ EOF
     # script segue com JOIN_METHOD=nenhum e deixa a estacao em estado
     # "meio-ingressada" (pior cenario para depurar).
     if [ "$KINIT_OK" != "true" ]; then
-        echo ">>> ERRO: Falha ao obter ticket Kerberos."
-        echo ">>> Verifique as credenciais e conectividade com o DC."
+        log_nivel ERRO "Falha ao obter ticket Kerberos."
+        log_nivel INFO "Verifique as credenciais e conectividade com o DC."
         exit 1
     fi
-    echo ">>> Ticket Kerberos obtido com sucesso!"
+    log_nivel OK "Ticket Kerberos obtido com sucesso!"
 
     # Tentar ingresso via realm join (SSSD)
     JOIN_OK=false
@@ -2742,18 +2770,26 @@ EOF
         REALM_JOIN_ARGS+=(--computer-ou="$OU_PADRAO")
     fi
 
-    echo ">>> Ingressando no domínio via realm join (SSSD)..."
+    log_nivel INFO "Ingressando no dominio via realm join (SSSD)..."
     if echo "$ADMIN_PASSWORD" | realm join "$DOMINIO" "${REALM_JOIN_ARGS[@]}" 2>&1; then
         JOIN_OK=true
         JOIN_METHOD="sssd"
-        echo ">>> Ingresso via SSSD (realm join) bem-sucedido!"
+        log_nivel OK "Ingresso via SSSD (realm join) bem-sucedido!"
     else
-        echo ">>> realm join falhou."
+        log_nivel ERRO "realm join falhou"
+        log_nivel DIAG "Kerberos rejeitou o ticket antes de validar a senha"
+        log_nivel DIAG "3 causas provaveis, em ordem de probabilidade:"
+        log_nivel DIAG "  1. Clock skew > 5min (servidor e estacao fora de sincronia)"
+        log_nivel DIAG "  2. Senha do admin de ingresso incorreta no painel"
+        log_nivel DIAG "  3. Conta bloqueada ou sem permissao para ingresso"
+        log_nivel ACAO "Confirmar horario: seederlinux-sync-ntp  (ou 'date' vs horario do AD)"
+        log_nivel ACAO "Se senha: refazer bundle no painel com a senha correta"
+        log_nivel ACAO "Se conta: desbloquear no AD (ADUC / Set-ADAccount -Enabled)"
     fi
 
     # Fallback: net ads join (Winbind)
     if [ "$JOIN_OK" != "true" ]; then
-        echo ">>> Tentando fallback com net ads join (Winbind)..."
+        log_nivel INFO "Tentando fallback com net ads join (Winbind)..."
 
         if ! grep -q "kerberos method" /etc/samba/smb.conf; then
             sed -i '/\[global\]/a\    kerberos method = secrets and keytab' /etc/samba/smb.conf
@@ -2769,36 +2805,42 @@ EOF
         if echo "$ADMIN_PASSWORD" | net ads join "$DOMINIO" "${NET_JOIN_ARGS[@]}" 2>&1; then
             JOIN_OK=true
             JOIN_METHOD="winbind"
-            echo ">>> Ingresso via Winbind (net ads join) bem-sucedido!"
+            log_nivel OK "Ingresso via Winbind (net ads join) bem-sucedido!"
 
             # net ads join NAO gera o keytab de maquina sozinho.
             # Como ja temos um ticket Kerberos valido em cache (kinit
             # acima), "net ads keytab create" usa esse cache
             # automaticamente - nao aceita/precisa de senha via -P.
-            echo ">>> Gerando keytab..."
+            log_nivel INFO "Gerando keytab..."
             if ! net ads keytab create 2>/dev/null; then
-                echo ">>> net ads keytab create falhou. Tentando via adcli..."
+                log_nivel INFO "net ads keytab create falhou. Tentando via adcli..."
                 echo "$ADMIN_PASSWORD" | adcli join "$DOMINIO" \
                     --login-user="$ADMIN_USERNAME" \
                     ${OU_PADRAO:+--domain-ou="$OU_PADRAO"} \
                     --stdin-password 2>&1 || {
-                    echo ">>> AVISO: Falha ao gerar keytab. Login offline pode nao funcionar."
+                    log_nivel AVISO "Falha ao gerar keytab. Login offline pode nao funcionar."
                 }
             fi
         else
-            echo ">>> net ads join falhou."
+            log_nivel ERRO "net ads join falhou"
+            log_nivel DIAG "SSSD falhou E Winbind tambem falhou - problema e' mais fundo"
+            log_nivel DIAG "Provavel: DNS do AD nao resolve, ou firewall L3 bloqueando,"
+            log_nivel DIAG "         ou conta de maquina ja existe no AD (duplicata)"
+            log_nivel ACAO "Verificar: host -t SRV _ldap._tcp.dc._msdcs.$DOMINIO"
+            log_nivel ACAO "Verificar: ping ao DC e portas 389/445/88 abertas"
+            log_nivel ACAO "Se conta duplicada: remover do AD e reexecutar bundle"
         fi
     fi
 
     if [ "$JOIN_OK" != "true" ]; then
-        echo ">>> ERRO: Falha ao ingressar no domínio com todos os métodos."
+        log_nivel ERRO "Falha ao ingressar no domínio com todos os métodos."
         if [ "$NON_INTERACTIVE" = "true" ]; then
             CONTINUE="s"
         else
             read -p ">>> Deseja continuar mesmo assim? (S/n): " CONTINUE
         fi
         if [[ "$CONTINUE" =~ ^[Nn]$ ]]; then
-            echo ">>> Instalação abortada pelo usuário."
+            log_nivel INFO "Instalação abortada pelo usuário."
             exit 1
         fi
         JOIN_METHOD="nenhum"
@@ -2809,11 +2851,11 @@ fi  # Fim do bloco de ingresso
 # ESTÁGIO 5: CONFIGURAÇÃO PÓS-INGRESSO E VALIDAÇÃO
 # ============================================================
 echo ""
-echo ">>> ESTÁGIO 5: Configuração e validação"
+log_nivel INFO "ESTÁGIO 5: Configuração e validação"
 
 # Configurar SSSD (se método for sssd)
 if [ "$JOIN_METHOD" = "sssd" ] || [ "$ESTADO" = "INGRESSADO_SSSD" ] || [ "$ESTADO" = "INGRESSADO_HIBRIDO" ]; then
-    echo ">>> Configurando SSSD..."
+    log_nivel INFO "Configurando SSSD..."
     OFFLINE_CACHE=""
     if [ "$OFFLINE_AUTH_ENABLED" = "true" ]; then
         OFFLINE_CACHE="$(printf '    cache_credentials = true\n    krb5_store_password_if_offline = true\n    offline_credentials_expiration = %s' "${OFFLINE_AUTH_DAYS:-3}")"
@@ -2824,10 +2866,18 @@ if [ "$JOIN_METHOD" = "sssd" ] || [ "$ESTADO" = "INGRESSADO_SSSD" ] || [ "$ESTAD
     # hostnamectl com FQDN completo). Sem isso, sssd.conf fica com
     # "host.dominio.dominio" e o SSSD nao sobe.
     _HN_NOW="$(hostname)"
-    case "$_HN_NOW" in
-        *.*) SSSD_AD_HOSTNAME="$_HN_NOW" ;;
-        *)   SSSD_AD_HOSTNAME="${_HN_NOW}.${DOMINIO}" ;;
-    esac
+
+    # Se o hostname ja termina com .$DOMINIO, e FQDN real — usa como esta.
+    # Senao, pega so a primeira parte (antes do primeiro ponto) e
+    # adiciona o dominio. Isso evita que hostnames como
+    # "seeder-client11.2" virem "seeder-client11.2" no ad_hostname,
+    # quando o SPN no AD e "seeder-client11".
+    if echo "$_HN_NOW" | grep -q "\.${DOMINIO}$"; then
+        SSSD_AD_HOSTNAME="$_HN_NOW"
+    else
+        _HN_SHORT="${_HN_NOW%%.*}"
+        SSSD_AD_HOSTNAME="${_HN_SHORT}.${DOMINIO}"
+    fi
 
     # /home/%u (nao /home/%d/%u): o snap do Firefox no Ubuntu 24.04+
     # usa AppArmor que restringe /home/*/snap — /home/dominio/usuario/snap
@@ -2863,7 +2913,7 @@ ${OFFLINE_CACHE}
 EOF
 
     chmod 600 /etc/sssd/sssd.conf
-    echo ">>> SSSD configurado (ad_hostname=${SSSD_AD_HOSTNAME})"
+    log_nivel INFO "SSSD configurado (ad_hostname=${SSSD_AD_HOSTNAME})"
 
     # SSSD 2.9+ (Ubuntu 24.04+): o aviso "Misconfiguration found for
     # the 'nss' responder" entre services= e socket activation e'
@@ -2871,11 +2921,11 @@ EOF
     # os sockets: no Ubuntu 24.04 o sssd.service depende deles para
     # alguns responders e disable --now quebra o start.
     # Mantemos services = nss, pam, sudo E os sockets convivendo.
-    echo ">>> SSSD: mantendo socket activation (nao desabilitar sockets)."
+    log_nivel INFO "SSSD: mantendo socket activation (nao desabilitar sockets)."
 fi
 
 # Configurar NSS
-echo ">>> Configurando NSS..."
+log_nivel INFO "Configurando NSS..."
 if [ "$JOIN_METHOD" = "winbind" ]; then
     cat > /etc/nsswitch.conf <<EOF
 passwd:     files systemd winbind
@@ -2908,10 +2958,10 @@ automount:  files sss
 EOF
 fi
 
-echo ">>> NSS configurado"
+log_nivel INFO "NSS configurado"
 
 # Configurar PAM (mkhomedir)
-echo ">>> Configurando PAM e mkhomedir..."
+log_nivel INFO "Configurando PAM e mkhomedir..."
 pam-auth-update --enable mkhomedir --force 2>/dev/null || true
 
 if [ -f /etc/pam.d/common-session ]; then
@@ -2919,31 +2969,63 @@ if [ -f /etc/pam.d/common-session ]; then
         echo "session required pam_mkhomedir.so skel=/etc/skel umask=0022" >> /etc/pam.d/common-session
 fi
 
-echo ">>> PAM configurado"
+log_nivel INFO "PAM configurado"
 
 # Configurar sudo para grupos do domínio
-echo ">>> Configurando sudo..."
+log_nivel INFO "Configurando sudo..."
 SUDO_FILE="/etc/sudoers.d/seederlinux-domain"
-cat > "$SUDO_FILE" <<EOF
-# SeederLinux - Acesso sudo para grupos do domínio
-%${GRUPO_ADMIN_AD}    ALL=(ALL:ALL) ALL
-%${GRUPO_ADMIN_LINUX}  ALL=(ALL:ALL) ALL
-EOF
+_sudo_candidatos=()
 
-if [ -n "$GRUPO_DASTI" ] && [ "$GRUPO_DASTI" != "" ]; then
-    echo "%${GRUPO_DASTI}    ALL=(ALL:ALL) ALL" >> "$SUDO_FILE"
+if [ -n "${GRUPO_ADMIN_LINUX:-}" ]; then
+    IFS=',' read -ra _tmp <<< "$GRUPO_ADMIN_LINUX"
+    for _g in "${_tmp[@]}"; do
+        _g="$(echo "$_g" | xargs)"
+        [ -n "$_g" ] && _sudo_candidatos+=("$_g")
+    done
 fi
 
-chmod 440 "$SUDO_FILE"
-visudo -cf "$SUDO_FILE" || {
-    echo ">>> ERRO: sintaxe do sudoers inválida"
-    exit 1
-}
+_sudo_candidatos+=("_dasti" "admins. do domínio")
 
-echo ">>> Sudo configurado"
+_sudo_deduplicados=()
+while IFS= read -r _g; do
+    _sudo_deduplicados+=("$_g")
+done < <(printf '%s\n' "${_sudo_candidatos[@]}" | awk '!seen[$0]++')
+_sudo_candidatos=("${_sudo_deduplicados[@]}")
+
+{
+    echo "# SeederLinux - Acesso sudo para grupos do dominio"
+    echo "# Regras por GID numerico para evitar problemas com case,"
+    echo "# espacos e acentos nos nomes de grupo do AD."
+    echo ""
+
+    _sudo_gids_adicionados=0
+    for _grupo_nome in "${_sudo_candidatos[@]}"; do
+        _gid="$(getent group "$_grupo_nome" 2>/dev/null | cut -d: -f3)"
+        if [ -n "$_gid" ]; then
+            echo "%#${_gid}    ALL=(ALL:ALL) ALL  # $_grupo_nome"
+            _sudo_gids_adicionados=$((_sudo_gids_adicionados + 1))
+            echo ">>> Sudoers: grupo '$_grupo_nome' (gid=$_gid) adicionado" >&2
+        else
+            echo ">>> Sudoers: grupo '$_grupo_nome' nao existe - pulado" >&2
+        fi
+    done
+} > "$SUDO_FILE"
+
+chmod 440 "$SUDO_FILE"
+if [ "$_sudo_gids_adicionados" -gt 0 ]; then
+    visudo -cf "$SUDO_FILE" || {
+        log_nivel ERRO "sintaxe do sudoers inválida"
+        exit 1
+    }
+else
+    log_nivel AVISO "nenhum grupo de sudo encontrado no AD."
+    log_nivel AVISO "Nenhum usuario de dominio tera sudo nesta estacao."
+fi
+
+log_nivel INFO "Sudo configurado"
 
 # Reiniciar serviços
-echo ">>> Reiniciando serviços..."
+log_nivel INFO "Reiniciando serviços..."
 if [ "$JOIN_METHOD" = "sssd" ] || [ "$ESTADO" = "INGRESSADO_SSSD" ] || [ "$ESTADO" = "INGRESSADO_HIBRIDO" ]; then
     systemctl restart sssd 2>/dev/null || true
     systemctl enable sssd
@@ -2960,7 +3042,7 @@ systemctl restart samba 2>/dev/null || true
 # VALIDAÇÃO FINAL
 # ============================================================
 echo ""
-echo ">>> Validação final..."
+log_nivel INFO "Validação final..."
 
 VALIDATION_OK=true
 
@@ -3014,8 +3096,8 @@ fi
 
 if [ "$VALIDATION_OK" = "false" ]; then
     echo ""
-    echo ">>> AVISO: Alguns testes de validação falharam."
-    echo ">>> O ingresso pode não estar completamente funcional."
+    log_nivel AVISO "Alguns testes de validação falharam."
+    log_nivel INFO "O ingresso pode não estar completamente funcional."
     if [ "$NON_INTERACTIVE" = "true" ]; then
         CONTINUE="s"
     else
@@ -3024,12 +3106,13 @@ if [ "$VALIDATION_OK" = "false" ]; then
 fi
 
 echo ""
-echo ">>> Gerenciamento de AD concluído! Método: ${JOIN_METHOD:-$ESTADO}"
+log_nivel INFO "Gerenciamento de AD concluído! Método: ${JOIN_METHOD:-$ESTADO}"
 echo "============================================================="
 $SeederScript$,
     TRUE,
     TRUE,
     7,
+    ARRAY['core_dns.sh', 'core_ntp.sh', 'core_packages.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -3037,6 +3120,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -3045,7 +3129,7 @@ $SeederScript$,
 -- ============================================================================
 -- Configuracao SSH (ordem 8) - core_ssh.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Configuracao SSH',
     'core_ssh.sh',
@@ -3059,6 +3143,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="08-ssh"
+
 echo "============================================================"
 echo "Configurar SSH"
 echo "============================================================"
@@ -3066,22 +3153,22 @@ echo "============================================================"
 SSH_PORT="{{SSH_PORT}}"
 SSH_GROUPS="{{SSH_GROUPS}}"
 
-echo ">>> Porta SSH: ${SSH_PORT:-22}"
-echo ">>> Grupos SSH: ${SSH_GROUPS:-nenhum}"
+log_nivel INFO "Porta SSH: ${SSH_PORT:-22}"
+log_nivel INFO "Grupos SSH: ${SSH_GROUPS:-nenhum}"
 
 # Configurar porta
 if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "" ] && [ "$SSH_PORT" != "22" ]; then
-    echo ">>> Configurando porta SSH: $SSH_PORT"
+    log_nivel INFO "Configurando porta SSH: $SSH_PORT"
     if [ -f /etc/ssh/sshd_config ]; then
         cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
         sed -i "s/^#*Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config
-        echo ">>> Porta SSH alterada para $SSH_PORT"
+        log_nivel INFO "Porta SSH alterada para $SSH_PORT"
     fi
 fi
 
 # Configurar AllowGroups
 if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
-    echo ">>> Configurando AllowGroups: $SSH_GROUPS"
+    log_nivel INFO "Configurando AllowGroups: $SSH_GROUPS"
     if [ -f /etc/ssh/sshd_config ]; then
         IFS=$'\n,' read -ra GRP_ARRAY <<< "$SSH_GROUPS"
         GRP_LIST=""
@@ -3102,7 +3189,7 @@ if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
             if ! grep -q "^AllowGroups " /etc/ssh/sshd_config; then
                 echo "AllowGroups $GRP_LIST" >> /etc/ssh/sshd_config
             fi
-            echo ">>> AllowGroups configurado: $GRP_LIST"
+            log_nivel INFO "AllowGroups configurado: $GRP_LIST"
         fi
     fi
 fi
@@ -3111,8 +3198,8 @@ fi
 if [ -n "$GRP_LIST" ]; then
     for GRP in $GRP_LIST; do
         if ! getent group "$GRP" >/dev/null 2>&1; then
-            echo ">>> AVISO: grupo '$GRP' nao existe no sistema/AD."
-            echo ">>>        AllowGroups vai BLOQUEAR todo mundo ate corrigir."
+            log_nivel AVISO "grupo '$GRP' nao existe no sistema/AD."
+            log_nivel INFO "AllowGroups vai BLOQUEAR todo mundo ate corrigir."
         fi
     done
 fi
@@ -3123,6 +3210,7 @@ fi
 if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "" ] && [ "$SSH_PORT" != "22" ]; then
     if systemctl is-enabled --quiet ssh.socket 2>/dev/null; then
         systemctl disable --now ssh.socket 2>/dev/null || true
+        systemctl mask ssh.socket 2>/dev/null || true
     fi
 fi
 systemctl enable ssh 2>/dev/null || true
@@ -3132,12 +3220,13 @@ if [ -f /etc/ssh/sshd_config ]; then
     systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
 fi
 
-echo ">>> SSH configurado!"
+log_nivel OK "SSH configurado!"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     8,
+    ARRAY['core_domain.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -3145,6 +3234,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -3153,7 +3243,7 @@ $SeederScript$,
 -- ============================================================================
 -- Politicas de Navegadores (ordem 9) - core_browser.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Politicas de Navegadores',
     'core_browser.sh',
@@ -3233,6 +3323,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="09-browser"
+
 echo "============================================================"
 echo "Configurar politicas de navegadores"
 echo "============================================================"
@@ -3256,10 +3349,10 @@ PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
 # Defaults defensivos
 [ -z "$BROWSER_POLICY" ] && BROWSER_POLICY="DIRECT"
 
-echo ">>> Homepage: $HOMEPAGE"
-echo ">>> BROWSER_POLICY: $BROWSER_POLICY"
-echo ">>> BROWSER_PROXY_NAME: ${BROWSER_PROXY_NAME:-<default>}"
-echo ">>> Proxies cadastrados: $PROXY_COUNT"
+log_nivel INFO "Homepage: $HOMEPAGE"
+log_nivel INFO "BROWSER_POLICY: $BROWSER_POLICY"
+log_nivel INFO "BROWSER_PROXY_NAME: ${BROWSER_PROXY_NAME:-<default>}"
+log_nivel INFO "Proxies cadastrados: $PROXY_COUNT"
 
 # ============================================================
 # Helper: resolver proxy por nome -> host:port (SEMPRE sem credencial)
@@ -3438,8 +3531,8 @@ case "$BROWSER_POLICY" in
         NOME="$(_resolver_proxy_nome_efetivo)"
         HOSTPORT="$(_resolver_proxy_hostport "$NOME")" || HOSTPORT=""
         if [ -z "$HOSTPORT" ]; then
-            echo ">>> AVISO: BROWSER_POLICY=$BROWSER_POLICY mas proxy '${NOME:-<nenhum>}' nao encontrado."
-            echo ">>>        Aplicando DIRECT para os navegadores."
+            log_nivel AVISO "BROWSER_POLICY=$BROWSER_POLICY mas proxy '${NOME:-<nenhum>}' nao encontrado."
+            log_nivel INFO "Aplicando DIRECT para os navegadores."
             FF_PROXY_MODE="none"
             CHROME_PROXY_MODE="direct"
         else
@@ -3457,8 +3550,8 @@ case "$BROWSER_POLICY" in
             CHROME_PROXY_MODE="fixed_servers"
             CHROME_PROXY_SERVER="http=${HOSTPORT};https=${HOSTPORT}"
 
-            echo ">>> Proxy aplicado aos navegadores: $HOSTPORT"
-            echo ">>> Autenticacao de proxy sera feita pelo usuario (popup ou SSO)."
+            log_nivel INFO "Proxy aplicado aos navegadores: $HOSTPORT"
+            log_nivel INFO "Autenticacao de proxy sera feita pelo usuario (popup ou SSO)."
         fi
         ;;
 
@@ -3466,8 +3559,8 @@ case "$BROWSER_POLICY" in
         NOME="$(_resolver_proxy_nome_efetivo)"
         PAC_URL="$(_resolver_proxy_pac "$NOME")" || PAC_URL=""
         if [ -z "$PAC_URL" ]; then
-            echo ">>> AVISO: BROWSER_POLICY=PAC mas PAC_URL vazio para o proxy '${NOME:-<nenhum>}'."
-            echo ">>>        Aplicando DIRECT para os navegadores."
+            log_nivel AVISO "BROWSER_POLICY=PAC mas PAC_URL vazio para o proxy '${NOME:-<nenhum>}'."
+            log_nivel INFO "Aplicando DIRECT para os navegadores."
             FF_PROXY_MODE="none"
             CHROME_PROXY_MODE="direct"
         else
@@ -3485,7 +3578,7 @@ case "$BROWSER_POLICY" in
         ;;
 
     *)
-        echo ">>> AVISO: BROWSER_POLICY desconhecida '$BROWSER_POLICY'. Aplicando DIRECT."
+        log_nivel AVISO "BROWSER_POLICY desconhecida '$BROWSER_POLICY'. Aplicando DIRECT."
         FF_PROXY_MODE="none"
         CHROME_PROXY_MODE="direct"
         ;;
@@ -3523,7 +3616,7 @@ esac
 # ============================================================
 # Firefox ESR - policies.json
 # ============================================================
-echo ">>> Configurando policies.json do Firefox..."
+log_nivel INFO "Configurando policies.json do Firefox..."
 mkdir -p /usr/lib/firefox-esr/distribution
 cat > /usr/lib/firefox-esr/distribution/policies.json <<EOF
 {
@@ -3589,12 +3682,12 @@ if [ -d /opt/firefox-moderno ]; then
        /opt/firefox-moderno/distribution/policies.json 2>/dev/null || true
 fi
 
-echo ">>> Firefox configurado (policy de proxy: $FF_PROXY_MODE)"
+log_nivel INFO "Firefox configurado (policy de proxy: $FF_PROXY_MODE)"
 
 # ============================================================
 # Chrome / Chromium
 # ============================================================
-echo ">>> Configurando politicas do Chrome/Chromium..."
+log_nivel INFO "Configurando politicas do Chrome/Chromium..."
 
 case "$CHROME_PROXY_MODE" in
     fixed_servers)
@@ -3620,7 +3713,7 @@ CHROME_POLICY_JSON=$(cat <<EOF
 {
     "HomepageLocation": "${HOMEPAGE}",
     "HomepageIsNewTabPage": false,
-    "RestoreOnStartup": 1,
+    "RestoreOnStartup": 4,
     "RestoreOnStartupURLs": ["${HOMEPAGE}"],
     "BrowserSignin": 0,
     "SyncDisabled": true,
@@ -3643,9 +3736,44 @@ for DIR in /etc/opt/chrome/policies/managed \
     mkdir -p "$DIR" 2>/dev/null || continue
     echo "$CHROME_POLICY_JSON" > "$DIR/seederlinux.json"
     chmod 644 "$DIR/seederlinux.json"
+    chown root:root "$DIR/seederlinux.json" 2>/dev/null || true
 done
 
-echo ">>> Chrome/Chromium configurado (policy de proxy: $CHROME_PROXY_MODE)"
+log_nivel INFO "Chrome/Chromium configurado (policy de proxy: $CHROME_PROXY_MODE)"
+
+# Diagnostico: verificar onde a policy realmente ficou gravada
+echo ">>> Diagnostico de politicas Chrome/Chromium:"
+for DIR in /etc/opt/chrome/policies/managed \
+           /etc/chromium/policies/managed \
+           /etc/chromium-browser/policies/managed \
+           /var/snap/chromium/current/policies/managed \
+           /var/snap/chromium/common/policies/managed; do
+    if [ -f "$DIR/seederlinux.json" ]; then
+        PERMS="$(stat -c '%a %U:%G' "$DIR/seederlinux.json" 2>/dev/null)"
+        echo "    [OK] $DIR/seederlinux.json ($PERMS)"
+    fi
+done
+
+# Aviso: Chrome/Chromium so releem policies no startup.
+# Se estiverem rodando agora, o usuario precisa fechar e reabrir
+# (ou reiniciar a sessao) para as policies valerem.
+CHROME_RODANDO=false
+pgrep -x chrome >/dev/null 2>&1 && CHROME_RODANDO=true
+pgrep -x chromium >/dev/null 2>&1 && CHROME_RODANDO=true
+
+if [ "$CHROME_RODANDO" = "true" ]; then
+    echo ">>> AVISO: Chrome/Chromium estao rodando."
+    echo ">>>        Eles NAO releem policies.json ate reiniciar."
+    echo ">>>        Feche todos os processos e reabra."
+fi
+
+# Detectar snap-chromium (AppArmor pode bloquear leitura de /etc)
+if command -v snap >/dev/null 2>&1 && snap list chromium 2>/dev/null | grep -q "^chromium"; then
+    echo ">>> AVISO: Chromium via SNAP detectado."
+    echo ">>>        AppArmor da snap pode impedir leitura de /etc/chromium/."
+    echo ">>>        Se a policy nao aplicar, use: snap set chromium proxy..."
+    echo ">>>        ou instale o Chromium via apt (nao snap)."
+fi
 
 # ============================================================
 # Extensao Chrome para autenticacao de proxy (Basic auth)
@@ -3673,7 +3801,12 @@ if [ "$CHROME_PROXY_MODE" = "fixed_servers" ]; then
                 _v_user="PROXY_${_i}_USER"
                 _v_pass_b64="PROXY_${_i}_PASS_B64"
                 PROXY_AUTH_USER="${!_v_user}"
-                PROXY_AUTH_PASS="$(printf '%s' "${!_v_pass_b64}" | base64 -d 2>/dev/null)"
+                                _v_pass_b64_val="${!_v_pass_b64}"
+                if [[ "$_v_pass_b64_val" == "__"*"__" ]] || [ -z "$_v_pass_b64_val" ]; then
+                    PROXY_AUTH_PASS=""
+                else
+                    PROXY_AUTH_PASS="$(printf '%s' "$_v_pass_b64_val" | base64 -d 2>/dev/null || true)"
+                fi
                 break
             fi
             _i=$((_i+1))
@@ -3681,7 +3814,7 @@ if [ "$CHROME_PROXY_MODE" = "fixed_servers" ]; then
     fi
 
     if [ -n "$PROXY_AUTH_USER" ] && [ -n "$PROXY_AUTH_PASS" ]; then
-        echo ">>> Criando extensao Chrome para auth de proxy (onAuthRequired)..."
+        log_nivel INFO "Criando extensao Chrome para auth de proxy (onAuthRequired)..."
 
         EXT_DIR="/opt/seederlinux/extensions/proxy-auth"
         mkdir -p "$EXT_DIR"
@@ -3751,7 +3884,7 @@ AUTHJSON
         # chars a-p) e um update_url que sirva um XML de update apontando
         # para o .crx. Geramos a chave RSA, calculamos o ID, empacotamos
         # o CRX3 e criamos o update.xml — tudo via openssl + python3.
-        echo ">>> Empacotando extensao como CRX3..."
+        log_nivel INFO "Empacotando extensao como CRX3..."
 
         # 1. Gerar chave RSA (reutilizavel se ja existir)
         EXT_KEY="$EXT_DIR/extension.pem"
@@ -3820,7 +3953,7 @@ with open(crx_path, "wb") as f:
 print(f"CRX={crx_path}")
 PYCRX
         )
-        echo ">>> $CRX_RESULT"
+        log_nivel INFO "$CRX_RESULT"
         EXT_ID="$(echo "$CRX_RESULT" | grep '^EXT_ID=' | cut -d= -f2)"
 
         if [ -n "$EXT_ID" ] && [ -f "$EXT_DIR/proxy-auth.crx" ]; then
@@ -3850,28 +3983,28 @@ with open(path, 'w') as f:
 " 2>/dev/null || true
             done
 
-            echo ">>> Extensao CRX3 empacotada: ID=$EXT_ID"
-            echo ">>> update.xml em $EXT_DIR/update.xml"
-            echo ">>> ExtensionInstallForcelist adicionado as policies do Chrome"
+            log_nivel INFO "Extensao CRX3 empacotada: ID=$EXT_ID"
+            log_nivel INFO "update.xml em $EXT_DIR/update.xml"
+            log_nivel INFO "ExtensionInstallForcelist adicionado as policies do Chrome"
         else
-            echo ">>> AVISO: Falha ao empacotar CRX3. Extensao nao sera auto-instalada."
-            echo ">>> Para instalar manualmente: chrome://extensions -> Modo desenvolvedor -> Carregar $EXT_DIR"
+            log_nivel AVISO "Falha ao empacotar CRX3. Extensao nao sera auto-instalada."
+            log_nivel INFO "Para instalar manualmente: chrome://extensions -> Modo desenvolvedor -> Carregar $EXT_DIR"
         fi
 
-        echo ">>> Credenciais gravadas em /etc/seederlinux/proxy-auth.json (600)"
+        log_nivel INFO "Credenciais gravadas em /etc/seederlinux/proxy-auth.json (600)"
         unset PROXY_AUTH_USER PROXY_AUTH_PASS _ESC_USER _ESC_PASS EXT_ID
     else
-        echo ">>> AVISO: Proxy exige auth mas sem credenciais (PROXY_*_USER/PASS)."
-        echo ">>> Extensao de auth nao criada. Chrome nao autenticara o proxy."
+        log_nivel AVISO "Proxy exige auth mas sem credenciais (PROXY_*_USER/PASS)."
+        log_nivel INFO "Extensao de auth nao criada. Chrome nao autenticara o proxy."
     fi
 else
-    echo ">>> Policy de proxy nao e fixed_servers. Extensao de auth nao necessaria."
+    log_nivel INFO "Policy de proxy nao e fixed_servers. Extensao de auth nao necessaria."
 fi
 
 # ============================================================
 # Aviso ao usuario sobre proxy por grupo do AD
 # ============================================================
-echo ">>> Criando aviso de proxy para o usuario..."
+log_nivel INFO "Criando aviso de proxy para o usuario..."
 mkdir -p /usr/share/doc/seederlinux
 cat > /usr/share/doc/seederlinux/AVISO-PROXY.txt <<'AVISOEOF'
 AVISO — PROXY CORPORATIVO
@@ -3903,14 +4036,15 @@ Terminal=false
 Categories=System;
 DESKTOPEOF
 
-echo ">>> Aviso de proxy criado."
+log_nivel INFO "Aviso de proxy criado."
 
-echo ">>> Politicas de navegadores configuradas!"
+log_nivel OK "Politicas de navegadores configuradas!"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     9,
+    ARRAY['core_domain.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -3918,6 +4052,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -3926,7 +4061,7 @@ $SeederScript$,
 -- ============================================================================
 -- Inventario OCS (ordem 10) - core_inventory.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Inventario OCS',
     'core_inventory.sh',
@@ -3945,6 +4080,9 @@ VALUES (
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="10-inventory"
+
 echo "============================================================"
 echo "Configurar OCS Inventory Agent"
 echo "============================================================"
@@ -3957,40 +4095,40 @@ OCS_SERVER="{{OCS_SERVER}}"
 OCS_TAG="{{OCS_TAG}}"
 GLPI_SERVER="{{GLPI_SERVER}}"
 
-echo ">>> Inventario habilitado: $INVENTORY_ENABLED"
+log_nivel INFO "Inventario habilitado: $INVENTORY_ENABLED"
 
 # ============================================================
 # Verificar se o inventario esta habilitado
 # ============================================================
 if [ "$INVENTORY_ENABLED" != "true" ]; then
-    echo ">>> Inventario desativado. Pulando configuracao."
-    echo ">>> [06] OCS Inventory desativado."
+    log_nivel INFO "Inventario desativado. Pulando configuracao."
+    log_nivel INFO "[06] OCS Inventory desativado."
     echo "============================================================"
     exit 0
 fi
 
 if [ -z "$OCS_SERVER" ] || [ "$OCS_SERVER" = "" ]; then
-    echo ">>> AVISO: OCS_SERVER nao definido. Pulando configuracao."
-    echo ">>> [06] OCS Inventory nao configurado (servidor ausente)."
+    log_nivel AVISO "OCS_SERVER nao definido. Pulando configuracao."
+    log_nivel INFO "[06] OCS Inventory nao configurado (servidor ausente)."
     echo "============================================================"
     exit 0
 fi
 
-echo ">>> Servidor OCS: $OCS_SERVER"
-echo ">>> Tag OCS: $OCS_TAG"
+log_nivel INFO "Servidor OCS: $OCS_SERVER"
+log_nivel INFO "Tag OCS: $OCS_TAG"
 
 # Normalizar OCS_SERVER: remover http:// ou https:// do prefixo e
 # sufixo /ocsinventory se presentes (operador pode cadastrar URL
 # completa no painel, mas o agente espera apenas host:port).
 OCS_SERVER="$(echo "$OCS_SERVER" | sed -E 's|^https?://||' | sed -E 's|/ocsinventory/?$||' | sed 's|/$||')"
-echo ">>> Servidor OCS (normalizado): $OCS_SERVER"
+log_nivel INFO "Servidor OCS (normalizado): $OCS_SERVER"
 
 # ============================================================
 # Verificar se o pacote foi instalado (no core_packages.sh)
 # ============================================================
 if ! command -v ocsinventory-agent &>/dev/null; then
-    echo ">>> AVISO: ocsinventory-agent nao instalado. Pulando configuracao."
-    echo ">>> [06] OCS Inventory nao configurado (pacote ausente)."
+    log_nivel AVISO "ocsinventory-agent nao instalado. Pulando configuracao."
+    log_nivel INFO "[06] OCS Inventory nao configurado (pacote ausente)."
     echo "============================================================"
     exit 0
 fi
@@ -3998,7 +4136,7 @@ fi
 # ============================================================
 # Configurar agente OCS
 # ============================================================
-echo ">>> Configurando agente OCS..."
+log_nivel INFO "Configurando agente OCS..."
 mkdir -p /etc/ocsinventory-agent
 
 cat > /etc/ocsinventory-agent/ocsinventory-agent.cfg <<EOF
@@ -4022,7 +4160,7 @@ OCS_TAG = ${OCS_TAG}
 EOF
 
 # Configurar cron para execucao periodica
-echo ">>> Configurando cron do OCS..."
+log_nivel INFO "Configurando cron do OCS..."
 cat > /etc/cron.d/ocsinventory-agent <<EOF
 # OCS Inventory Agent - SeederLinux
 # Executa a cada 4 horas
@@ -4034,7 +4172,7 @@ chmod 644 /etc/cron.d/ocsinventory-agent
 # Configurar GLPI (se disponivel)
 # ============================================================
 if [ -n "$GLPI_SERVER" ] && [ "$GLPI_SERVER" != "" ]; then
-    echo ">>> Configurando integracao GLPI..."
+    log_nivel INFO "Configurando integracao GLPI..."
     mkdir -p /etc/glpi-agent
 
     cat > /etc/glpi-agent/agent.cfg <<EOF
@@ -4047,18 +4185,19 @@ fi
 # ============================================================
 # Execucao inicial do inventario
 # ============================================================
-echo ">>> Executando coleta inicial de inventario..."
+log_nivel INFO "Executando coleta inicial de inventario..."
 ocsinventory-agent --server="$OCS_SERVER" --tag="$OCS_TAG" --lazy 2>/dev/null || {
-    echo ">>> AVISO: Falha na coleta inicial. Sera refeito via cron."
+    log_nivel AVISO "Falha na coleta inicial. Sera refeito via cron."
 }
 
-echo ">>> OCS Inventory configurado!"
+log_nivel OK "OCS Inventory configurado!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     10,
+    ARRAY['core_domain.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -4066,6 +4205,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -4074,7 +4214,7 @@ $SeederScript$,
 -- ============================================================================
 -- Configuracao de Impressoras (ordem 11) - core_printers.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Configuracao de Impressoras',
     'core_printers.sh',
@@ -4093,6 +4233,9 @@ VALUES (
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="11-printers"
+
 echo "============================================================"
 echo "Configurar CUPS e impressoras"
 echo "============================================================"
@@ -4105,21 +4248,21 @@ DEFAULT_PRINTER="{{DEFAULT_PRINTER}}"
 PRINTERS="{{PRINTERS}}"
 DOMINIO="{{DOMINIO}}"
 
-echo ">>> Servidor de impressao: $PRINT_SERVER"
-echo ">>> Impressora padrao: $DEFAULT_PRINTER"
+log_nivel INFO "Servidor de impressao: $PRINT_SERVER"
+log_nivel INFO "Impressora padrao: $DEFAULT_PRINTER"
 
 # Normalizar PRINT_SERVER: remover http:// ou https:// do prefixo e
 # barra final (operador pode cadastrar URL completa no painel, mas
 # o CUPS/IPP espera apenas host:port).
 PRINT_SERVER="$(echo "$PRINT_SERVER" | sed -E 's|^https?://||' | sed 's|/$||')"
-echo ">>> Servidor de impressao (normalizado): $PRINT_SERVER"
+log_nivel INFO "Servidor de impressao (normalizado): $PRINT_SERVER"
 
 # ============================================================
 # Verificar se ha servidor de impressao
 # ============================================================
 if [ -z "$PRINT_SERVER" ] || [ "$PRINT_SERVER" = "" ]; then
-    echo ">>> AVISO: PRINT_SERVER nao definido. Pulando configuracao."
-    echo ">>> [07] Impressoras nao configuradas (servidor ausente)."
+    log_nivel AVISO "PRINT_SERVER nao definido. Pulando configuracao."
+    log_nivel INFO "[07] Impressoras nao configuradas (servidor ausente)."
     echo "============================================================"
     exit 0
 fi
@@ -4128,8 +4271,8 @@ fi
 # Verificar se o CUPS foi instalado (no core_packages.sh)
 # ============================================================
 if ! command -v cupsctl &>/dev/null; then
-    echo ">>> AVISO: CUPS nao instalado. Pulando configuracao."
-    echo ">>> [07] Impressoras nao configuradas (CUPS ausente)."
+    log_nivel AVISO "CUPS nao instalado. Pulando configuracao."
+    log_nivel INFO "[07] Impressoras nao configuradas (CUPS ausente)."
     echo "============================================================"
     exit 0
 fi
@@ -4137,7 +4280,7 @@ fi
 # ============================================================
 # Configurar CUPS
 # ============================================================
-echo ">>> Configurando CUPS..."
+log_nivel INFO "Configurando CUPS..."
 
 # Habilitar e iniciar CUPS
 systemctl enable cups
@@ -4180,7 +4323,7 @@ systemctl restart cups
 # ============================================================
 # Configurar impressoras via servidor CUPS remoto
 # ============================================================
-echo ">>> Configurando impressoras via servidor remoto..."
+log_nivel INFO "Configurando impressoras via servidor remoto..."
 
 # Criar arquivo de configuracao client.conf do CUPS
 cat > /etc/cups/client.conf <<EOF
@@ -4192,22 +4335,22 @@ EOF
 # Instalar cada impressora listada
 # ============================================================
 if [ -n "$PRINTERS" ] && [ "$PRINTERS" != "" ]; then
-    echo ">>> Instalando impressoras listadas..."
+    log_nivel INFO "Instalando impressoras listadas..."
     for PRINTER in $PRINTERS; do
-        echo ">>> Configurando impressora: $PRINTER"
+        log_nivel INFO "Configurando impressora: $PRINTER"
         # Adicionar impressora via lpadmin (IPP via servidor)
         lpadmin -p "$PRINTER" -E -v "ipp://${PRINT_SERVER}/printers/${PRINTER}" \
             -m everywhere 2>/dev/null || {
-            echo ">>> AVISO: Falha ao adicionar impressora $PRINTER"
+            log_nivel AVISO "Falha ao adicionar impressora $PRINTER"
         }
     done
 else
-    echo ">>> Nenhuma impressora listada. Usando descoberta automatica."
+    log_nivel INFO "Nenhuma impressora listada. Usando descoberta automatica."
     # Descoberta automatica via servidor remoto
     lpinfo -h "$PRINT_SERVER" -v 2>/dev/null | grep ipp | while read -r line; do
         PRINTER_URI=$(echo "$line" | awk '{print $2}')
         PRINTER_NAME=$(basename "$PRINTER_URI")
-        echo ">>> Impressora encontrada: $PRINTER_NAME"
+        log_nivel INFO "Impressora encontrada: $PRINTER_NAME"
         lpadmin -p "$PRINTER_NAME" -E -v "$PRINTER_URI" -m everywhere 2>/dev/null || true
     done
 fi
@@ -4216,9 +4359,9 @@ fi
 # Definir impressora padrao
 # ============================================================
 if [ -n "$DEFAULT_PRINTER" ] && [ "$DEFAULT_PRINTER" != "" ]; then
-    echo ">>> Definindo impressora padrao: $DEFAULT_PRINTER"
+    log_nivel INFO "Definindo impressora padrao: $DEFAULT_PRINTER"
     lpadmin -d "$DEFAULT_PRINTER" 2>/dev/null || {
-        echo ">>> AVISO: Falha ao definir impressora padrao"
+        log_nivel AVISO "Falha ao definir impressora padrao"
     }
 fi
 
@@ -4227,13 +4370,14 @@ fi
 # ============================================================
 systemctl restart cups
 
-echo ">>> CUPS e impressoras configurados!"
+log_nivel OK "CUPS e impressoras configurados!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     11,
+    ARRAY['core_domain.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -4241,6 +4385,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -4249,7 +4394,7 @@ $SeederScript$,
 -- ============================================================================
 -- Configuracao VNC (ordem 12) - core_vnc.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Configuracao VNC',
     'core_vnc.sh',
@@ -4273,6 +4418,9 @@ VALUES (
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="12-vnc"
+
 echo "============================================================"
 echo "Configurar x11vnc"
 echo "============================================================"
@@ -4288,19 +4436,19 @@ DISPLAY_MANAGER="{{DISPLAY_MANAGER}}"
 if [ -n "$VNC_PASSWORD_B64" ] && [ "$VNC_PASSWORD_B64" != "" ]; then
     VNC_PASSWORD=$(echo "$VNC_PASSWORD_B64" | base64 -d 2>/dev/null)
     if [ -z "$VNC_PASSWORD" ]; then
-        echo ">>> AVISO: Falha ao decodificar VNC_PASSWORD_B64. Sera gerada senha aleatoria."
+        log_nivel AVISO "Falha ao decodificar VNC_PASSWORD_B64. Sera gerada senha aleatoria."
     fi
 fi
 unset VNC_PASSWORD_B64
 
-echo ">>> VNC habilitado: $VNC_ENABLED"
+log_nivel INFO "VNC habilitado: $VNC_ENABLED"
 
 # ============================================================
 # Verificar se VNC esta habilitado
 # ============================================================
 if [ "$VNC_ENABLED" != "true" ]; then
-    echo ">>> VNC desativado. Pulando configuracao."
-    echo ">>> [08] x11vnc desativado."
+    log_nivel INFO "VNC desativado. Pulando configuracao."
+    log_nivel INFO "[08] x11vnc desativado."
     echo "============================================================"
     exit 0
 fi
@@ -4309,8 +4457,8 @@ fi
 # Verificar se o x11vnc foi instalado (no core_packages.sh)
 # ============================================================
 if ! command -v x11vnc &>/dev/null; then
-    echo ">>> AVISO: x11vnc nao instalado. Pulando configuracao."
-    echo ">>> [08] x11vnc nao configurado (pacote ausente)."
+    log_nivel AVISO "x11vnc nao instalado. Pulando configuracao."
+    log_nivel INFO "[08] x11vnc nao configurado (pacote ausente)."
     echo "============================================================"
     exit 0
 fi
@@ -4324,13 +4472,13 @@ if [ -z "$DISPLAY_MANAGER" ] || [ "$DISPLAY_MANAGER" = "" ]; then
     elif systemctl is-active --quiet sddm 2>/dev/null; then DISPLAY_MANAGER="sddm"
     else DISPLAY_MANAGER="lightdm"
     fi
-    echo ">>> Display Manager detectado: $DISPLAY_MANAGER"
+    log_nivel INFO "Display Manager detectado: $DISPLAY_MANAGER"
 fi
 
 # ============================================================
 # Configurar senha do VNC (SEM expor em texto plano)
 # ============================================================
-echo ">>> Configurando senha do VNC..."
+log_nivel INFO "Configurando senha do VNC..."
 mkdir -p /etc/x11vnc
 mkdir -p /etc/seederlinux
 
@@ -4339,14 +4487,14 @@ SECRETS_FILE="/etc/seederlinux/secrets.env"
 if [ -n "$VNC_PASSWORD" ] && [ "$VNC_PASSWORD" != "" ]; then
     x11vnc -storepasswd "$VNC_PASSWORD" /etc/x11vnc/vncpasswd
     chmod 600 /etc/x11vnc/vncpasswd
-    echo ">>> Senha VNC configurada (fornecida pela OM)"
+    log_nivel INFO "Senha VNC configurada (fornecida pela OM)"
     echo "VNC_PASSWORD_SET=true" >> "$SECRETS_FILE"
 else
-    echo ">>> VNC_PASSWORD nao definido. Gerando senha aleatoria."
+    log_nivel INFO "VNC_PASSWORD nao definido. Gerando senha aleatoria."
     RANDOM_PASS=$(openssl rand -base64 12)
     x11vnc -storepasswd "$RANDOM_PASS" /etc/x11vnc/vncpasswd
     chmod 600 /etc/x11vnc/vncpasswd
-    echo ">>> Senha VNC gerada com sucesso"
+    log_nivel INFO "Senha VNC gerada com sucesso"
     echo "VNC_PASSWORD_SET=true" >> "$SECRETS_FILE"
 fi
 
@@ -4358,7 +4506,7 @@ unset RANDOM_PASS
 # ============================================================
 # Criar servico systemd para x11vnc
 # ============================================================
-echo ">>> Criando servico systemd x11vnc..."
+log_nivel INFO "Criando servico systemd x11vnc..."
 
 # Detectar display Xorg ativo em runtime; cai em :0 se nao encontrar.
 VNC_DISPLAY="$(ps aux | grep -E '[X]org' | grep -oE ':[0-9]+' | head -1)"
@@ -4386,17 +4534,18 @@ EOF
 systemctl daemon-reload
 systemctl enable x11vnc.service
 systemctl start x11vnc.service 2>/dev/null || {
-    echo ">>> AVISO: Nao foi possivel iniciar x11vnc agora."
-    echo ">>> O servico sera iniciado apos o display manager."
+    log_nivel AVISO "Nao foi possivel iniciar x11vnc agora."
+    log_nivel INFO "O servico sera iniciado apos o display manager."
 }
 
-echo ">>> x11vnc configurado!"
+log_nivel OK "x11vnc configurado!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     12,
+    ARRAY['core_packages.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -4404,6 +4553,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -4412,7 +4562,7 @@ $SeederScript$,
 -- ============================================================================
 -- Configuracao do Conky (ordem 13) - core_conky.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Configuracao do Conky',
     'core_conky.sh',
@@ -4431,6 +4581,9 @@ VALUES (
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="13-conky"
+
 echo "============================================================"
 echo "Configurar Conky"
 echo "============================================================"
@@ -4444,8 +4597,8 @@ DESKTOP_ENV="{{DESKTOP_ENV}}"
 OM_ACRONYM="{{OM_ACRONYM}}"
 OM_NAME="{{OM_NAME}}"
 
-echo ">>> Perfil Conky: $CONKY_PROFILE"
-echo ">>> Ambiente: $DESKTOP_ENV"
+log_nivel INFO "Perfil Conky: $CONKY_PROFILE"
+log_nivel INFO "Ambiente: $DESKTOP_ENV"
 
 # ============================================================
 # Detectar ambiente grafico se nao definido
@@ -4466,8 +4619,8 @@ fi
 # Verificar se o Conky foi instalado (no core_packages.sh)
 # ============================================================
 if ! command -v conky &>/dev/null; then
-    echo ">>> AVISO: Conky nao instalado. Pulando configuracao."
-    echo ">>> [09] Conky nao configurado (pacote ausente)."
+    log_nivel AVISO "Conky nao instalado. Pulando configuracao."
+    log_nivel INFO "[09] Conky nao configurado (pacote ausente)."
     echo "============================================================"
     exit 0
 fi
@@ -4508,7 +4661,7 @@ CFG_NETWORK_IFACE=$(parse_json network_interface "eth0")
 if ! ip link show "$CFG_NETWORK_IFACE" &>/dev/null 2>&1; then
     DETECTED_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
     if [ -n "$DETECTED_IFACE" ]; then
-        echo ">>> interface '$CFG_NETWORK_IFACE' nao existe, usando '$DETECTED_IFACE'"
+        log_nivel INFO "interface '$CFG_NETWORK_IFACE' nao existe, usando '$DETECTED_IFACE'"
         CFG_NETWORK_IFACE="$DETECTED_IFACE"
     fi
 fi
@@ -4536,7 +4689,7 @@ mkdir -p /etc/seederlinux/conky
 # ============================================================
 # Gerar configuracao do Conky (usando CONKY_CONFIG JSON)
 # ============================================================
-echo ">>> Gerando configuracao do Conky (CONKY_CONFIG=${CONKY_CONFIG:-vazio})..."
+log_nivel INFO "Gerando configuracao do Conky (CONKY_CONFIG=${CONKY_CONFIG:-vazio})..."
 
 if [ "$CFG_SHOW_HOSTNAME" = "true" ]; then
     CONKY_TEXT="\${font DejaVu Sans Mono:size=${CFG_HOSTNAME_FONT_SIZE}}\${color ${COLOR_TEXT_LUA}}Host: \${nodename}
@@ -4625,7 +4778,7 @@ EOF
 # ============================================================
 # Criar script de inicializacao do Conky
 # ============================================================
-echo ">>> Criando script de inicializacao..."
+log_nivel INFO "Criando script de inicializacao..."
 cat > /usr/local/bin/seederlinux-conky <<'SCRIPT'
 #!/bin/bash
 CONKY_CONF="/etc/seederlinux/conky/conky.conf"
@@ -4643,7 +4796,7 @@ chmod +x /usr/local/bin/seederlinux-conky
 # ============================================================
 # Adicionar Conky ao autostart conforme o DE
 # ============================================================
-echo ">>> Configurando autostart do Conky para: $DESKTOP_ENV"
+log_nivel INFO "Configurando autostart do Conky para: $DESKTOP_ENV"
 
 case "$DESKTOP_ENV" in
     cinnamon|mate|xfce|lxde|lxqt|gnome)
@@ -4671,13 +4824,14 @@ EOF
         ;;
 esac
 
-echo ">>> Conky configurado!"
+log_nivel OK "Conky configurado!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     13,
+    ARRAY['core_packages.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -4685,6 +4839,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -4693,7 +4848,7 @@ $SeederScript$,
 -- ============================================================================
 -- Configuracao Persistente (ordem 14) - core_config.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Configuracao Persistente',
     'core_config.sh',
@@ -4722,6 +4877,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="14-config"
+
 echo "============================================================"
 echo "Criar arquivo de configuracao persistente"
 echo "============================================================"
@@ -4745,7 +4903,7 @@ WALLPAPER_LOGIN_URL="{{WALLPAPER_LOGIN_URL}}"
 LOGO_URL="{{LOGO_URL}}"
 GREETER_URL="{{GREETER_URL}}"
 
-echo ">>> Normalizando URLs de assets para forma absoluta..."
+log_nivel INFO "Normalizando URLs de assets para forma absoluta..."
 for url_var in WALLPAPER_URL WALLPAPER_LOGIN_URL LOGO_URL GREETER_URL; do
     url_val="${!url_var}"
     [ -z "$url_val" ] && continue
@@ -4787,10 +4945,10 @@ MIRROR_LOCAL_OM_URL="{{MIRROR_LOCAL_OM_URL}}"
 PROXY_COUNT="${PROXY_COUNT:-0}"
 PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
 
-echo ">>> APT_POLICY: $APT_POLICY"
-echo ">>> CLI_POLICY: $CLI_POLICY"
-echo ">>> BROWSER_POLICY: $BROWSER_POLICY"
-echo ">>> Proxies: $PROXY_COUNT (default: ${PROXY_DEFAULT_NAME:-<nenhum>})"
+log_nivel INFO "APT_POLICY: $APT_POLICY"
+log_nivel INFO "CLI_POLICY: $CLI_POLICY"
+log_nivel INFO "BROWSER_POLICY: $BROWSER_POLICY"
+log_nivel INFO "Proxies: $PROXY_COUNT (default: ${PROXY_DEFAULT_NAME:-<nenhum>})"
 
 # ============================================================
 # Preservar SERIAL_APLICADO
@@ -4800,7 +4958,7 @@ if [ -f "$CONFIG_FILE" ]; then
     VALOR_EXISTENTE="$(grep -m1 '^SERIAL_APLICADO=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"')"
     [ -n "$VALOR_EXISTENTE" ] && SERIAL_APLICADO_ATUAL="$VALOR_EXISTENTE"
 fi
-echo ">>> SERIAL_APLICADO preservado: $SERIAL_APLICADO_ATUAL"
+log_nivel INFO "SERIAL_APLICADO preservado: $SERIAL_APLICADO_ATUAL"
 
 # ============================================================
 # Escrever config.env (cabecalho + variaveis + array de proxies)
@@ -4938,7 +5096,7 @@ EOF
 } >> "$CONFIG_FILE"
 
 chmod 644 "$CONFIG_FILE"
-echo ">>> config.env gravado em $CONFIG_FILE"
+log_nivel INFO "config.env gravado em $CONFIG_FILE"
 
 # ============================================================
 # Atualizar secrets.env com as senhas dos proxies
@@ -4970,13 +5128,14 @@ done
 install -m 0600 "$TMP_SECRETS" "$SECRETS_FILE"
 rm -f "$TMP_SECRETS"
 
-echo ">>> secrets.env atualizado (${PROXY_COUNT} senha(s) de proxy)"
-echo ">>> Arquivo de configuracao criado!"
+log_nivel INFO "secrets.env atualizado (${PROXY_COUNT} senha(s) de proxy)"
+log_nivel OK "Arquivo de configuracao criado!"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     14,
+    ARRAY['core_packages.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -4984,6 +5143,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -4992,7 +5152,7 @@ $SeederScript$,
 -- ============================================================================
 -- Identidade Visual (ordem 15) - core_branding.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Identidade Visual',
     'core_branding.sh',
@@ -5029,6 +5189,9 @@ VALUES (
 # ============================================================================
 
 set -e
+
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="15-branding"
 
 # CORRECAO: script envolvido em subshell - uma falha aqui (ex: asset
 # externo que nao baixa/extrai direito) nao pode mais derrubar o
@@ -5087,7 +5250,7 @@ if [ -z "$DESKTOP_ENV" ] || [ "$DESKTOP_ENV" = "" ]; then
     else DESKTOP_ENV="unknown"
     fi
 fi
-echo ">>> Ambiente detectado: $DESKTOP_ENV"
+log_nivel INFO "Ambiente detectado: $DESKTOP_ENV"
 
 # ============================================================
 # Detectar display manager se nao definido
@@ -5101,11 +5264,11 @@ if [ -z "$DISPLAY_MANAGER" ] || [ "$DISPLAY_MANAGER" = "" ]; then
     else DISPLAY_MANAGER="unknown"
     fi
 fi
-echo ">>> Display Manager detectado: $DISPLAY_MANAGER"
+log_nivel INFO "Display Manager detectado: $DISPLAY_MANAGER"
 
-echo ">>> OM: $OM_ACRONYM - $OM_NAME"
-echo ">>> Ambiente: $DESKTOP_ENV / $DISPLAY_MANAGER"
-echo ">>> Tema: $THEME"
+log_nivel INFO "OM: $OM_ACRONYM - $OM_NAME"
+log_nivel INFO "Ambiente: $DESKTOP_ENV / $DISPLAY_MANAGER"
+log_nivel INFO "Tema: $THEME"
 
 # ============================================================
 # Criar diretorios de branding
@@ -5166,13 +5329,13 @@ _baixar_ativo() {
 
     if ! wget -q --no-check-certificate --no-proxy --timeout=20 -O "$tmp" "$url"; then
         rm -f "$tmp"
-        echo ">>> AVISO: falha de download de $(basename "$dest") ($url) - mantendo o existente"
+        log_nivel AVISO "falha de download de $(basename "$dest") ($url) - mantendo o existente"
         return 1
     fi
 
     if [ ! -s "$tmp" ]; then
         rm -f "$tmp"
-        echo ">>> AVISO: $(basename "$dest") baixou 0 bytes (404/proxy/DNS?) - mantendo o existente"
+        log_nivel AVISO "$(basename "$dest") baixou 0 bytes (404/proxy/DNS?) - mantendo o existente"
         return 1
     fi
 
@@ -5183,7 +5346,7 @@ _baixar_ativo() {
     mime="$(file -b --mime-type "$tmp" 2>/dev/null || echo "application/octet-stream")"
     if ! echo "$mime" | grep -q '^image/'; then
         rm -f "$tmp"
-        echo ">>> AVISO: $(basename "$dest") baixou $mime (nao e imagem - HTML de erro?) - mantendo o existente"
+        log_nivel AVISO "$(basename "$dest") baixou $mime (nao e imagem - HTML de erro?) - mantendo o existente"
         return 1
     fi
 
@@ -5192,38 +5355,38 @@ _baixar_ativo() {
     # sessoes de usuario conseguem ler.
     install -m 0644 "$tmp" "$dest"
     rm -f "$tmp"
-    echo ">>> $(basename "$dest") instalado ($mime)"
+    log_nivel INFO "$(basename "$dest") instalado ($mime)"
     return 0
 }
 
 # ============================================================
 # Baixar e instalar wallpaper (da sessao)
 # ============================================================
-echo ">>> Baixando wallpaper..."
+log_nivel INFO "Baixando wallpaper..."
 if [ -n "$WALLPAPER_URL" ] && [ "$WALLPAPER_URL" != "" ]; then
     _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
 else
-    echo ">>> WALLPAPER_URL nao definido. Pulando wallpaper."
+    log_nivel INFO "WALLPAPER_URL nao definido. Pulando wallpaper."
 fi
 
 # ============================================================
 # Baixar e instalar wallpaper de login
 # ============================================================
-echo ">>> Baixando wallpaper de login..."
+log_nivel INFO "Baixando wallpaper de login..."
 if [ -n "$WALLPAPER_LOGIN_URL" ] && [ "$WALLPAPER_LOGIN_URL" != "" ]; then
     _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
 else
-    echo ">>> WALLPAPER_LOGIN_URL nao definido. Pulando wallpaper de login."
+    log_nivel INFO "WALLPAPER_LOGIN_URL nao definido. Pulando wallpaper de login."
 fi
 
 # ============================================================
 # Baixar e instalar logo
 # ============================================================
-echo ">>> Baixando logo..."
+log_nivel INFO "Baixando logo..."
 if [ -n "$LOGO_URL" ] && [ "$LOGO_URL" != "" ]; then
     _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
 else
-    echo ">>> LOGO_URL nao definido. Pulando logo."
+    log_nivel INFO "LOGO_URL nao definido. Pulando logo."
 fi
 
 # ============================================================
@@ -5239,12 +5402,12 @@ fi
 # extensao do arquivo - funciona com qualquer formato, mesmo que o
 # nome/extensao esteja errado.
 # ============================================================
-echo ">>> Baixando greeter..."
+log_nivel INFO "Baixando greeter..."
 if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
     GREETER_TARBALL="/tmp/seederlinux-greeter.bin"
     if wget -q --no-check-certificate --no-proxy --timeout=20 -O "$GREETER_TARBALL" "$GREETER_URL" && [ -s "$GREETER_TARBALL" ]; then
         GREETER_MIME="$(file -b --mime-type "$GREETER_TARBALL" 2>/dev/null)"
-        echo ">>> Greeter detectado como: ${GREETER_MIME:-desconhecido}"
+        log_nivel INFO "Greeter detectado como: ${GREETER_MIME:-desconhecido}"
 
         case "$GREETER_MIME" in
             # --- Caso 1: arquivo compactado (tar/gzip/bzip2/xz) ---
@@ -5266,13 +5429,13 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
                                 cp -r /tmp/seederlinux-greeter/* /usr/share/sddm/themes/ 2>/dev/null || true
                                 ;;
                         esac
-                        echo ">>> Greeter (pacote) instalado"
+                        log_nivel INFO "Greeter (pacote) instalado"
                     else
-                        echo ">>> AVISO: falha ao extrair o pacote do greeter."
+                        log_nivel AVISO "falha ao extrair o pacote do greeter."
                     fi
                     rm -rf /tmp/seederlinux-greeter
                 else
-                    echo ">>> AVISO: conteudo nao reconhecido como tar/gzip/bzip2/xz."
+                    log_nivel AVISO "conteudo nao reconhecido como tar/gzip/bzip2/xz."
                 fi
                 ;;
 
@@ -5295,7 +5458,7 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
                 # O greeter precisa ler, entao modo tem que ser 0644
                 # explicito, sem depender de umask.
                 install -m 0644 "$GREETER_TARBALL" "$GREETER_IMG"
-                echo ">>> Greeter (imagem ${GREETER_EXT}) instalado: $GREETER_IMG"
+                log_nivel INFO "Greeter (imagem ${GREETER_EXT}) instalado: $GREETER_IMG"
 
                 # Se WALLPAPER_LOGIN_URL nao foi definido OU o arquivo
                 # de wallpaper de login ainda nao existe, usar o
@@ -5308,22 +5471,22 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
                 # correspondente estar instalado na imagem do SO.
                 if [ -z "$WALLPAPER_LOGIN_URL" ] || [ ! -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
                     install -m 0644 "$GREETER_TARBALL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
-                    echo ">>> Greeter usado como wallpaper de login"
+                    log_nivel INFO "Greeter usado como wallpaper de login"
                 else
-                    echo ">>> Wallpaper de login proprio ja instalado - greeter mantido apenas em $GREETER_IMG"
+                    log_nivel INFO "Wallpaper de login proprio ja instalado - greeter mantido apenas em $GREETER_IMG"
                 fi
                 ;;
 
             # --- Caso 3: qualquer outra coisa ---
             *)
-                echo ">>> AVISO: GREETER_URL nao e imagem nem pacote compactado valido"
-                echo ">>> (detectado como: ${GREETER_MIME:-desconhecido}). Pulando greeter customizado."
+                log_nivel AVISO "GREETER_URL nao e imagem nem pacote compactado valido"
+                log_nivel INFO "(detectado como: ${GREETER_MIME:-desconhecido}). Pulando greeter customizado."
                 ;;
         esac
 
         rm -f "$GREETER_TARBALL"
     else
-        echo ">>> AVISO: greeter baixado vazio ou com falha - pulando"
+        log_nivel AVISO "greeter baixado vazio ou com falha - pulando"
         rm -f "$GREETER_TARBALL"
     fi
 fi
@@ -5343,7 +5506,7 @@ LOGIN_WP="/usr/share/backgrounds/seederlinux/wallpaper-login.jpg"
 SESSION_WP="/usr/share/backgrounds/seederlinux/wallpaper.jpg"
 
 if [ ! -s "$LOGIN_WP" ] && [ -s "$SESSION_WP" ]; then
-    echo ">>> Wallpaper de login ausente - usando o da sessao como fallback"
+    log_nivel INFO "Wallpaper de login ausente - usando o da sessao como fallback"
     install -m 0644 "$SESSION_WP" "$LOGIN_WP"
 fi
 
@@ -5358,16 +5521,16 @@ fi
 # so aplicamos tema se THEME vier definido E existir de verdade em
 # /usr/share/themes - caso contrario mantemos o tema atual do
 # sistema/DE, sem sobrescrever nada.
-echo ">>> Aplicando tema GTK: $THEME"
+log_nivel INFO "Aplicando tema GTK: $THEME"
 THEME_APLICAR=false
 
 if [ -z "$THEME" ] || [ "$THEME" = "DEFAULT" ]; then
-    echo ">>> THEME=DEFAULT (ou vazio) - mantendo tema atual do sistema."
+    log_nivel INFO "THEME=DEFAULT (ou vazio) - mantendo tema atual do sistema."
 elif [ -d "/usr/share/themes/$THEME" ]; then
     THEME_APLICAR=true
-    echo ">>> THEME=$THEME - tema encontrado em /usr/share/themes."
+    log_nivel INFO "THEME=$THEME - tema encontrado em /usr/share/themes."
 else
-    echo ">>> AVISO: THEME=$THEME nao existe em /usr/share/themes - mantendo tema atual."
+    log_nivel AVISO "THEME=$THEME nao existe em /usr/share/themes - mantendo tema atual."
 fi
 
 if [ "$THEME_APLICAR" = "true" ]; then
@@ -5385,15 +5548,15 @@ gtk-button-images=1
 gtk-menu-images=1
 gtk-application-prefer-dark-theme=0
 EOF
-    echo ">>> Tema GTK configurado: $THEME"
+    log_nivel INFO "Tema GTK configurado: $THEME"
 else
-    echo ">>> Tema GTK NAO foi alterado (DEFAULT ou inexistente)."
+    log_nivel INFO "Tema GTK NAO foi alterado (DEFAULT ou inexistente)."
 fi
 
 # ============================================================
 # Aplicar wallpaper e configuracoes conforme o DE
 # ============================================================
-echo ">>> Aplicando configuracoes para: $DESKTOP_ENV"
+log_nivel INFO "Aplicando configuracoes para: $DESKTOP_ENV"
 
 case "$DESKTOP_ENV" in
     cinnamon)
@@ -5543,7 +5706,7 @@ esac
 # esta altura ja existe (download OK, fallback do greeter, ou
 # fallback do wallpaper da sessao).
 # ============================================================
-echo ">>> Configurando wallpaper de login..."
+log_nivel INFO "Configurando wallpaper de login..."
 case "$DISPLAY_MANAGER" in
     lightdm)
         mkdir -p /etc/lightdm
@@ -5560,9 +5723,9 @@ EOF
             fi
             # lightdm le este arquivo como usuario `lightdm`.
             chmod 0644 /etc/lightdm/lightdm-gtk-greeter.conf
-            echo ">>> lightdm-gtk-greeter.conf configurado (background=$LOGIN_WP)"
+            log_nivel INFO "lightdm-gtk-greeter.conf configurado (background=$LOGIN_WP)"
         else
-            echo ">>> AVISO: wallpaper-login.jpg ausente - greeter mantem padrao do sistema"
+            log_nivel AVISO "wallpaper-login.jpg ausente - greeter mantem padrao do sistema"
         fi
         ;;
     gdm3)
@@ -5575,9 +5738,9 @@ picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper-login.jpg'
 picture-options='zoom'
 EOF
             dconf update 2>/dev/null || true
-            echo ">>> GDM3 background configurado"
+            log_nivel INFO "GDM3 background configurado"
         else
-            echo ">>> AVISO: wallpaper-login.jpg ausente - GDM3 mantem padrao do sistema"
+            log_nivel AVISO "wallpaper-login.jpg ausente - GDM3 mantem padrao do sistema"
         fi
         ;;
     sddm)
@@ -5589,9 +5752,9 @@ ThemeDir=/usr/share/sddm/themes
 Current=seederlinux
 Background=/usr/share/backgrounds/seederlinux/wallpaper-login.jpg
 EOF
-            echo ">>> SDDM background configurado"
+            log_nivel INFO "SDDM background configurado"
         else
-            echo ">>> AVISO: wallpaper-login.jpg ausente - SDDM mantem padrao do sistema"
+            log_nivel AVISO "wallpaper-login.jpg ausente - SDDM mantem padrao do sistema"
         fi
         ;;
 esac
@@ -5599,17 +5762,18 @@ esac
 # ============================================================
 # Sumario final dos assets (observabilidade - facilita debug)
 # ============================================================
-echo ">>> Sumario dos assets instalados:"
+log_nivel INFO "Sumario dos assets instalados:"
 ls -la /usr/share/backgrounds/seederlinux/ 2>/dev/null | sed 's/^/    /'
 ls -la /usr/share/pixmaps/seederlinux-logo.png 2>/dev/null | sed 's/^/    /'
 
-echo ">>> Identidade visual aplicada!"
+log_nivel OK "Identidade visual aplicada!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     15,
+    ARRAY['core_config.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -5617,6 +5781,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -5625,7 +5790,7 @@ $SeederScript$,
 -- ============================================================================
 -- Sessao LightDM (ordem 16) - core_session_lightdm.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Sessao LightDM',
     'core_session_lightdm.sh',
@@ -5678,6 +5843,9 @@ VALUES (
 
 (
 set -e
+
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="16-session-lightdm"
 
 echo "============================================================"
 echo "Configurar LightDM (MATE, Cinnamon, XFCE, LXDE)"
@@ -5743,9 +5911,9 @@ if [ -z "$DESKTOP_ENV" ] && [ -f "$CONFIG_FILE" ]; then
 fi
 if [ -z "$DESKTOP_ENV" ]; then
     DESKTOP_ENV="$(detectar_de)"
-    echo ">>> DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
 else
-    echo ">>> DESKTOP_ENV: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV: $DESKTOP_ENV"
 fi
 
 # ============================================================
@@ -5758,9 +5926,9 @@ if [ -z "$DISPLAY_MANAGER" ]; then
     DISPLAY_MANAGER="$(detectar_dm_ativo)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(detectar_dm_instalado)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(dm_padrao_para_de "$DESKTOP_ENV")"
-    echo ">>> DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
 else
-    echo ">>> DISPLAY_MANAGER: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER: $DISPLAY_MANAGER"
 fi
 
 # ============================================================
@@ -5780,13 +5948,13 @@ sed -i '/^DESKTOP_ENV=/d;/^DISPLAY_MANAGER=/d' "$CONFIG_FILE"
 #    outro, encerra este bloco (nao o bundle) e segue para 14b/14c.
 # ============================================================
 if [ "$DISPLAY_MANAGER" != "lightdm" ]; then
-    echo ">>> DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e lightdm). Pulando."
+    log_nivel INFO "DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e lightdm). Pulando."
     echo "============================================================"
     exit 0
 fi
 
-echo ">>> Display Manager: $DISPLAY_MANAGER"
-echo ">>> Ambiente: $DESKTOP_ENV"
+log_nivel INFO "Display Manager: $DISPLAY_MANAGER"
+log_nivel INFO "Ambiente: $DESKTOP_ENV"
 
 # ============================================================
 # Verificar se LightDM + greeter estao presentes.
@@ -5797,8 +5965,8 @@ echo ">>> Ambiente: $DESKTOP_ENV"
 # esta ativo. Aqui so verificamos e configuramos.
 # ============================================================
 if ! dpkg -l lightdm 2>/dev/null | grep -q "^ii"; then
-    echo ">>> ERRO: lightdm nao instalado (deveria ter sido no core_packages.sh)."
-    echo ">>> Pulando configuracao de LightDM."
+    log_nivel ERRO "lightdm nao instalado (deveria ter sido no core_packages.sh)."
+    log_nivel INFO "Pulando configuracao de LightDM."
     echo "============================================================"
     exit 0
 fi
@@ -5808,12 +5976,12 @@ if dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
 elif dpkg -l lightdm-gtk-greeter 2>/dev/null | grep -q "^ii"; then
     GREETER_SESSION="lightdm-gtk-greeter"
 else
-    echo ">>> ERRO: nenhum greeter instalado."
-    echo ">>> Pulando configuracao de LightDM."
+    log_nivel ERRO "nenhum greeter instalado."
+    log_nivel INFO "Pulando configuracao de LightDM."
     echo "============================================================"
     exit 0
 fi
-echo ">>> Greeter a usar: $GREETER_SESSION"
+log_nivel INFO "Greeter a usar: $GREETER_SESSION"
 
 # Registrar LightDM como DM padrao (arquivo canonico do Debian/Ubuntu)
 echo "lightdm shared/default-x-display-manager select lightdm" | debconf-set-selections 2>/dev/null || true
@@ -5823,7 +5991,7 @@ echo "/usr/sbin/lightdm" > /etc/X11/default-display-manager
 # ============================================================
 # Configurar LightDM
 # ============================================================
-echo ">>> Configurando LightDM..."
+log_nivel INFO "Configurando LightDM..."
 mkdir -p /etc/lightdm
 
 cat > /etc/lightdm/lightdm.conf <<EOF
@@ -5846,7 +6014,7 @@ pam-autologin-service=lightdm-autologin
 session-cleanup-script=/usr/local/bin/seederlinux-logoff
 EOF
 
-echo ">>> LightDM configurado"
+log_nivel INFO "LightDM configurado"
 
 # ============================================================
 # Configurar greeter do LightDM
@@ -5856,7 +6024,7 @@ echo ">>> LightDM configurado"
 # (grava em outro arquivo quando aplicavel). Este greeter.conf fica
 # sem theme-name explicito, usando o tema padrao do sistema.
 # ============================================================
-echo ">>> Configurando greeter..."
+log_nivel INFO "Configurando greeter..."
 mkdir -p /etc/lightdm
 
 cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
@@ -5868,12 +6036,12 @@ logo = /usr/share/pixmaps/seederlinux-logo.png
 show-indicators = ~host;~spacer;~clock;~spacer;~session;~spacer;~power
 EOF
 
-echo ">>> Greeter configurado"
+log_nivel INFO "Greeter configurado"
 
 # ============================================================
 # Configurar Xsession
 # ============================================================
-echo ">>> Configurando Xsession..."
+log_nivel INFO "Configurando Xsession..."
 if [ ! -f /etc/lightdm/Xsession ]; then
     cat > /etc/lightdm/Xsession <<'XSESSION'
 #!/bin/bash
@@ -5886,18 +6054,18 @@ fi
 # ============================================================
 # Garantir que os scripts de logon/logoff existam
 # ============================================================
-echo ">>> Verificando scripts de logon/logoff..."
+log_nivel INFO "Verificando scripts de logon/logoff..."
 for SCRIPT in seederlinux-logon seederlinux-logoff; do
     if [ ! -f "/usr/local/bin/${SCRIPT}" ]; then
-        echo ">>> AVISO: /usr/local/bin/${SCRIPT} nao encontrado."
-        echo ">>> Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
+        log_nivel AVISO "/usr/local/bin/${SCRIPT} nao encontrado."
+        log_nivel INFO "Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
     fi
 done
 
 # ============================================================
 # Desabilitar outros display managers
 # ============================================================
-echo ">>> Desabilitando outros display managers..."
+log_nivel INFO "Desabilitando outros display managers..."
 systemctl disable gdm3 2>/dev/null || true
 systemctl disable sddm 2>/dev/null || true
 
@@ -5918,18 +6086,19 @@ ln -sf /lib/systemd/system/lightdm.service /etc/systemd/system/display-manager.s
 # ha caso legitimo de "precisa aplicar agora" que justifique matar
 # sessao de usuario logado.
 # ============================================================
-echo ">>> Configuracao de LightDM sera aplicada no proximo boot."
-echo ">>> (NAO reiniciamos o DM aqui: se o bundle rodar via cron/agente,"
-echo ">>>  ele nao tem \$DISPLAY nem \$SSH_CONNECTION - qualquer restart"
-echo ">>>  mataria a sessao do usuario logado.)"
+log_nivel INFO "Configuracao de LightDM sera aplicada no proximo boot."
+log_nivel INFO "(NAO reiniciamos o DM aqui: se o bundle rodar via cron/agente,"
+log_nivel INFO "ele nao tem \$DISPLAY nem \$SSH_CONNECTION - qualquer restart"
+log_nivel INFO "mataria a sessao do usuario logado.)"
 
-echo ">>> LightDM configurado!"
+log_nivel OK "LightDM configurado!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     16,
+    ARRAY[]::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -5937,6 +6106,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -5945,7 +6115,7 @@ $SeederScript$,
 -- ============================================================================
 -- Sessao GDM3 (ordem 17) - core_session_gdm3.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Sessao GDM3',
     'core_session_gdm3.sh',
@@ -5983,6 +6153,9 @@ VALUES (
 
 (
 set -e
+
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="17-session-gdm3"
 
 echo "============================================================"
 echo "Configurar GDM3 (GNOME)"
@@ -6047,9 +6220,9 @@ if [ -z "$DESKTOP_ENV" ] && [ -f "$CONFIG_FILE" ]; then
 fi
 if [ -z "$DESKTOP_ENV" ]; then
     DESKTOP_ENV="$(detectar_de)"
-    echo ">>> DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
 else
-    echo ">>> DESKTOP_ENV: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV: $DESKTOP_ENV"
 fi
 
 # ============================================================
@@ -6062,9 +6235,9 @@ if [ -z "$DISPLAY_MANAGER" ]; then
     DISPLAY_MANAGER="$(detectar_dm_ativo)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(detectar_dm_instalado)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(dm_padrao_para_de "$DESKTOP_ENV")"
-    echo ">>> DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
 else
-    echo ">>> DISPLAY_MANAGER: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER: $DISPLAY_MANAGER"
 fi
 
 # ============================================================
@@ -6084,13 +6257,13 @@ sed -i '/^DESKTOP_ENV=/d;/^DISPLAY_MANAGER=/d' "$CONFIG_FILE"
 #    encerra este bloco (nao o bundle) e segue para 14c.
 # ============================================================
 if [ "$DISPLAY_MANAGER" != "gdm3" ]; then
-    echo ">>> DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e gdm3). Pulando."
+    log_nivel INFO "DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e gdm3). Pulando."
     echo "============================================================"
     exit 0
 fi
 
-echo ">>> Display Manager: $DISPLAY_MANAGER"
-echo ">>> Ambiente: $DESKTOP_ENV"
+log_nivel INFO "Display Manager: $DISPLAY_MANAGER"
+log_nivel INFO "Ambiente: $DESKTOP_ENV"
 
 # ============================================================
 # Verificar se GDM3 esta presente.
@@ -6101,8 +6274,8 @@ echo ">>> Ambiente: $DESKTOP_ENV"
 # esta ativo.
 # ============================================================
 if ! dpkg -l gdm3 2>/dev/null | grep -q "^ii"; then
-    echo ">>> ERRO: gdm3 nao instalado (deveria ter sido no core_packages.sh)."
-    echo ">>> Pulando configuracao do GDM3."
+    log_nivel ERRO "gdm3 nao instalado (deveria ter sido no core_packages.sh)."
+    log_nivel INFO "Pulando configuracao do GDM3."
     echo "============================================================"
     exit 0
 fi
@@ -6114,7 +6287,7 @@ echo "/usr/sbin/gdm3" > /etc/X11/default-display-manager
 # ============================================================
 # Configurar GDM3
 # ============================================================
-echo ">>> Configurando GDM3..."
+log_nivel INFO "Configurando GDM3..."
 mkdir -p /etc/gdm3
 
 cat > /etc/gdm3/daemon.conf <<EOF
@@ -6131,7 +6304,7 @@ DisallowRoot=true
 Session=${DESKTOP_ENV}
 EOF
 
-echo ">>> GDM3 configurado (daemon.conf)"
+log_nivel INFO "GDM3 configurado (daemon.conf)"
 
 # Ubuntu 24.04+: o GDM3 le WaylandEnable de /etc/gdm3/custom.conf,
 # NAO de daemon.conf. Sem isso, o GDM sobe em Wayland e quebra
@@ -6147,7 +6320,7 @@ TimedLoginEnable=false
 DisallowRoot=true
 EOF
 
-echo ">>> GDM3 configurado (custom.conf)"
+log_nivel INFO "GDM3 configurado (custom.conf)"
 
 # ============================================================
 # Configurar script de logoff via PostSession
@@ -6158,7 +6331,7 @@ echo ">>> GDM3 configurado (custom.conf)"
 # a rodar via autostart XDG dentro da sessao (ver core_logon.sh).
 # Logoff continua aqui pois so desmonta/mata processo (tolerante a
 # rodar como root).
-echo ">>> Configurando script de logoff no GDM3..."
+log_nivel INFO "Configurando script de logoff no GDM3..."
 
 POSTSESSION_FILE="/etc/gdm3/PostSession/Default"
 mkdir -p /etc/gdm3/PostSession
@@ -6174,23 +6347,23 @@ exit "${EXIT_STATUS:-0}"
 POSTSESSION
 chmod +x "$POSTSESSION_FILE"
 
-echo ">>> Script de logoff configurado no GDM3"
+log_nivel INFO "Script de logoff configurado no GDM3"
 
 # ============================================================
 # Garantir que os scripts de logon/logoff existam
 # ============================================================
-echo ">>> Verificando scripts de logon/logoff..."
+log_nivel INFO "Verificando scripts de logon/logoff..."
 for SCRIPT in seederlinux-logon seederlinux-logoff; do
     if [ ! -f "/usr/local/bin/${SCRIPT}" ]; then
-        echo ">>> AVISO: /usr/local/bin/${SCRIPT} nao encontrado."
-        echo ">>> Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
+        log_nivel AVISO "/usr/local/bin/${SCRIPT} nao encontrado."
+        log_nivel INFO "Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
     fi
 done
 
 # ============================================================
 # Desabilitar outros display managers
 # ============================================================
-echo ">>> Desabilitando outros display managers..."
+log_nivel INFO "Desabilitando outros display managers..."
 systemctl disable lightdm 2>/dev/null || true
 systemctl disable sddm 2>/dev/null || true
 
@@ -6203,16 +6376,17 @@ ln -sf /lib/systemd/system/gdm.service /etc/systemd/system/display-manager.servi
 # $DISPLAY/$SSH_CONNECTION falha quando o bundle roda via cron
 # (agente Python), matando a sessao do usuario logado.
 # ============================================================
-echo ">>> Configuracao de GDM3 sera aplicada no proximo boot."
-echo ">>> (NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
+log_nivel INFO "Configuracao de GDM3 sera aplicada no proximo boot."
+log_nivel INFO "(NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
 
-echo ">>> GDM3 configurado!"
+log_nivel OK "GDM3 configurado!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     17,
+    ARRAY[]::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -6220,6 +6394,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -6228,7 +6403,7 @@ $SeederScript$,
 -- ============================================================================
 -- Sessao SDDM (ordem 18) - core_session_sddm.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Sessao SDDM',
     'core_session_sddm.sh',
@@ -6266,6 +6441,9 @@ VALUES (
 
 (
 set -e
+
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="18-session-sddm"
 
 echo "============================================================"
 echo "Configurar SDDM (KDE)"
@@ -6330,9 +6508,9 @@ if [ -z "$DESKTOP_ENV" ] && [ -f "$CONFIG_FILE" ]; then
 fi
 if [ -z "$DESKTOP_ENV" ]; then
     DESKTOP_ENV="$(detectar_de)"
-    echo ">>> DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
 else
-    echo ">>> DESKTOP_ENV: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV: $DESKTOP_ENV"
 fi
 
 # ============================================================
@@ -6345,9 +6523,9 @@ if [ -z "$DISPLAY_MANAGER" ]; then
     DISPLAY_MANAGER="$(detectar_dm_ativo)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(detectar_dm_instalado)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(dm_padrao_para_de "$DESKTOP_ENV")"
-    echo ">>> DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
 else
-    echo ">>> DISPLAY_MANAGER: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER: $DISPLAY_MANAGER"
 fi
 
 # ============================================================
@@ -6367,13 +6545,13 @@ sed -i '/^DESKTOP_ENV=/d;/^DISPLAY_MANAGER=/d' "$CONFIG_FILE"
 #    encerra este bloco (nao o bundle).
 # ============================================================
 if [ "$DISPLAY_MANAGER" != "sddm" ]; then
-    echo ">>> DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e sddm). Pulando."
+    log_nivel INFO "DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e sddm). Pulando."
     echo "============================================================"
     exit 0
 fi
 
-echo ">>> Display Manager: $DISPLAY_MANAGER"
-echo ">>> Ambiente: $DESKTOP_ENV"
+log_nivel INFO "Display Manager: $DISPLAY_MANAGER"
+log_nivel INFO "Ambiente: $DESKTOP_ENV"
 
 # ============================================================
 # Verificar se SDDM esta presente.
@@ -6384,8 +6562,8 @@ echo ">>> Ambiente: $DESKTOP_ENV"
 # esta ativo.
 # ============================================================
 if ! dpkg -l sddm 2>/dev/null | grep -q "^ii"; then
-    echo ">>> ERRO: sddm nao instalado (deveria ter sido no core_packages.sh)."
-    echo ">>> Pulando configuracao do SDDM."
+    log_nivel ERRO "sddm nao instalado (deveria ter sido no core_packages.sh)."
+    log_nivel INFO "Pulando configuracao do SDDM."
     echo "============================================================"
     exit 0
 fi
@@ -6397,7 +6575,7 @@ echo "/usr/sbin/sddm" > /etc/X11/default-display-manager
 # ============================================================
 # Configurar SDDM
 # ============================================================
-echo ">>> Configurando SDDM..."
+log_nivel INFO "Configurando SDDM..."
 mkdir -p /etc/sddm.conf.d
 
 cat > /etc/sddm.conf.d/seederlinux.conf <<EOF
@@ -6415,7 +6593,7 @@ User=
 Session=
 EOF
 
-echo ">>> SDDM configurado"
+log_nivel INFO "SDDM configurado"
 
 # ============================================================
 # Configurar script de logoff via Xstop
@@ -6427,7 +6605,7 @@ echo ">>> SDDM configurado"
 # logon passou a rodar via autostart XDG dentro da sessao (ver
 # core_logon.sh). Logoff continua aqui pois so desmonta/mata processo
 # (tolerante a rodar como root).
-echo ">>> Configurando script de logoff no SDDM..."
+log_nivel INFO "Configurando script de logoff no SDDM..."
 
 mkdir -p /usr/share/sddm/scripts
 
@@ -6444,23 +6622,23 @@ exit "${EXIT_STATUS:-0}"
 XSTOP
 chmod +x "$XSTOP_FILE"
 
-echo ">>> Scripts de logon/logoff configurados no SDDM"
+log_nivel INFO "Scripts de logon/logoff configurados no SDDM"
 
 # ============================================================
 # Garantir que os scripts de logon/logoff existam
 # ============================================================
-echo ">>> Verificando scripts de logon/logoff..."
+log_nivel INFO "Verificando scripts de logon/logoff..."
 for SCRIPT in seederlinux-logon seederlinux-logoff; do
     if [ ! -f "/usr/local/bin/${SCRIPT}" ]; then
-        echo ">>> AVISO: /usr/local/bin/${SCRIPT} nao encontrado."
-        echo ">>> Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
+        log_nivel AVISO "/usr/local/bin/${SCRIPT} nao encontrado."
+        log_nivel INFO "Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
     fi
 done
 
 # ============================================================
 # Desabilitar outros display managers
 # ============================================================
-echo ">>> Desabilitando outros display managers..."
+log_nivel INFO "Desabilitando outros display managers..."
 systemctl disable lightdm 2>/dev/null || true
 systemctl disable gdm3 2>/dev/null || true
 
@@ -6473,16 +6651,17 @@ ln -sf /lib/systemd/system/sddm.service /etc/systemd/system/display-manager.serv
 # em $DISPLAY/$SSH_CONNECTION falha quando o bundle roda via cron
 # (agente Python), matando a sessao do usuario logado.
 # ============================================================
-echo ">>> Configuracao de SDDM sera aplicada no proximo boot."
-echo ">>> (NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
+log_nivel INFO "Configuracao de SDDM sera aplicada no proximo boot."
+log_nivel INFO "(NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
 
-echo ">>> SDDM configurado!"
+log_nivel OK "SDDM configurado!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     18,
+    ARRAY[]::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -6490,6 +6669,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -6498,7 +6678,7 @@ $SeederScript$,
 -- ============================================================================
 -- Logon Persistente (ordem 19) - core_logon.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Logon Persistente',
     'core_logon.sh',
@@ -6552,6 +6732,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="19-logon"
+
 echo "============================================================"
 echo "Logon minimalista (via autostart)"
 echo "============================================================"
@@ -6583,7 +6766,7 @@ MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
 # Isso da uma superficie de ataque MENOR que a versao anterior com
 # wildcards - e funciona em qualquer versao de sudo.
 # ============================================================
-echo ">>> Criando wrappers de mount/umount (compat sudo 1.9.x+)..."
+log_nivel INFO "Criando wrappers de mount/umount (compat sudo 1.9.x+)..."
 mkdir -p /usr/local/bin
 
 cat > /usr/local/bin/seederlinux-mount-share <<'MOUNT_WRAPPER'
@@ -6685,7 +6868,7 @@ chmod 0755 /usr/local/bin/seederlinux-umount-share
 # ============================================================
 # 2. sudoers restrito (sem wildcards - compat sudo 1.9.x+)
 # ============================================================
-echo ">>> Configurando sudoers restrito para logon..."
+log_nivel INFO "Configurando sudoers restrito para logon..."
 SUDOERS_FILE="/etc/sudoers.d/seederlinux-logon"
 cat > "$SUDOERS_FILE" <<EOF
 # SeederLinux - permissoes minimas para o logon do usuario.
@@ -6702,11 +6885,11 @@ ALL ALL=(root) NOPASSWD: SEEDERLINUX_MOUNT, SEEDERLINUX_UMOUNT, SEEDERLINUX_SYNC
 EOF
 chmod 440 "$SUDOERS_FILE"
 if ! visudo -cf "$SUDOERS_FILE"; then
-    echo ">>> ERRO: sintaxe invalida no sudoers gerado. Removendo."
+    log_nivel ERRO "sintaxe invalida no sudoers gerado. Removendo."
     rm -f "$SUDOERS_FILE"
     exit 1
 fi
-echo ">>> sudoers configurado: $SUDOERS_FILE"
+log_nivel INFO "sudoers configurado: $SUDOERS_FILE"
 
 # ============================================================
 # 3. Preparar diretorio de log (mundo-gravavel com sticky bit)
@@ -6730,7 +6913,7 @@ chmod 755 "$MOUNT_DIR"
 #    Sera chamado via autostart XDG a cada login, DENTRO da sessao
 #    do usuario (nao mais como hook do display manager).
 # ============================================================
-echo ">>> Criando script permanente: /usr/local/bin/seederlinux-logon"
+log_nivel INFO "Criando script permanente: /usr/local/bin/seederlinux-logon"
 
 cat > /usr/local/bin/seederlinux-logon <<'PERMSCRIPT'
 #!/bin/bash
@@ -6892,13 +7075,13 @@ exit 0
 PERMSCRIPT
 
 chmod 755 /usr/local/bin/seederlinux-logon
-echo ">>> Script permanente criado: /usr/local/bin/seederlinux-logon"
+log_nivel INFO "Script permanente criado: /usr/local/bin/seederlinux-logon"
 
 # ============================================================
 # 6. Registrar via autostart XDG (funciona em GNOME, Cinnamon, MATE,
 #    XFCE, KDE, LXDE/LXQt de forma padronizada - um mecanismo so)
 # ============================================================
-echo ">>> Registrando autostart..."
+log_nivel INFO "Registrando autostart..."
 mkdir -p /etc/xdg/autostart
 cat > /etc/xdg/autostart/seederlinux-logon.desktop <<EOF
 [Desktop Entry]
@@ -6912,12 +7095,13 @@ X-GNOME-Autostart-enabled=true
 X-KDE-autostart-after=panel
 EOF
 
-echo ">>> Logon minimalista instalado (via autostart)!"
+log_nivel OK "Logon minimalista instalado (via autostart)!"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     19,
+    ARRAY['core_domain.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -6925,6 +7109,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -6933,7 +7118,7 @@ $SeederScript$,
 -- ============================================================================
 -- Troca de Senha AD (ordem 20) - core_password_change.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Troca de Senha AD',
     'core_password_change.sh',
@@ -6951,6 +7136,9 @@ VALUES (
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="20-password-change"
+
 echo "============================================================"
 echo "Instalar aplicativo de troca de senha AD"
 echo "============================================================"
@@ -6958,8 +7146,8 @@ echo "============================================================"
 INSTALL_PASSWORD_CHANGER="{{INSTALL_PASSWORD_CHANGER}}"
 
 if [ "$INSTALL_PASSWORD_CHANGER" != "true" ]; then
-    echo ">>> Instalacao do trocador de senha desativada. Pulando."
-    echo ">>> [16] Trocador de senha ignorado."
+    log_nivel INFO "Instalacao do trocador de senha desativada. Pulando."
+    log_nivel INFO "[16] Trocador de senha ignorado."
     echo "============================================================"
     exit 0
 fi
@@ -6967,7 +7155,7 @@ fi
 DOMINIO="{{DOMINIO}}"
 OM_ACRONYM="{{OM_ACRONYM}}"
 
-echo ">>> Instalando aplicativo de troca de senha..."
+log_nivel INFO "Instalando aplicativo de troca de senha..."
 
 # Criar o script de troca de senha
 cat > /usr/local/bin/trocar-senha << 'EOFSCRIPT'
@@ -7071,7 +7259,7 @@ exit $?
 EOFSCRIPT
 
 chmod 755 /usr/local/bin/trocar-senha
-echo ">>> Script de troca de senha instalado em /usr/local/bin/trocar-senha"
+log_nivel INFO "Script de troca de senha instalado em /usr/local/bin/trocar-senha"
 
 # Criar entrada no menu de aplicativos
 cat > /usr/share/applications/trocar-senha.desktop << EOF
@@ -7089,7 +7277,7 @@ Categories=System;Settings;
 StartupNotify=true
 EOF
 
-echo ">>> Atalho no menu criado"
+log_nivel INFO "Atalho no menu criado"
 
 # Criar atalho na área de trabalho (todos os usuários futuros via /etc/skel)
 if [ -d /etc/skel ]; then
@@ -7106,14 +7294,15 @@ for USER_HOME in /home/*/; do
     fi
 done
 
-echo ">>> Atalhos na area de trabalho criados"
-echo ">>> Aplicativo de troca de senha instalado!"
+log_nivel INFO "Atalhos na area de trabalho criados"
+log_nivel OK "Aplicativo de troca de senha instalado!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     20,
+    ARRAY['core_domain.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -7121,6 +7310,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -7129,7 +7319,7 @@ $SeederScript$,
 -- ============================================================================
 -- Logoff Persistente (ordem 21) - core_logoff.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Logoff Persistente',
     'core_logoff.sh',
@@ -7166,6 +7356,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="21-logoff"
+
 echo "============================================================"
 echo "Logoff minimalista"
 echo "============================================================"
@@ -7181,7 +7374,7 @@ MOUNT_BASE="{{MOUNT_BASE}}"
 # ============================================================
 # 1. Criar o script PERMANENTE em /usr/local/bin/seederlinux-logoff
 # ============================================================
-echo ">>> Criando script permanente: /usr/local/bin/seederlinux-logoff"
+log_nivel INFO "Criando script permanente: /usr/local/bin/seederlinux-logoff"
 
 cat > /usr/local/bin/seederlinux-logoff <<'PERMSCRIPT'
 #!/bin/bash
@@ -7282,13 +7475,14 @@ exit 0
 PERMSCRIPT
 
 chmod 755 /usr/local/bin/seederlinux-logoff
-echo ">>> Script permanente criado: /usr/local/bin/seederlinux-logoff"
-echo ">>> Logoff minimalista instalado!"
+log_nivel INFO "Script permanente criado: /usr/local/bin/seederlinux-logoff"
+log_nivel OK "Logoff minimalista instalado!"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     21,
+    ARRAY['core_domain.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -7296,6 +7490,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -7304,7 +7499,7 @@ $SeederScript$,
 -- ============================================================================
 -- Proxy de CLI (ordem 22) - core_proxy.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Proxy de CLI',
     'core_proxy.sh',
@@ -7343,6 +7538,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="22-proxy"
+
 echo "============================================================"
 echo "Configurar proxy de CLI"
 echo "============================================================"
@@ -7365,9 +7563,9 @@ PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
 [ -z "$CLI_POLICY" ] && CLI_POLICY="DIRECT"
 SEEDER_SERVER="${SEEDER_SERVER%/}"
 
-echo ">>> CLI_POLICY: $CLI_POLICY"
-echo ">>> CLI_PROXY_NAME: ${CLI_PROXY_NAME:-<default>}"
-echo ">>> Proxies cadastrados: $PROXY_COUNT"
+log_nivel INFO "CLI_POLICY: $CLI_POLICY"
+log_nivel INFO "CLI_PROXY_NAME: ${CLI_PROXY_NAME:-<default>}"
+log_nivel INFO "Proxies cadastrados: $PROXY_COUNT"
 
 # ============================================================
 # Helper: resolver proxy por nome -> URL com user:pass
@@ -7528,9 +7726,9 @@ _escrever_environment_proxy() {
 
     chmod 644 /etc/environment
 
-    echo ">>> /etc/environment atualizado"
-    echo ">>>   http_proxy=${url}"
-    echo ">>>   no_proxy=${no_proxy}"
+    log_nivel INFO "/etc/environment atualizado"
+    log_nivel INFO "http_proxy=${url}"
+    log_nivel INFO "no_proxy=${no_proxy}"
 }
 
 # ============================================================
@@ -7542,7 +7740,7 @@ _limpar_environment_proxy() {
         sed -i '/^HTTP_PROXY=/d;/^HTTPS_PROXY=/d;/^FTP_PROXY=/d;/^NO_PROXY=/d' /etc/environment 2>/dev/null || true
         sed -i '/^all_proxy=/d;/^ALL_PROXY=/d' /etc/environment 2>/dev/null || true
         sed -i '/^# Proxy configurado por SeederLinux/d' /etc/environment 2>/dev/null || true
-        echo ">>> /etc/environment limpo (sem proxy)"
+        log_nivel INFO "/etc/environment limpo (sem proxy)"
     fi
 }
 
@@ -7552,21 +7750,21 @@ _limpar_environment_proxy() {
 case "$CLI_POLICY" in
 
     DIRECT|"")
-        echo ">>> Policy: DIRECT - sem proxy para CLI."
+        log_nivel INFO "Policy: DIRECT - sem proxy para CLI."
         _limpar_environment_proxy
         ;;
 
     PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
         NOME_EFETIVO="$(_resolver_proxy_nome_efetivo)"
         if [ -z "$NOME_EFETIVO" ]; then
-            echo ">>> ERRO: CLI_POLICY=$CLI_POLICY mas nenhum proxy configurado."
-            echo ">>> Configurando CLI como DIRECT para nao travar o bundle."
+            log_nivel ERRO "CLI_POLICY=$CLI_POLICY mas nenhum proxy configurado."
+            log_nivel INFO "Configurando CLI como DIRECT para nao travar o bundle."
             _limpar_environment_proxy
         else
             URL="$(_resolver_proxy_url "$NOME_EFETIVO")" || URL=""
             if [ -z "$URL" ]; then
-                echo ">>> ERRO: proxy '$NOME_EFETIVO' nao encontrado na lista de proxies da OM."
-                echo ">>> Configurando CLI como DIRECT para nao travar o bundle."
+                log_nivel ERRO "proxy '$NOME_EFETIVO' nao encontrado na lista de proxies da OM."
+                log_nivel INFO "Configurando CLI como DIRECT para nao travar o bundle."
                 _limpar_environment_proxy
             else
                 NO_PROXY_ESPECIFICO="$(_resolver_proxy_no_proxy "$NOME_EFETIVO")" || NO_PROXY_ESPECIFICO=""
@@ -7577,26 +7775,26 @@ case "$CLI_POLICY" in
         ;;
 
     PAC)
-        echo ">>> AVISO: PAC nao e suportado por wget/curl/git."
-        echo ">>>        Ferramentas de CLI so entendem proxy explicito, nao PAC."
-        echo ">>>        Para browsers (que suportam PAC), configure BROWSER_POLICY=PAC."
-        echo ">>>        Aplicando DIRECT para CLI."
+        log_nivel AVISO "PAC nao e suportado por wget/curl/git."
+        log_nivel INFO "Ferramentas de CLI so entendem proxy explicito, nao PAC."
+        log_nivel INFO "Para browsers (que suportam PAC), configure BROWSER_POLICY=PAC."
+        log_nivel INFO "Aplicando DIRECT para CLI."
         _limpar_environment_proxy
         ;;
 
     *)
-        echo ">>> AVISO: CLI_POLICY desconhecida '$CLI_POLICY'. Tratando como DIRECT."
+        log_nivel AVISO "CLI_POLICY desconhecida '$CLI_POLICY'. Tratando como DIRECT."
         _limpar_environment_proxy
         ;;
 esac
 
-echo ">>> Proxy de CLI configurado!"
+log_nivel OK "Proxy de CLI configurado!"
 
 # ============================================================
 # Gerar resolve-proxy.sh — funções compartilhadas para
 # core_logon.sh e seeder-sync resolverem o proxy por grupo do AD.
 # ============================================================
-echo ">>> Gerando /usr/local/lib/seederlinux/resolve-proxy.sh..."
+log_nivel INFO "Gerando /usr/local/lib/seederlinux/resolve-proxy.sh..."
 mkdir -p /usr/local/lib/seederlinux
 cat > /usr/local/lib/seederlinux/resolve-proxy.sh <<'RESOLVE_EOF'
 # resolve-proxy.sh — funções compartilhadas entre core_logon e seeder-sync.
@@ -7652,13 +7850,14 @@ _proxy_no_proxy_por_index() {
 }
 RESOLVE_EOF
 chmod 644 /usr/local/lib/seederlinux/resolve-proxy.sh
-echo ">>> resolve-proxy.sh gerado."
+log_nivel INFO "resolve-proxy.sh gerado."
 
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     22,
+    ARRAY['core_domain.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -7666,6 +7865,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -7674,7 +7874,7 @@ $SeederScript$,
 -- ============================================================================
 -- Agente SeederLinux (ordem 23) - core_agent.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Agente SeederLinux',
     'core_agent.sh',
@@ -7708,13 +7908,16 @@ VALUES (
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="23-agent"
+
 echo "============================================================"
 echo "Instalar agente de check-in (seeder-agent)"
 echo "============================================================"
 
 INSTALL_AGENT="{{INSTALL_AGENT}}"
 if [ "$INSTALL_AGENT" != "true" ]; then
-    echo ">>> Instalacao do agente desativada (INSTALL_AGENT=false). Pulando."
+    log_nivel INFO "Instalacao do agente desativada (INSTALL_AGENT=false). Pulando."
     echo "============================================================"
     exit 0
 fi
@@ -7725,9 +7928,9 @@ AGENT_NO_CHECK_CERT="{{AGENT_NO_CHECK_CERT}}"
 
 SEEDER_SERVER="${SEEDER_SERVER%/}"
 
-echo ">>> Servidor: $SEEDER_SERVER"
-echo ">>> Organizacao: $OM_ACRONYM"
-echo ">>> Ignorar cert SSL: $AGENT_NO_CHECK_CERT"
+log_nivel INFO "Servidor: $SEEDER_SERVER"
+log_nivel INFO "Organizacao: $OM_ACRONYM"
+log_nivel INFO "Ignorar cert SSL: $AGENT_NO_CHECK_CERT"
 
 # ============================================================
 # Montar flag do certificado
@@ -7745,7 +7948,7 @@ fi
 # tiver http_proxy configurado (por OM com proxy de CLI), o wget
 # tenta passar pelo proxy e recebe 407.
 
-echo ">>> Baixando agente de ${SEEDER_SERVER}/downloads/agent.py ..."
+log_nivel INFO "Baixando agente de ${SEEDER_SERVER}/downloads/agent.py ..."
 mkdir -p /usr/local/bin
 
 AGENT_URL="${SEEDER_SERVER}/downloads/agent.py"
@@ -7753,24 +7956,24 @@ AGENT_TMP="/tmp/seeder-agent-download.$$"
 
 if wget -q --no-check-certificate --no-proxy --timeout=30 -O "$AGENT_TMP" "$AGENT_URL"; then
     if [ ! -s "$AGENT_TMP" ]; then
-        echo ">>> ERRO: Agente baixado mas arquivo esta vazio. Verifique $AGENT_URL"
+        log_nivel ERRO "Agente baixado mas arquivo esta vazio. Verifique $AGENT_URL"
         rm -f "$AGENT_TMP"
         echo "============================================================"
         exit 1
     fi
     install -m 0755 "$AGENT_TMP" /usr/local/bin/seeder-agent
     rm -f "$AGENT_TMP"
-    echo ">>> Agente instalado em /usr/local/bin/seeder-agent"
+    log_nivel INFO "Agente instalado em /usr/local/bin/seeder-agent"
 
     # Sanity check: verifica que o arquivo tem o cabecalho esperado
     if ! head -5 /usr/local/bin/seeder-agent | grep -q "SeederLinux"; then
-        echo ">>> AVISO: agente baixado nao parece ser o esperado."
-        echo ">>>        Primeiras linhas:"
+        log_nivel AVISO "agente baixado nao parece ser o esperado."
+        log_nivel INFO "Primeiras linhas:"
         head -3 /usr/local/bin/seeder-agent | sed 's/^/    /'
     fi
 else
-    echo ">>> ERRO: Falha ao baixar o agente de $AGENT_URL"
-    echo ">>>        Verifique conectividade L3 com o Seeder."
+    log_nivel ERRO "Falha ao baixar o agente de $AGENT_URL"
+    log_nivel INFO "Verifique conectividade L3 com o Seeder."
     rm -f "$AGENT_TMP"
     echo "============================================================"
     exit 1
@@ -7801,23 +8004,24 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 chmod 644 /etc/cron.d/seeder-agent
 
-echo ">>> Cron configurado: /etc/cron.d/seeder-agent"
+log_nivel INFO "Cron configurado: /etc/cron.d/seeder-agent"
 
 # ============================================================
 # Primeiro check-in (em background, sem bloquear o bundle)
 # ============================================================
-echo ">>> Executando primeiro check-in em background..."
+log_nivel INFO "Executando primeiro check-in em background..."
 mkdir -p /var/log/seeder
 nohup /usr/local/bin/seeder-agent --org "$OM_ACRONYM" --no-check-certificate \
     > /tmp/seeder-first-checkin.log 2>&1 &
 
-echo ">>> Agente instalado e agendado!"
+log_nivel OK "Agente instalado e agendado!"
 echo "============================================================"
 )
 $SeederScript$,
     TRUE,
     TRUE,
     23,
+    ARRAY['core_proxy.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -7825,6 +8029,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;
@@ -7833,7 +8038,7 @@ $SeederScript$,
 -- ============================================================================
 -- Aplicador de Politicas (seeder-sync) (ordem 24) - core_sync.sh
 -- ============================================================================
-INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)
+INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)
 VALUES (
     'Aplicador de Politicas (seeder-sync)',
     'core_sync.sh',
@@ -7863,6 +8068,9 @@ VALUES (
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="24-sync"
+
 echo "============================================================"
 echo "Instalar seeder-sync (aplicador GPO) + timer systemd"
 echo "============================================================"
@@ -7873,7 +8081,7 @@ mkdir -p /var/log/seederlinux
 # ============================================================
 # 1. Script principal /usr/local/bin/seeder-sync
 # ============================================================
-echo ">>> Criando /usr/local/bin/seeder-sync..."
+log_nivel INFO "Criando /usr/local/bin/seeder-sync..."
 
 cat > /usr/local/bin/seeder-sync <<'SYNCSCRIPT'
 #!/bin/bash
@@ -8414,6 +8622,17 @@ sync_branding() {
     mkdir -p /usr/share/backgrounds/seederlinux /usr/share/pixmaps
     chmod 0755 /usr/share/backgrounds/seederlinux /usr/share/pixmaps
 
+    local STATE_ASSETS="/etc/seederlinux/sync-assets.state"
+    local LAST_WALLPAPER_URL="" LAST_WALLPAPER_LOGIN_URL="" LAST_LOGO_URL=""
+    if [ -f "$STATE_ASSETS" ]; then
+        # shellcheck disable=SC1090
+        source "$STATE_ASSETS"
+    fi
+    local WP_FULL WP_LOGIN_FULL LOGO_FULL
+    WP_FULL="$(_prefixar_seeder_url "${WALLPAPER_URL:-}")"
+    WP_LOGIN_FULL="$(_prefixar_seeder_url "${WALLPAPER_LOGIN_URL:-}")"
+    LOGO_FULL="$(_prefixar_seeder_url "${LOGO_URL:-}")"
+
     _baixar_ativo() {
         local url
         url="$(_prefixar_seeder_url "$1")"
@@ -8443,9 +8662,15 @@ sync_branding() {
         echo "OK: $(basename "$dest") ($mime)"
     }
 
-    [ -n "${WALLPAPER_URL:-}" ] && _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
-    [ -n "${WALLPAPER_LOGIN_URL:-}" ] && _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
-    [ -n "${LOGO_URL:-}" ] && _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
+    if [ -n "$WP_FULL" ] && { [ "$WP_FULL" != "$LAST_WALLPAPER_URL" ] || [ ! -s /usr/share/backgrounds/seederlinux/wallpaper.jpg ]; }; then
+        _baixar_ativo "$WP_FULL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
+    fi
+    if [ -n "$WP_LOGIN_FULL" ] && { [ "$WP_LOGIN_FULL" != "$LAST_WALLPAPER_LOGIN_URL" ] || [ ! -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; }; then
+        _baixar_ativo "$WP_LOGIN_FULL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+    fi
+    if [ -n "$LOGO_FULL" ] && { [ "$LOGO_FULL" != "$LAST_LOGO_URL" ] || [ ! -s /usr/share/pixmaps/seederlinux-logo.png ]; }; then
+        _baixar_ativo "$LOGO_FULL" /usr/share/pixmaps/seederlinux-logo.png
+    fi
 
     local LOGIN_WP="/usr/share/backgrounds/seederlinux/wallpaper-login.jpg"
     local SESSION_WP="/usr/share/backgrounds/seederlinux/wallpaper.jpg"
@@ -8506,6 +8731,13 @@ EOF
             ;;
     esac
 
+    {
+        echo "LAST_WALLPAPER_URL=\"$WP_FULL\""
+        echo "LAST_WALLPAPER_LOGIN_URL=\"$WP_LOGIN_FULL\""
+        echo "LAST_LOGO_URL=\"$LOGO_FULL\""
+    } > "$STATE_ASSETS"
+    chmod 600 "$STATE_ASSETS"
+
     case "$DISPLAY_MANAGER" in
         lightdm)
             if [ -s "$LOGIN_WP" ]; then
@@ -8543,13 +8775,16 @@ sync_printers() {
     command -v cupsctl &>/dev/null || { echo "CUPS nao instalado, pulando"; return 0; }
 
     systemctl enable cups 2>/dev/null || true
-    systemctl start cups 2>/dev/null || true
+    if ! systemctl is-active --quiet cups; then
+        systemctl start cups 2>/dev/null || true
+    fi
     cupsctl --remote-admin --remote-any --share-printers 2>/dev/null || true
 
-    cat > /etc/cups/client.conf <<EOF
-# Cliente CUPS - SeederLinux
-ServerName ${PRINT_SERVER}
-EOF
+    local PREV NEW
+    PREV="$(cat /etc/cups/client.conf 2>/dev/null || true)"
+    NEW="# Cliente CUPS - SeederLinux
+ServerName ${PRINT_SERVER}"
+    printf '%s\n' "$NEW" > /etc/cups/client.conf
 
     if [ -n "${PRINTERS:-}" ]; then
         for PRINTER in $PRINTERS; do
@@ -8561,7 +8796,9 @@ EOF
     fi
 
     [ -n "${DEFAULT_PRINTER:-}" ] && lpadmin -d "$DEFAULT_PRINTER" 2>/dev/null || true
-    systemctl restart cups 2>/dev/null || true
+    if [ "$PREV" != "$NEW" ]; then
+        systemctl restart cups 2>/dev/null || true
+    fi
 }
 
 # ============================================================
@@ -8844,7 +9081,7 @@ echo "=== seeder-sync concluido: $(date -Is) ==="
 SYNCSCRIPT
 
 chmod 750 /usr/local/bin/seeder-sync
-echo ">>> /usr/local/bin/seeder-sync criado"
+log_nivel INFO "/usr/local/bin/seeder-sync criado"
 
 # ============================================================
 # 2. Units systemd
@@ -8877,12 +9114,13 @@ systemctl daemon-reload
 systemctl enable --now seeder-sync.timer
 systemctl start seeder-sync.service 2>/dev/null || true
 
-echo ">>> seeder-sync instalado e timer ativo (10min)"
+log_nivel INFO "seeder-sync instalado e timer ativo (10min)"
 echo "============================================================"
 $SeederScript$,
     TRUE,
     TRUE,
     24,
+    ARRAY['core_dns.sh', 'core_ntp.sh', 'core_repositories.sh', 'core_packages.sh', 'core_legados.sh', 'core_apps.sh', 'core_domain.sh', 'core_ssh.sh', 'core_browser.sh', 'core_inventory.sh', 'core_printers.sh', 'core_vnc.sh', 'core_conky.sh', 'core_config.sh', 'core_branding.sh', 'core_session_lightdm.sh', 'core_session_gdm3.sh', 'core_session_sddm.sh', 'core_logon.sh', 'core_password_change.sh', 'core_logoff.sh', 'core_proxy.sh', 'core_agent.sh']::TEXT[],
     1,
     NULL
 ) ON CONFLICT (filename) DO UPDATE SET
@@ -8890,6 +9128,7 @@ $SeederScript$,
     description = EXCLUDED.description,
     content = EXCLUDED.content,
     execution_order = EXCLUDED.execution_order,
+    depends_on = EXCLUDED.depends_on,
     version = EXCLUDED.version,
     is_active = EXCLUDED.is_active,
     updated_at = CURRENT_TIMESTAMP;

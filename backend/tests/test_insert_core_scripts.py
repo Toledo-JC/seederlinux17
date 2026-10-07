@@ -2,9 +2,9 @@
 Regression tests for /app/install/insert_core_scripts.sql
 
 Validates that the file:
-- Contains exactly 22 INSERT ... ON CONFLICT (filename) blocks
+- Contains exactly 24 INSERT ... ON CONFLICT (filename) blocks
 - Uses PostgreSQL dollar-quoting ($SeederScript$) instead of backslash escaping
-- Loads all 22 core scripts into the DB with byte-identical content
+- Loads all 24 core scripts into the DB with byte-identical content
 - Preserves execution order, special characters and {PLACEHOLDER} tokens
 - Is idempotent (safe to re-run)
 
@@ -43,14 +43,15 @@ def _read():
         return f.read().decode("utf-8", errors="replace")
 
 
-def test_on_conflict_count_is_22():
-    assert _read().count("ON CONFLICT (filename)") == 22
+def test_on_conflict_count_is_24():
+    assert _read().count("ON CONFLICT (filename)") == 24
 
 
-def test_insert_statement_count_is_22():
+def test_insert_statement_count_is_24():
     content = _read()
     lines = [l for l in content.splitlines() if l.startswith("INSERT INTO scripts")]
-    assert len(lines) == 22
+    assert len(lines) == 24
+    assert all("depends_on" in line for line in lines)
 
 
 def test_no_backslash_escaped_quotes():
@@ -59,34 +60,42 @@ def test_no_backslash_escaped_quotes():
 
 
 def test_dollar_quoting_markers_present():
-    # 22 open + 22 close = 44 quoting markers (plus possibly comments)
+    # 24 open + 24 close = 48 quoting markers (plus possibly comments)
     count = _read().count("$SeederScript$")
-    # Allow >= 44 to accept explanatory header comment mentioning the tag once
-    assert count >= 44
+    # Allow >= 48 to accept explanatory header comment mentioning the tag once
+    assert count >= 48
     # And even number of actual delimiters after removing comment occurrences
     non_comment = sum(
         1 for line in _read().splitlines()
         if "$SeederScript$" in line and not line.lstrip().startswith("--")
     )
-    assert non_comment == 44
+    assert non_comment == 48
+
+
+def test_dependency_arrays_are_generated():
+    content = _read()
+    assert content.count("::TEXT[]") == 24
+    assert "ARRAY['core_dns.sh']::TEXT[]" in content
+    assert "ARRAY[]::TEXT[]" in content
 
 
 # --- Database load checks ---
 
-def test_all_22_core_scripts_present_in_db():
-    assert psql("SELECT COUNT(*) FROM scripts WHERE is_core = TRUE;") == "22"
+def test_all_24_core_scripts_present_in_db():
+    assert psql("SELECT COUNT(*) FROM scripts WHERE is_core = TRUE;") == "24"
 
 
 def test_execution_order_matches_spec():
     expected = [
-        (1, "core_dns.sh"), (2, "core_repositories.sh"), (3, "core_packages.sh"),
-        (4, "core_legados.sh"), (5, "core_apps.sh"), (6, "core_domain.sh"),
-        (7, "core_ssh.sh"), (8, "core_browser.sh"), (9, "core_inventory.sh"),
-        (10, "core_printers.sh"), (11, "core_vnc.sh"), (12, "core_conky.sh"),
-        (13, "core_config.sh"), (14, "core_branding.sh"), (15, "core_logon.sh"),
-        (16, "core_password_change.sh"), (17, "core_logoff.sh"),
-        (18, "core_session_lightdm.sh"), (19, "core_session_gdm3.sh"),
-        (20, "core_session_sddm.sh"), (21, "core_agent.sh"), (22, "core_proxy.sh"),
+        (1, "core_dns.sh"), (2, "core_ntp.sh"), (3, "core_repositories.sh"),
+        (4, "core_packages.sh"), (5, "core_legados.sh"), (6, "core_apps.sh"),
+        (7, "core_domain.sh"), (8, "core_ssh.sh"), (9, "core_browser.sh"),
+        (10, "core_inventory.sh"), (11, "core_printers.sh"), (12, "core_vnc.sh"),
+        (13, "core_conky.sh"), (14, "core_config.sh"), (15, "core_branding.sh"),
+        (16, "core_session_lightdm.sh"), (17, "core_session_gdm3.sh"),
+        (18, "core_session_sddm.sh"), (19, "core_logon.sh"),
+        (20, "core_password_change.sh"), (21, "core_logoff.sh"),
+        (22, "core_proxy.sh"), (23, "core_agent.sh"), (24, "core_sync.sh"),
     ]
     rows = psql(
         "SELECT execution_order || '|' || filename FROM scripts "
@@ -114,7 +123,7 @@ def test_idempotent_reload():
         capture_output=True, text=True, env=env,
     )
     assert r.returncode == 0, r.stderr
-    assert psql("SELECT COUNT(*) FROM scripts WHERE is_core = TRUE;") == "22"
+    assert psql("SELECT COUNT(*) FROM scripts WHERE is_core = TRUE;") == "24"
 
 
 def test_special_char_ifs_preserved():

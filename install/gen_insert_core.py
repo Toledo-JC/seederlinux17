@@ -10,41 +10,55 @@ SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 OUTPUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'insert_core_scripts.sql')
 TAG = '$SeederScript$'
 
-# Ordem de execucao + nome legivel + descricao
+# Ordem de execucao + nome legivel + descricao + dependencias
 # Ordem canonica (Core Pipeline V2, Commit 3a): core_ntp.sh entra no lugar 02 e
 # os demais scripts deslocam +1. O order_index numerico vem da posicao no bundle.
 # Keep this catalog synchronized with scripts/core and the official execution order.
 CATALOG = [
-    # (execution_order, filename, name, description)
-    (1,  'core_dns.sh',              'DNS e resolucao de nomes',                 'Configura DNS temporario e /etc/hosts. Roda ANTES de repositorios para permitir apt-get update.'),
-    (2,  'core_ntp.sh',              'Sincronizacao de Horario (NTP adaptativo)', 'Descobre o cliente NTP que funciona com o servidor da OM, sincroniza o relogio e persiste o cliente vencedor em /etc/seederlinux/ntp-state.env.'),
-    (3,  'core_repositories.sh',     'Configuracao de Repositorios APT',          'Configura repositorios APT (oficial, espelho ou customizado) apos o DNS estar resolvendo.'),
-    (4,  'core_packages.sh',         'Instalacao de Pacotes Essenciais',          'Instala TODOS os pacotes necessarios (sistema, OCS, CUPS, VNC, Conky, Java, etc).'),
-    (5,  'core_legados.sh',          'Suporte a Sistemas Legados',                'Instala Java 8 e Firefox 52 ESR para compatibilidade com sistemas legados.'),
-    (6,  'core_apps.sh',             'Instalacao de Aplicativos Extras',          'Instala aplicacoes extras (OnlyOffice, Chrome, etc).'),
-    (7,  'core_domain.sh',           'Ingresso em Dominio AD',                    'Ingressa a estacao no Active Directory (SSSD/Winbind com fallback).'),
-    (8,  'core_ssh.sh',              'Configuracao SSH',                          'Configura acesso SSH e politicas de seguranca.'),
-    (9,  'core_browser.sh',          'Politicas de Navegadores',                  'Configura Firefox ESR e Chrome (homepage, proxy, bookmarks) via politicas corporativas.'),
-    (10, 'core_inventory.sh',        'Inventario OCS',                            'Configura OCS Inventory Agent (sem apt-get; pacote instalado em core_packages.sh).'),
-    (11, 'core_printers.sh',         'Configuracao de Impressoras',               'Configura CUPS e impressoras via servidor remoto.'),
-    (12, 'core_vnc.sh',              'Configuracao VNC',                          'Configura x11vnc para acesso remoto assistido.'),
-    (13, 'core_conky.sh',            'Configuracao do Conky',                     'Configura o Conky (monitor de sistema no desktop) com perfil dinamico via JSON.'),
-    (14, 'core_config.sh',           'Configuracao Persistente',                  'Configuracoes diversas do sistema (sysctl, limits, etc).'),
-    (15, 'core_branding.sh',         'Identidade Visual',                         'Aplica wallpaper, logo, tema GTK e branding da OM.'),
-    (16, 'core_session_lightdm.sh',  'Sessao LightDM',                            'Configura LightDM como display manager (autoselecao via DISPLAY_MANAGER=lightdm).'),
-    (17, 'core_session_gdm3.sh',     'Sessao GDM3',                               'Configura GDM3 como display manager (autoselecao via DISPLAY_MANAGER=gdm3).'),
-    (18, 'core_session_sddm.sh',     'Sessao SDDM',                               'Configura SDDM como display manager (autoselecao via DISPLAY_MANAGER=sddm).'),
-    (19, 'core_logon.sh',            'Logon Persistente',                         'Script executado a cada logon de usuario (multi-DE).'),
-    (20, 'core_password_change.sh',  'Troca de Senha AD',                         'Configura a alteracao de senha do usuario no dominio.'),
-    (21, 'core_logoff.sh',           'Logoff Persistente',                        'Script executado a cada logoff de usuario.'),
-    (22, 'core_proxy.sh',            'Proxy de CLI',                              'Configura proxy corporativo no sistema (apt, curl, wget, env).'),
-    (23, 'core_agent.sh',            'Agente SeederLinux',                        'Instala e configura o agente SeederLinux.'),
-    (24, 'core_sync.sh',             'Aplicador de Politicas (seeder-sync)',      'Instala o seeder-sync e um timer systemd (10 em 10 minutos) que reaplica de forma idempotente toda a configuracao corporativa da OM (estilo GPO).'),
+    # (execution_order, filename, name, description, depends_on)
+    (1,  'core_dns.sh',              'DNS e resolucao de nomes',                 'Configura DNS temporario e /etc/hosts. Roda ANTES de repositorios para permitir apt-get update.', []),
+    (2,  'core_ntp.sh',              'Sincronizacao de Horario (NTP adaptativo)', 'Descobre o cliente NTP que funciona com o servidor da OM, sincroniza o relogio e persiste o cliente vencedor em /etc/seederlinux/ntp-state.env.', ['core_dns.sh']),
+    (3,  'core_repositories.sh',     'Configuracao de Repositorios APT',          'Configura repositorios APT (oficial, espelho ou customizado) apos o DNS estar resolvendo.', ['core_dns.sh']),
+    (4,  'core_packages.sh',         'Instalacao de Pacotes Essenciais',          'Instala TODOS os pacotes necessarios (sistema, OCS, CUPS, VNC, Conky, Java, etc).', ['core_dns.sh', 'core_repositories.sh']),
+    (5,  'core_legados.sh',          'Suporte a Sistemas Legados',                'Instala Java 8 e Firefox 52 ESR para compatibilidade com sistemas legados.', ['core_dns.sh', 'core_repositories.sh', 'core_packages.sh']),
+    (6,  'core_apps.sh',             'Instalacao de Aplicativos Extras',          'Instala aplicacoes extras (OnlyOffice, Chrome, etc).', ['core_dns.sh', 'core_repositories.sh', 'core_packages.sh']),
+    (7,  'core_domain.sh',           'Ingresso em Dominio AD',                    'Ingressa a estacao no Active Directory (SSSD/Winbind com fallback).', ['core_dns.sh', 'core_ntp.sh', 'core_packages.sh']),
+    (8,  'core_ssh.sh',              'Configuracao SSH',                          'Configura acesso SSH e politicas de seguranca.', ['core_domain.sh']),
+    (9,  'core_browser.sh',          'Politicas de Navegadores',                  'Configura Firefox ESR e Chrome (homepage, proxy, bookmarks) via politicas corporativas.', ['core_domain.sh']),
+    (10, 'core_inventory.sh',        'Inventario OCS',                            'Configura OCS Inventory Agent (sem apt-get; pacote instalado em core_packages.sh).', ['core_domain.sh']),
+    (11, 'core_printers.sh',         'Configuracao de Impressoras',               'Configura CUPS e impressoras via servidor remoto.', ['core_domain.sh']),
+    (12, 'core_vnc.sh',              'Configuracao VNC',                          'Configura x11vnc para acesso remoto assistido.', ['core_packages.sh']),
+    (13, 'core_conky.sh',            'Configuracao do Conky',                     'Configura o Conky (monitor de sistema no desktop) com perfil dinamico via JSON.', ['core_packages.sh']),
+    (14, 'core_config.sh',           'Configuracao Persistente',                  'Configuracoes diversas do sistema (sysctl, limits, etc).', ['core_packages.sh']),
+    (15, 'core_branding.sh',         'Identidade Visual',                         'Aplica wallpaper, logo, tema GTK e branding da OM.', ['core_config.sh']),
+    (16, 'core_session_lightdm.sh',  'Sessao LightDM',                            'Configura LightDM como display manager (autoselecao via DISPLAY_MANAGER=lightdm).', []),
+    (17, 'core_session_gdm3.sh',     'Sessao GDM3',                               'Configura GDM3 como display manager (autoselecao via DISPLAY_MANAGER=gdm3).', []),
+    (18, 'core_session_sddm.sh',     'Sessao SDDM',                               'Configura SDDM como display manager (autoselecao via DISPLAY_MANAGER=sddm).', []),
+    (19, 'core_logon.sh',            'Logon Persistente',                         'Script executado a cada logon de usuario (multi-DE).', ['core_domain.sh']),
+    (20, 'core_password_change.sh',  'Troca de Senha AD',                         'Configura a alteracao de senha do usuario no dominio.', ['core_domain.sh']),
+    (21, 'core_logoff.sh',           'Logoff Persistente',                        'Script executado a cada logoff de usuario.', ['core_domain.sh']),
+    (22, 'core_proxy.sh',            'Proxy de CLI',                              'Configura proxy corporativo no sistema (apt, curl, wget, env).', ['core_domain.sh']),
+    (23, 'core_agent.sh',            'Agente SeederLinux',                        'Instala e configura o agente SeederLinux.', ['core_proxy.sh']),
+    (24, 'core_sync.sh',             'Aplicador de Politicas (seeder-sync)',      'Instala o seeder-sync e um timer systemd (10 em 10 minutos) que reaplica de forma idempotente toda a configuracao corporativa da OM (estilo GPO).', [
+        'core_dns.sh', 'core_ntp.sh', 'core_repositories.sh', 'core_packages.sh',
+        'core_legados.sh', 'core_apps.sh', 'core_domain.sh', 'core_ssh.sh',
+        'core_browser.sh', 'core_inventory.sh', 'core_printers.sh', 'core_vnc.sh',
+        'core_conky.sh', 'core_config.sh', 'core_branding.sh',
+        'core_session_lightdm.sh', 'core_session_gdm3.sh', 'core_session_sddm.sh',
+        'core_logon.sh', 'core_password_change.sh', 'core_logoff.sh',
+        'core_proxy.sh', 'core_agent.sh',
+    ]),
 ]
 
 def escape_sql_literal(s: str) -> str:
     """Escapa apenas para strings SQL curtas (name/description). Duplica aspas simples."""
     return s.replace("'", "''")
+
+
+def sql_text_array(values):
+    """Serializa nomes de arquivos em um array PostgreSQL text[]."""
+    items = ", ".join(f"'{escape_sql_literal(value)}'" for value in values)
+    return f"ARRAY[{items}]::TEXT[]"
 
 def main():
     header = """-- ============================================================================
@@ -70,6 +84,7 @@ def main():
         "    description = EXCLUDED.description,\n"
         "    content = EXCLUDED.content,\n"
         "    execution_order = EXCLUDED.execution_order,\n"
+        "    depends_on = EXCLUDED.depends_on,\n"
         "    version = EXCLUDED.version,\n"
         "    is_active = EXCLUDED.is_active,\n"
         "    updated_at = CURRENT_TIMESTAMP;\n"
@@ -77,7 +92,7 @@ def main():
 
     missing = []
     tag_collisions = []
-    for order, filename, name, description in CATALOG:
+    for order, filename, name, description, depends_on in CATALOG:
         path = os.path.join(SCRIPTS_DIR, filename)
         if not os.path.isfile(path):
             missing.append(filename)
@@ -95,7 +110,7 @@ def main():
             f"-- ============================================================================\n"
             f"-- {name} (ordem {order}) - {filename}\n"
             f"-- ============================================================================\n"
-            f"INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, version, organization_id)\n"
+            f"INSERT INTO scripts (name, filename, description, content, is_core, is_active, execution_order, depends_on, version, organization_id)\n"
             f"VALUES (\n"
             f"    '{escape_sql_literal(name)}',\n"
             f"    '{escape_sql_literal(filename)}',\n"
@@ -104,6 +119,7 @@ def main():
             f"    TRUE,\n"
             f"    TRUE,\n"
             f"    {order},\n"
+            f"    {sql_text_array(depends_on)},\n"
             f"    1,\n"
             f"    NULL\n"
             f") {on_conflict}\n"
@@ -118,11 +134,27 @@ def main():
         sys.exit(1)
 
     # Validacao da ordem canonica: 1..24, sem gaps nem duplicados
-    orders = sorted(order for order, _f, _n, _d in CATALOG)
-    expected = list(range(1, len(CATALOG) + 1))
+    orders = sorted(order for order, _f, _n, _d, _deps in CATALOG)
+    expected = list(range(1, 25))
     if orders != expected:
-        print(f"ERRO: execution_order invalido (esperado {expected[0]}..{expected[-1]}): {orders}", file=sys.stderr)
+        print(f"ERRO: execution_order invalido (esperado 1..24): {orders}", file=sys.stderr)
         sys.exit(1)
+
+    positions = {filename: order for order, filename, _name, _description, _deps in CATALOG}
+    for order, filename, _name, _description, depends_on in CATALOG:
+        for dependency in depends_on:
+            if dependency not in positions:
+                print(f"ERRO: {filename} depende de {dependency}, que nao esta no CATALOG.", file=sys.stderr)
+                sys.exit(1)
+            if positions[dependency] >= order:
+                print(
+                    f"ERRO: {filename} (posicao {order}) depende de {dependency} "
+                    f"(posicao {positions[dependency]}), mas a dependencia vem DEPOIS.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+    print("OK: 24 scripts, ordem 1..24, dependencias validas.", file=sys.stderr)
 
     footer = """
 -- ============================================================================
