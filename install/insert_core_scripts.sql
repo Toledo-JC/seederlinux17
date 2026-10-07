@@ -3184,24 +3184,38 @@ if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
                 fi
             fi
         done
-        if [ -n "$GRP_LIST" ]; then
-            sed -i "s/^#*AllowGroups .*/AllowGroups $GRP_LIST/" /etc/ssh/sshd_config
-            if ! grep -q "^AllowGroups " /etc/ssh/sshd_config; then
-                echo "AllowGroups $GRP_LIST" >> /etc/ssh/sshd_config
-            fi
-            log_nivel INFO "AllowGroups configurado: $GRP_LIST"
-        fi
     fi
 fi
 
-# Validar grupos do AllowGroups (evita lockout silencioso)
+# Filtrar grupos: só escrever no AllowGroups os que existem via getent.
+# Grupos que não existem no sistema/AD são removidos da lista.
+# Se TODOS forem removidos, NÃO escrever AllowGroups (senão tranca
+# todo mundo fora).
 if [ -n "$GRP_LIST" ]; then
+    GRP_LIST_FILTRADO=""
     for GRP in $GRP_LIST; do
-        if ! getent group "$GRP" >/dev/null 2>&1; then
-            log_nivel AVISO "grupo '$GRP' nao existe no sistema/AD."
-            log_nivel INFO "AllowGroups vai BLOQUEAR todo mundo ate corrigir."
+        if getent group "$GRP" >/dev/null 2>&1; then
+            if [ -z "$GRP_LIST_FILTRADO" ]; then
+                GRP_LIST_FILTRADO="$GRP"
+            else
+                GRP_LIST_FILTRADO="$GRP_LIST_FILTRADO $GRP"
+            fi
+        else
+            log_nivel AVISO "grupo '$GRP' nao existe - removido do AllowGroups."
         fi
     done
+
+    if [ -n "$GRP_LIST_FILTRADO" ]; then
+        sed -i "s/^#*AllowGroups .*/AllowGroups $GRP_LIST_FILTRADO/" /etc/ssh/sshd_config
+        if ! grep -q "^AllowGroups " /etc/ssh/sshd_config; then
+            echo "AllowGroups $GRP_LIST_FILTRADO" >> /etc/ssh/sshd_config
+        fi
+        log_nivel INFO "AllowGroups final: $GRP_LIST_FILTRADO"
+    else
+        log_nivel ERRO "nenhum grupo do AllowGroups existe - NAO aplicando AllowGroups."
+        log_nivel INFO "Verifique o SSH_GROUPS no painel da OM."
+        sed -i '/^AllowGroups /d' /etc/ssh/sshd_config 2>/dev/null || true
+    fi
 fi
 
 # Ubuntu 24.04+ usa ssh.socket (socket activation) com ListenStream=22
@@ -3316,6 +3330,19 @@ VALUES (
 # MÚLTIPLOS PROXIES:
 #   BROWSER_PROXY_NAME aponta para um dos proxies nomeados da OM; se
 #   vazio, usa PROXY_DEFAULT_NAME.
+#
+# PROXY DO FIREFOX — NÃO É CONFIGURADO AQUI (Modelo B)
+# ==================================================
+# O Firefox recebe proxy POR GRUPO DO AD via
+# ~/.mozilla/firefox/seederlinux.default/user.js, escrito pelo
+# core_logon.sh (no logon) e reaplicado pelo seeder-sync (a cada
+# 10min via seeder-sync.timer). Para isso funcionar, o policies.json
+# do Firefox NÃO PODE ter a seção "Proxy" com "Locked": true — se
+# tiver, o Firefox ignora o user.js por precedência de policy.
+#
+# O Chrome/Chromium usa SEMPRE PROXY_DEFAULT_NAME (catch-all) via
+# policies.json. Ele não suporta proxy por usuário em máquina
+# multi-usuário sem PAC dinâmico (V2).
 #
 # Os placeholders VARIAVEL são substituídos automaticamente
 # pelo sistema na geração do bundle.
@@ -3500,17 +3527,9 @@ _resolver_proxy_nome_efetivo() {
 # ============================================================
 # Resolver URL de proxy e NO_PROXY conforme a policy
 # ============================================================
-# Estados possíveis:
-#   FF_PROXY_MODE    / CHROME_PROXY_MODE
-#     none           / direct
-#     manual         / fixed_servers
-#     autoConfig     / pac_script
-#     system         / system
-FF_PROXY_MODE="none"
-FF_PROXY_HTTP=""
-FF_PROXY_SSL=""
-FF_PROXY_PAC=""
-FF_NO_PROXY=""
+# Modelo B: Firefox NÃO recebe proxy em policies.json; o proxy do
+# Firefox é resolvido por AD_GROUP via user.js em core_logon.sh.
+# O Chrome/Chromium continua recebendo fixed_servers/system/direct.
 CHROME_PROXY_MODE="direct"
 CHROME_PROXY_SERVER=""
 CHROME_PROXY_PAC=""
@@ -3519,7 +3538,6 @@ CHROME_NO_PROXY=""
 case "$BROWSER_POLICY" in
 
     DIRECT|"")
-        FF_PROXY_MODE="none"
         CHROME_PROXY_MODE="direct"
         ;;
 
@@ -3528,21 +3546,17 @@ case "$BROWSER_POLICY" in
     # "WITH_AUTH" são legados do modelo single-proxy e não têm mais
     # significado distinto para navegadores.
     PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
-        NOME="$(_resolver_proxy_nome_efetivo)"
+        # Chrome SEMPRE usa PROXY_DEFAULT_NAME (catch-all). Modelo B:
+        # Firefox tem proxy por grupo via user.js; Chrome não tem esse
+        # mecanismo em multi-usuário. Ignoramos BROWSER_PROXY_NAME aqui.
+        NOME="${PROXY_DEFAULT_NAME:-}"
         HOSTPORT="$(_resolver_proxy_hostport "$NOME")" || HOSTPORT=""
         if [ -z "$HOSTPORT" ]; then
             log_nivel AVISO "BROWSER_POLICY=$BROWSER_POLICY mas proxy '${NOME:-<nenhum>}' nao encontrado."
             log_nivel INFO "Aplicando DIRECT para os navegadores."
-            FF_PROXY_MODE="none"
             CHROME_PROXY_MODE="direct"
         else
-            FF_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
-            CHROME_NO_PROXY="$FF_NO_PROXY"
-
-            # --- Firefox: manual com host:port e passthrough ---
-            FF_PROXY_MODE="manual"
-            FF_PROXY_HTTP="$HOSTPORT"
-            FF_PROXY_SSL="$HOSTPORT"
+            CHROME_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
 
             # --- Chrome: fixed_servers com host:port e bypass list ---
             # Formato OBRIGATÓRIO: "scheme=host:port;scheme=host:port".
@@ -3550,66 +3564,31 @@ case "$BROWSER_POLICY" in
             CHROME_PROXY_MODE="fixed_servers"
             CHROME_PROXY_SERVER="http=${HOSTPORT};https=${HOSTPORT}"
 
-            log_nivel INFO "Proxy aplicado aos navegadores: $HOSTPORT"
-            log_nivel INFO "Autenticacao de proxy sera feita pelo usuario (popup ou SSO)."
+            log_nivel INFO "Proxy aplicado ao Chrome: $HOSTPORT"
+            log_nivel INFO "Firefox continua por grupo do AD via user.js; autenticacao por usuario (popup ou SSO)."
         fi
         ;;
 
     PAC)
-        NOME="$(_resolver_proxy_nome_efetivo)"
+        NOME="${PROXY_DEFAULT_NAME:-}"
         PAC_URL="$(_resolver_proxy_pac "$NOME")" || PAC_URL=""
         if [ -z "$PAC_URL" ]; then
             log_nivel AVISO "BROWSER_POLICY=PAC mas PAC_URL vazio para o proxy '${NOME:-<nenhum>}'."
             log_nivel INFO "Aplicando DIRECT para os navegadores."
-            FF_PROXY_MODE="none"
             CHROME_PROXY_MODE="direct"
         else
-            FF_PROXY_MODE="autoConfig"
-            FF_PROXY_PAC="$PAC_URL"
-            FF_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
             CHROME_PROXY_MODE="pac_script"
             CHROME_PROXY_PAC="$PAC_URL"
         fi
         ;;
 
     SYSTEM)
-        FF_PROXY_MODE="system"
         CHROME_PROXY_MODE="system"
         ;;
 
     *)
         log_nivel AVISO "BROWSER_POLICY desconhecida '$BROWSER_POLICY'. Aplicando DIRECT."
-        FF_PROXY_MODE="none"
         CHROME_PROXY_MODE="direct"
-        ;;
-esac
-
-# ============================================================
-# Montar bloco "Proxy" do policies.json do Firefox
-# ============================================================
-case "$FF_PROXY_MODE" in
-    none)
-        FIREFOX_PROXY_JSON='"Proxy": { "Mode": "none", "Locked": true }'
-        ;;
-    system)
-        FIREFOX_PROXY_JSON='"Proxy": { "Mode": "system", "Locked": true }'
-        ;;
-    manual)
-        FIREFOX_PROXY_JSON="\"Proxy\": {
-            \"Mode\": \"manual\",
-            \"HTTPProxy\": \"${FF_PROXY_HTTP}\",
-            \"SSLProxy\": \"${FF_PROXY_SSL}\",
-            \"Passthrough\": \"${FF_NO_PROXY}\",
-            \"Locked\": true
-        }"
-        ;;
-    autoConfig)
-        FIREFOX_PROXY_JSON="\"Proxy\": {
-            \"Mode\": \"autoConfig\",
-            \"AutoConfigURL\": \"${FF_PROXY_PAC}\",
-            \"Passthrough\": \"${FF_NO_PROXY}\",
-            \"Locked\": true
-        }"
         ;;
 esac
 
@@ -3638,7 +3617,6 @@ cat > /usr/lib/firefox-esr/distribution/policies.json <<EOF
                 { "Name": "${OM_ACRONYM}", "URL": "${HOMEPAGE}", "Method": "GET" }
             ]
         },
-        ${FIREFOX_PROXY_JSON},
         "Certificates": { "ImportEnterpriseRoots": true },
         "ExtensionSettings": { "*": { "installation_mode": "allowed" } },
         "DisableSetDesktopBackground": false,
@@ -3682,7 +3660,7 @@ if [ -d /opt/firefox-moderno ]; then
        /opt/firefox-moderno/distribution/policies.json 2>/dev/null || true
 fi
 
-log_nivel INFO "Firefox configurado (policy de proxy: $FF_PROXY_MODE)"
+log_nivel INFO "Firefox configurado (sem Proxy em policies.json; proxy por user.js via AD)"
 
 # ============================================================
 # Chrome / Chromium
@@ -5074,6 +5052,7 @@ EOF
         v_user="PROXY_${i}_USER"
         v_pac="PROXY_${i}_PAC_URL"
         v_no_proxy="PROXY_${i}_NO_PROXY"
+        v_ad_group="PROXY_${i}_AD_GROUP"
 
         # Escapar valores entre aspas duplas (\ e ")
         name_v="$(printf '%s' "${!v_name}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
@@ -5081,12 +5060,14 @@ EOF
         user_v="$(printf '%s' "${!v_user}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
         pac_v="$(printf '%s' "${!v_pac}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
         no_proxy_v="$(printf '%s' "${!v_no_proxy}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        ad_group_v="$(printf '%s' "${!v_ad_group}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 
         echo "PROXY_${i}_NAME=\"${name_v}\""
         echo "PROXY_${i}_URL=\"${url_v}\""
         echo "PROXY_${i}_USER=\"${user_v}\""
         echo "PROXY_${i}_PAC_URL=\"${pac_v}\""
         echo "PROXY_${i}_NO_PROXY=\"${no_proxy_v}\""
+        echo "PROXY_${i}_AD_GROUP=\"${ad_group_v}\""
         i=$((i+1))
     done
 
@@ -7018,14 +6999,42 @@ if [ -x /usr/local/bin/seederlinux-sync-ntp ]; then
 fi
 
 # ============================================================
+# Perfil do Firefox — criar se não existir (Modelo B)
+# ============================================================
+FIREFOX_DIR="$USER_HOME/.mozilla/firefox"
+FIREFOX_PROFILE_DIR="$FIREFOX_DIR/seederlinux.default"
+FIREFOX_PROFILES_INI="$FIREFOX_DIR/profiles.ini"
+
+if [ ! -f "$FIREFOX_PROFILES_INI" ]; then
+    mkdir -p "$FIREFOX_PROFILE_DIR"
+    chmod 700 "$USER_HOME/.mozilla" 2>/dev/null || true
+    chmod 700 "$FIREFOX_DIR" 2>/dev/null || true
+    chmod 700 "$FIREFOX_PROFILE_DIR" 2>/dev/null || true
+
+    cat > "$FIREFOX_PROFILES_INI" <<EOFINI
+[Profile0]
+Name=default
+IsRelative=1
+Path=seederlinux.default
+Default=1
+
+[General]
+StartWithLastProfile=1
+Version=2
+EOFINI
+    chmod 644 "$FIREFOX_PROFILES_INI"
+    echo "Firefox: perfil criado ($FIREFOX_PROFILE_DIR)"
+fi
+
+# ============================================================
 # Resolver e aplicar proxy do Firefox conforme grupo do AD.
 #
 # CHROME: sempre usa o proxy padrao (system-wide, aplicado pelo
 # core_browser.sh no provisionamento). Nao e tocado aqui.
 #
 # FIREFOX: aplica o proxy especifico do grupo do usuario em
-# ~/.mozilla/firefox/*/user.js. Se o usuario nao pertence a nenhum
-# grupo com proxy, cai no padrao (catch-all).
+# ~/.mozilla/firefox/seederlinux.default/user.js. Se o usuario nao
+# pertence a nenhum grupo com proxy, limpa o user.js.
 # ============================================================
 if [ -f /usr/local/lib/seederlinux/resolve-proxy.sh ]; then
     # shellcheck disable=SC1091
@@ -7046,10 +7055,8 @@ if [ -f /usr/local/lib/seederlinux/resolve-proxy.sh ]; then
             _proxy_host="${_hostport%:*}"
             _proxy_port="${_hostport##*:}"
 
-            for _profile in "$USER_HOME"/.mozilla/firefox/*.default* \
-                            "$USER_HOME"/.mozilla/firefox/*.default-release*; do
-                [ -d "$_profile" ] || continue
-                _userjs="$_profile/user.js"
+            _userjs="$FIREFOX_PROFILE_DIR/user.js"
+            if [ -d "$FIREFOX_PROFILE_DIR" ]; then
                 cat > "$_userjs" <<EOFPREF
 // SeederLinux — proxy por grupo do AD
 // Proxy: ${_proxy_name}
@@ -7063,10 +7070,15 @@ user_pref("network.proxy.no_proxies_on", "${_no_proxy}");
 EOFPREF
                 chmod 644 "$_userjs"
                 echo "Firefox: proxy aplicado (${_proxy_name}) em $_userjs"
-            done
+            fi
         fi
     else
-        echo "Firefox: nenhum proxy aplicavel (DIRECT)"
+        # Nenhum proxy aplicável: limpar user.js para não deixar proxy velho
+        _userjs="$FIREFOX_PROFILE_DIR/user.js"
+        if [ -f "$_userjs" ]; then
+            rm -f "$_userjs"
+            echo "Firefox: user.js removido (DIRECT)"
+        fi
     fi
 fi
 
@@ -7797,13 +7809,26 @@ log_nivel OK "Proxy de CLI configurado!"
 log_nivel INFO "Gerando /usr/local/lib/seederlinux/resolve-proxy.sh..."
 mkdir -p /usr/local/lib/seederlinux
 cat > /usr/local/lib/seederlinux/resolve-proxy.sh <<'RESOLVE_EOF'
-# resolve-proxy.sh — funções compartilhadas entre core_logon e seeder-sync.
-# Carregado via source. Requer PROXY_COUNT e PROXY_K_* definidos no env.
+# resolve-proxy.sh — cascata de decisão de proxy para o Firefox.
+# Carregado via source pelo core_logon.sh e pelo seeder-sync.
+#
+# Requer: PROXY_COUNT, PROXY_DEFAULT_NAME, PROXY_N_NAME, PROXY_N_URL,
+#         PROXY_N_AD_GROUP, PROXY_N_NO_PROXY (definidos no ambiente).
+#
+# Regra especial: AD_GROUP="Domain Users" (case-insensitive) é tratado
+# como vazio — todo usuário do domínio pertence a esse grupo, então ele
+# não serve como critério de match.
 
-# Retorna o índice do proxy aplicável ao usuário ($1):
-# 1. Se pertence a um grupo que tem proxy específico → esse
-# 2. Senão → o catch-all (ad_group='')
-# 3. Senão → vazio (DIRECT)
+# _proxy_grupo_eh_domain_users <valor>
+_proxy_grupo_eh_domain_users() {
+    local g="$1"
+    [ -z "$g" ] && return 1
+    g="$(echo "$g" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
+    [ "$g" = "domainusers" ] || [ "$g" = "domain users" ]
+}
+
+# _resolver_proxy_index_para_usuario <usuario>
+# Cascata: grupo-específico → default → catch-all → DIRECT
 _resolver_proxy_index_para_usuario() {
     local user="$1"
     [ -z "$user" ] && return 1
@@ -7811,21 +7836,39 @@ _resolver_proxy_index_para_usuario() {
     local grupos
     grupos="$(id -nG "$user" 2>/dev/null)" || return 1
 
+    # ESTÁGIO 1: proxy com AD_GROUP definido (e não Domain Users) que casa
     local i=1
     while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
         local vg="PROXY_${i}_AD_GROUP"
         local g="${!vg}"
-        if [ -n "$g" ] && echo "$grupos" | tr ' ' '\n' | grep -qxF "$g"; then
-            echo "$i"
-            return 0
+        if [ -n "$g" ] && ! _proxy_grupo_eh_domain_users "$g"; then
+            if echo "$grupos" | tr ' ' '\n' | grep -qxF "$g"; then
+                echo "$i"
+                return 0
+            fi
         fi
         i=$((i+1))
     done
 
+    # ESTÁGIO 2: PROXY_DEFAULT_NAME
+    if [ -n "${PROXY_DEFAULT_NAME:-}" ]; then
+        i=1
+        while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
+            local vn="PROXY_${i}_NAME"
+            if [ "${!vn}" = "$PROXY_DEFAULT_NAME" ]; then
+                echo "$i"
+                return 0
+            fi
+            i=$((i+1))
+        done
+    fi
+
+    # ESTÁGIO 3: primeiro proxy com AD_GROUP vazio OU Domain Users
     i=1
     while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
         local vg="PROXY_${i}_AD_GROUP"
-        if [ -z "${!vg}" ]; then
+        local g="${!vg}"
+        if [ -z "$g" ] || _proxy_grupo_eh_domain_users "$g"; then
             echo "$i"
             return 0
         fi
@@ -7835,17 +7878,21 @@ _resolver_proxy_index_para_usuario() {
     return 1
 }
 
-# Retorna "host:port" do proxy pelo índice
 _proxy_hostport_por_index() {
     local i="$1"
     local vu="PROXY_${i}_URL"
     echo "${!vu}" | sed -E 's|^https?://||' | sed 's|/$||'
 }
 
-# Retorna a lista de bypass (no_proxy) do proxy pelo índice
 _proxy_no_proxy_por_index() {
     local i="$1"
     local v="PROXY_${i}_NO_PROXY"
+    echo "${!v}"
+}
+
+_proxy_name_por_index() {
+    local i="$1"
+    local v="PROXY_${i}_NAME"
     echo "${!v}"
 }
 RESOLVE_EOF
@@ -8434,55 +8481,8 @@ sync_firefox_policy() {
     echo "--- firefox policy ---"
     command -v firefox-esr &>/dev/null || command -v firefox &>/dev/null || { echo "Firefox nao instalado, pulando"; return 0; }
 
-    local policy="${BROWSER_POLICY:-DIRECT}"
-    local ff_proxy_json=''
-
-    case "$policy" in
-        DIRECT|"")
-            ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
-            ;;
-        SYSTEM)
-            ff_proxy_json='"Proxy": { "Mode": "system", "Locked": true }'
-            ;;
-        PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
-            local nome hostport no_proxy_extra no_proxy_final
-            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
-            hostport="$(_resolver_proxy_hostport "$nome" plain)" || hostport=""
-            if [ -z "$hostport" ]; then
-                ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
-                echo "AVISO: proxy '$nome' nao encontrado - Firefox em DIRECT"
-            else
-                no_proxy_extra="$(_resolver_proxy_no_proxy "$nome")" || no_proxy_extra=""
-                no_proxy_final="$(_build_no_proxy "$no_proxy_extra")"
-                ff_proxy_json="\"Proxy\": {
-      \"Mode\": \"manual\",
-      \"HTTPProxy\": \"${hostport}\",
-      \"SSLProxy\": \"${hostport}\",
-      \"Passthrough\": \"${no_proxy_final}\",
-      \"Locked\": true
-    }"
-            fi
-            ;;
-        PAC)
-            local nome pac
-            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
-            pac="$(_resolver_proxy_pac "$nome")" || pac=""
-            if [ -z "$pac" ]; then
-                ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
-                echo "AVISO: PAC_URL vazio - Firefox em DIRECT"
-            else
-                ff_proxy_json="\"Proxy\": {
-      \"Mode\": \"autoConfig\",
-      \"AutoConfigURL\": \"${pac}\",
-      \"Locked\": true
-    }"
-            fi
-            ;;
-        *)
-            ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
-            ;;
-    esac
-
+    # Modelo B: Firefox não recebe proxy em policies.json.
+    # O proxy por grupo do AD é resolvido via user.js no logon e reaplicado pelo seeder-sync.
     local json
     read -r -d '' json <<EOF || true
 {
@@ -8504,7 +8504,6 @@ sync_firefox_policy() {
         { "Name": "${OM_ACRONYM:-}", "URL": "${HOMEPAGE:-}", "Method": "GET" }
       ]
     },
-    ${ff_proxy_json},
     "Certificates": { "ImportEnterpriseRoots": true },
     "ExtensionSettings": { "*": { "installation_mode": "allowed" } },
     "DisableSetDesktopBackground": false,
@@ -8561,7 +8560,7 @@ sync_chrome_policy() {
             ;;
         PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
             local nome authport no_proxy_extra no_proxy_final
-            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
+            nome="${PROXY_DEFAULT_NAME:-}"
             authport="$(_resolver_proxy_hostport "$nome" plain)" || authport=""
             if [ -z "$authport" ]; then
                 proxy_json=", \"ProxyMode\": \"direct\""
@@ -8574,7 +8573,7 @@ sync_chrome_policy() {
             ;;
         PAC)
             local nome pac
-            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
+            nome="${PROXY_DEFAULT_NAME:-}"
             pac="$(_resolver_proxy_pac "$nome")" || pac=""
             if [ -z "$pac" ]; then
                 proxy_json=", \"ProxyMode\": \"direct\""
@@ -8612,6 +8611,87 @@ EOF
         chmod 644 "$DIR/seederlinux.json"
     done
     echo "OK: Chrome/Chromium policy aplicada (modo: $policy)"
+}
+
+# ============================================================
+# MODULO: user.js do Firefox por grupo do AD (Modelo B)
+# ============================================================
+sync_firefox_user_js() {
+    echo "--- firefox user.js ---"
+
+    if [ -f /usr/local/lib/seederlinux/resolve-proxy.sh ]; then
+        # shellcheck disable=SC1091
+        source /usr/local/lib/seederlinux/resolve-proxy.sh
+    else
+        echo "AVISO: resolve-proxy.sh nao encontrado - pulando"
+        return 0
+    fi
+
+    local u
+    for u in $(usuarios_com_sessao_grafica); do
+        local uid gid uhome
+        uid="$(id -u "$u" 2>/dev/null)" || continue
+        gid="$(id -g "$u" 2>/dev/null)" || continue
+        uhome="$(getent passwd "$u" | cut -d: -f6)"
+        [ -z "$uhome" ] && continue
+
+        local fdir="$uhome/.mozilla/firefox"
+        local pdir="$fdir/seederlinux.default"
+        local pini="$fdir/profiles.ini"
+
+        [ -d "$pdir" ] || { echo "  $u: perfil ausente - pulando"; continue; }
+        [ -f "$pini" ] || { echo "  $u: profiles.ini ausente - pulando"; continue; }
+
+        local userjs="$pdir/user.js"
+
+        local idx hostport no_proxy pname
+        idx="$(_resolver_proxy_index_para_usuario "$u")" || idx=""
+
+        if [ -z "$idx" ]; then
+            if [ -f "$userjs" ]; then
+                rm -f "$userjs"
+                echo "  $u: user.js removido (DIRECT)"
+            fi
+            continue
+        fi
+
+        hostport="$(_proxy_hostport_por_index "$idx")"
+        no_proxy="$(_proxy_no_proxy_por_index "$idx")"
+        pname="$(_proxy_name_por_index "$idx")"
+
+        [ -z "$hostport" ] && continue
+
+        local phost pport
+        phost="${hostport%:*}"
+        pport="${hostport##*:}"
+
+        no_proxy="$(echo "$no_proxy" | tr ';' ',' | tr -d ' ')"
+        no_proxy="$(echo "$no_proxy" | sed 's/^\*\././; s/,\*\./,./g')"
+
+        local tmp
+        tmp="$(mktemp /tmp/seeder-userjs.XXXXXX)"
+        cat > "$tmp" <<EOFPREF
+// SeederLinux — proxy por grupo do AD
+// Proxy: ${pname}
+// Gerado em: $(date -Is)
+user_pref("network.proxy.type", 1);
+user_pref("network.proxy.http", "${phost}");
+user_pref("network.proxy.http_port", ${pport});
+user_pref("network.proxy.ssl", "${phost}");
+user_pref("network.proxy.ssl_port", ${pport});
+user_pref("network.proxy.no_proxies_on", "${no_proxy}");
+EOFPREF
+
+        if [ -f "$userjs" ] && cmp -s "$tmp" "$userjs"; then
+            rm -f "$tmp"
+            continue
+        fi
+
+        chown "$uid:$gid" "$tmp" 2>/dev/null || true
+        chmod 644 "$tmp"
+        mv -f "$tmp" "$userjs"
+        echo "  $u: user.js atualizado (proxy: $pname)"
+    done
 }
 
 # ============================================================
@@ -9052,6 +9132,7 @@ sync_certificates() {
 sync_branding
 sync_firefox_policy
 sync_chrome_policy
+sync_firefox_user_js
 sync_cli_proxy
 sync_printers
 sync_conky

@@ -48,24 +48,38 @@ if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
                 fi
             fi
         done
-        if [ -n "$GRP_LIST" ]; then
-            sed -i "s/^#*AllowGroups .*/AllowGroups $GRP_LIST/" /etc/ssh/sshd_config
-            if ! grep -q "^AllowGroups " /etc/ssh/sshd_config; then
-                echo "AllowGroups $GRP_LIST" >> /etc/ssh/sshd_config
-            fi
-            log_nivel INFO "AllowGroups configurado: $GRP_LIST"
-        fi
     fi
 fi
 
-# Validar grupos do AllowGroups (evita lockout silencioso)
+# Filtrar grupos: só escrever no AllowGroups os que existem via getent.
+# Grupos que não existem no sistema/AD são removidos da lista.
+# Se TODOS forem removidos, NÃO escrever AllowGroups (senão tranca
+# todo mundo fora).
 if [ -n "$GRP_LIST" ]; then
+    GRP_LIST_FILTRADO=""
     for GRP in $GRP_LIST; do
-        if ! getent group "$GRP" >/dev/null 2>&1; then
-            log_nivel AVISO "grupo '$GRP' nao existe no sistema/AD."
-            log_nivel INFO "AllowGroups vai BLOQUEAR todo mundo ate corrigir."
+        if getent group "$GRP" >/dev/null 2>&1; then
+            if [ -z "$GRP_LIST_FILTRADO" ]; then
+                GRP_LIST_FILTRADO="$GRP"
+            else
+                GRP_LIST_FILTRADO="$GRP_LIST_FILTRADO $GRP"
+            fi
+        else
+            log_nivel AVISO "grupo '$GRP' nao existe - removido do AllowGroups."
         fi
     done
+
+    if [ -n "$GRP_LIST_FILTRADO" ]; then
+        sed -i "s/^#*AllowGroups .*/AllowGroups $GRP_LIST_FILTRADO/" /etc/ssh/sshd_config
+        if ! grep -q "^AllowGroups " /etc/ssh/sshd_config; then
+            echo "AllowGroups $GRP_LIST_FILTRADO" >> /etc/ssh/sshd_config
+        fi
+        log_nivel INFO "AllowGroups final: $GRP_LIST_FILTRADO"
+    else
+        log_nivel ERRO "nenhum grupo do AllowGroups existe - NAO aplicando AllowGroups."
+        log_nivel INFO "Verifique o SSH_GROUPS no painel da OM."
+        sed -i '/^AllowGroups /d' /etc/ssh/sshd_config 2>/dev/null || true
+    fi
 fi
 
 # Ubuntu 24.04+ usa ssh.socket (socket activation) com ListenStream=22

@@ -291,13 +291,26 @@ log_nivel OK "Proxy de CLI configurado!"
 log_nivel INFO "Gerando /usr/local/lib/seederlinux/resolve-proxy.sh..."
 mkdir -p /usr/local/lib/seederlinux
 cat > /usr/local/lib/seederlinux/resolve-proxy.sh <<'RESOLVE_EOF'
-# resolve-proxy.sh — funções compartilhadas entre core_logon e seeder-sync.
-# Carregado via source. Requer PROXY_COUNT e PROXY_K_* definidos no env.
+# resolve-proxy.sh — cascata de decisão de proxy para o Firefox.
+# Carregado via source pelo core_logon.sh e pelo seeder-sync.
+#
+# Requer: PROXY_COUNT, PROXY_DEFAULT_NAME, PROXY_N_NAME, PROXY_N_URL,
+#         PROXY_N_AD_GROUP, PROXY_N_NO_PROXY (definidos no ambiente).
+#
+# Regra especial: AD_GROUP="Domain Users" (case-insensitive) é tratado
+# como vazio — todo usuário do domínio pertence a esse grupo, então ele
+# não serve como critério de match.
 
-# Retorna o índice do proxy aplicável ao usuário ($1):
-# 1. Se pertence a um grupo que tem proxy específico → esse
-# 2. Senão → o catch-all (ad_group='')
-# 3. Senão → vazio (DIRECT)
+# _proxy_grupo_eh_domain_users <valor>
+_proxy_grupo_eh_domain_users() {
+    local g="$1"
+    [ -z "$g" ] && return 1
+    g="$(echo "$g" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
+    [ "$g" = "domainusers" ] || [ "$g" = "domain users" ]
+}
+
+# _resolver_proxy_index_para_usuario <usuario>
+# Cascata: grupo-específico → default → catch-all → DIRECT
 _resolver_proxy_index_para_usuario() {
     local user="$1"
     [ -z "$user" ] && return 1
@@ -305,21 +318,39 @@ _resolver_proxy_index_para_usuario() {
     local grupos
     grupos="$(id -nG "$user" 2>/dev/null)" || return 1
 
+    # ESTÁGIO 1: proxy com AD_GROUP definido (e não Domain Users) que casa
     local i=1
     while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
         local vg="PROXY_${i}_AD_GROUP"
         local g="${!vg}"
-        if [ -n "$g" ] && echo "$grupos" | tr ' ' '\n' | grep -qxF "$g"; then
-            echo "$i"
-            return 0
+        if [ -n "$g" ] && ! _proxy_grupo_eh_domain_users "$g"; then
+            if echo "$grupos" | tr ' ' '\n' | grep -qxF "$g"; then
+                echo "$i"
+                return 0
+            fi
         fi
         i=$((i+1))
     done
 
+    # ESTÁGIO 2: PROXY_DEFAULT_NAME
+    if [ -n "${PROXY_DEFAULT_NAME:-}" ]; then
+        i=1
+        while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
+            local vn="PROXY_${i}_NAME"
+            if [ "${!vn}" = "$PROXY_DEFAULT_NAME" ]; then
+                echo "$i"
+                return 0
+            fi
+            i=$((i+1))
+        done
+    fi
+
+    # ESTÁGIO 3: primeiro proxy com AD_GROUP vazio OU Domain Users
     i=1
     while [ "$i" -le "${PROXY_COUNT:-0}" ]; do
         local vg="PROXY_${i}_AD_GROUP"
-        if [ -z "${!vg}" ]; then
+        local g="${!vg}"
+        if [ -z "$g" ] || _proxy_grupo_eh_domain_users "$g"; then
             echo "$i"
             return 0
         fi
@@ -329,17 +360,21 @@ _resolver_proxy_index_para_usuario() {
     return 1
 }
 
-# Retorna "host:port" do proxy pelo índice
 _proxy_hostport_por_index() {
     local i="$1"
     local vu="PROXY_${i}_URL"
     echo "${!vu}" | sed -E 's|^https?://||' | sed 's|/$||'
 }
 
-# Retorna a lista de bypass (no_proxy) do proxy pelo índice
 _proxy_no_proxy_por_index() {
     local i="$1"
     local v="PROXY_${i}_NO_PROXY"
+    echo "${!v}"
+}
+
+_proxy_name_por_index() {
+    local i="$1"
+    local v="PROXY_${i}_NAME"
     echo "${!v}"
 }
 RESOLVE_EOF

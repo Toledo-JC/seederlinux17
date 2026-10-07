@@ -219,6 +219,7 @@ EOF
         v_user="PROXY_${i}_USER"
         v_pac="PROXY_${i}_PAC_URL"
         v_no_proxy="PROXY_${i}_NO_PROXY"
+        v_ad_group="PROXY_${i}_AD_GROUP"
 
         # Escapar valores entre aspas duplas (\ e ")
         name_v="$(printf '%s' "${!v_name}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
@@ -226,12 +227,14 @@ EOF
         user_v="$(printf '%s' "${!v_user}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
         pac_v="$(printf '%s' "${!v_pac}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
         no_proxy_v="$(printf '%s' "${!v_no_proxy}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
+        ad_group_v="$(printf '%s' "${!v_ad_group}" | sed 's/\\/\\\\/g; s/"/\\"/g')"
 
         echo "PROXY_${i}_NAME=\"${name_v}\""
         echo "PROXY_${i}_URL=\"${url_v}\""
         echo "PROXY_${i}_USER=\"${user_v}\""
         echo "PROXY_${i}_PAC_URL=\"${pac_v}\""
         echo "PROXY_${i}_NO_PROXY=\"${no_proxy_v}\""
+        echo "PROXY_${i}_AD_GROUP=\"${ad_group_v}\""
         i=$((i+1))
     done
 

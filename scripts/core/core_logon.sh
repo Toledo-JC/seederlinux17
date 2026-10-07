@@ -333,14 +333,42 @@ if [ -x /usr/local/bin/seederlinux-sync-ntp ]; then
 fi
 
 # ============================================================
+# Perfil do Firefox — criar se não existir (Modelo B)
+# ============================================================
+FIREFOX_DIR="$USER_HOME/.mozilla/firefox"
+FIREFOX_PROFILE_DIR="$FIREFOX_DIR/seederlinux.default"
+FIREFOX_PROFILES_INI="$FIREFOX_DIR/profiles.ini"
+
+if [ ! -f "$FIREFOX_PROFILES_INI" ]; then
+    mkdir -p "$FIREFOX_PROFILE_DIR"
+    chmod 700 "$USER_HOME/.mozilla" 2>/dev/null || true
+    chmod 700 "$FIREFOX_DIR" 2>/dev/null || true
+    chmod 700 "$FIREFOX_PROFILE_DIR" 2>/dev/null || true
+
+    cat > "$FIREFOX_PROFILES_INI" <<EOFINI
+[Profile0]
+Name=default
+IsRelative=1
+Path=seederlinux.default
+Default=1
+
+[General]
+StartWithLastProfile=1
+Version=2
+EOFINI
+    chmod 644 "$FIREFOX_PROFILES_INI"
+    echo "Firefox: perfil criado ($FIREFOX_PROFILE_DIR)"
+fi
+
+# ============================================================
 # Resolver e aplicar proxy do Firefox conforme grupo do AD.
 #
 # CHROME: sempre usa o proxy padrao (system-wide, aplicado pelo
 # core_browser.sh no provisionamento). Nao e tocado aqui.
 #
 # FIREFOX: aplica o proxy especifico do grupo do usuario em
-# ~/.mozilla/firefox/*/user.js. Se o usuario nao pertence a nenhum
-# grupo com proxy, cai no padrao (catch-all).
+# ~/.mozilla/firefox/seederlinux.default/user.js. Se o usuario nao
+# pertence a nenhum grupo com proxy, limpa o user.js.
 # ============================================================
 if [ -f /usr/local/lib/seederlinux/resolve-proxy.sh ]; then
     # shellcheck disable=SC1091
@@ -361,10 +389,8 @@ if [ -f /usr/local/lib/seederlinux/resolve-proxy.sh ]; then
             _proxy_host="${_hostport%:*}"
             _proxy_port="${_hostport##*:}"
 
-            for _profile in "$USER_HOME"/.mozilla/firefox/*.default* \
-                            "$USER_HOME"/.mozilla/firefox/*.default-release*; do
-                [ -d "$_profile" ] || continue
-                _userjs="$_profile/user.js"
+            _userjs="$FIREFOX_PROFILE_DIR/user.js"
+            if [ -d "$FIREFOX_PROFILE_DIR" ]; then
                 cat > "$_userjs" <<EOFPREF
 // SeederLinux — proxy por grupo do AD
 // Proxy: ${_proxy_name}
@@ -378,10 +404,15 @@ user_pref("network.proxy.no_proxies_on", "${_no_proxy}");
 EOFPREF
                 chmod 644 "$_userjs"
                 echo "Firefox: proxy aplicado (${_proxy_name}) em $_userjs"
-            done
+            fi
         fi
     else
-        echo "Firefox: nenhum proxy aplicavel (DIRECT)"
+        # Nenhum proxy aplicável: limpar user.js para não deixar proxy velho
+        _userjs="$FIREFOX_PROFILE_DIR/user.js"
+        if [ -f "$_userjs" ]; then
+            rm -f "$_userjs"
+            echo "Firefox: user.js removido (DIRECT)"
+        fi
     fi
 fi
 

@@ -67,6 +67,19 @@
 #   BROWSER_PROXY_NAME aponta para um dos proxies nomeados da OM; se
 #   vazio, usa PROXY_DEFAULT_NAME.
 #
+# PROXY DO FIREFOX — NÃO É CONFIGURADO AQUI (Modelo B)
+# ==================================================
+# O Firefox recebe proxy POR GRUPO DO AD via
+# ~/.mozilla/firefox/seederlinux.default/user.js, escrito pelo
+# core_logon.sh (no logon) e reaplicado pelo seeder-sync (a cada
+# 10min via seeder-sync.timer). Para isso funcionar, o policies.json
+# do Firefox NÃO PODE ter a seção "Proxy" com "Locked": true — se
+# tiver, o Firefox ignora o user.js por precedência de policy.
+#
+# O Chrome/Chromium usa SEMPRE PROXY_DEFAULT_NAME (catch-all) via
+# policies.json. Ele não suporta proxy por usuário em máquina
+# multi-usuário sem PAC dinâmico (V2).
+#
 # Os placeholders VARIAVEL são substituídos automaticamente
 # pelo sistema na geração do bundle.
 # ============================================================================
@@ -250,17 +263,9 @@ _resolver_proxy_nome_efetivo() {
 # ============================================================
 # Resolver URL de proxy e NO_PROXY conforme a policy
 # ============================================================
-# Estados possíveis:
-#   FF_PROXY_MODE    / CHROME_PROXY_MODE
-#     none           / direct
-#     manual         / fixed_servers
-#     autoConfig     / pac_script
-#     system         / system
-FF_PROXY_MODE="none"
-FF_PROXY_HTTP=""
-FF_PROXY_SSL=""
-FF_PROXY_PAC=""
-FF_NO_PROXY=""
+# Modelo B: Firefox NÃO recebe proxy em policies.json; o proxy do
+# Firefox é resolvido por AD_GROUP via user.js em core_logon.sh.
+# O Chrome/Chromium continua recebendo fixed_servers/system/direct.
 CHROME_PROXY_MODE="direct"
 CHROME_PROXY_SERVER=""
 CHROME_PROXY_PAC=""
@@ -269,7 +274,6 @@ CHROME_NO_PROXY=""
 case "$BROWSER_POLICY" in
 
     DIRECT|"")
-        FF_PROXY_MODE="none"
         CHROME_PROXY_MODE="direct"
         ;;
 
@@ -278,21 +282,17 @@ case "$BROWSER_POLICY" in
     # "WITH_AUTH" são legados do modelo single-proxy e não têm mais
     # significado distinto para navegadores.
     PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
-        NOME="$(_resolver_proxy_nome_efetivo)"
+        # Chrome SEMPRE usa PROXY_DEFAULT_NAME (catch-all). Modelo B:
+        # Firefox tem proxy por grupo via user.js; Chrome não tem esse
+        # mecanismo em multi-usuário. Ignoramos BROWSER_PROXY_NAME aqui.
+        NOME="${PROXY_DEFAULT_NAME:-}"
         HOSTPORT="$(_resolver_proxy_hostport "$NOME")" || HOSTPORT=""
         if [ -z "$HOSTPORT" ]; then
             log_nivel AVISO "BROWSER_POLICY=$BROWSER_POLICY mas proxy '${NOME:-<nenhum>}' nao encontrado."
             log_nivel INFO "Aplicando DIRECT para os navegadores."
-            FF_PROXY_MODE="none"
             CHROME_PROXY_MODE="direct"
         else
-            FF_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
-            CHROME_NO_PROXY="$FF_NO_PROXY"
-
-            # --- Firefox: manual com host:port e passthrough ---
-            FF_PROXY_MODE="manual"
-            FF_PROXY_HTTP="$HOSTPORT"
-            FF_PROXY_SSL="$HOSTPORT"
+            CHROME_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
 
             # --- Chrome: fixed_servers com host:port e bypass list ---
             # Formato OBRIGATÓRIO: "scheme=host:port;scheme=host:port".
@@ -300,66 +300,31 @@ case "$BROWSER_POLICY" in
             CHROME_PROXY_MODE="fixed_servers"
             CHROME_PROXY_SERVER="http=${HOSTPORT};https=${HOSTPORT}"
 
-            log_nivel INFO "Proxy aplicado aos navegadores: $HOSTPORT"
-            log_nivel INFO "Autenticacao de proxy sera feita pelo usuario (popup ou SSO)."
+            log_nivel INFO "Proxy aplicado ao Chrome: $HOSTPORT"
+            log_nivel INFO "Firefox continua por grupo do AD via user.js; autenticacao por usuario (popup ou SSO)."
         fi
         ;;
 
     PAC)
-        NOME="$(_resolver_proxy_nome_efetivo)"
+        NOME="${PROXY_DEFAULT_NAME:-}"
         PAC_URL="$(_resolver_proxy_pac "$NOME")" || PAC_URL=""
         if [ -z "$PAC_URL" ]; then
             log_nivel AVISO "BROWSER_POLICY=PAC mas PAC_URL vazio para o proxy '${NOME:-<nenhum>}'."
             log_nivel INFO "Aplicando DIRECT para os navegadores."
-            FF_PROXY_MODE="none"
             CHROME_PROXY_MODE="direct"
         else
-            FF_PROXY_MODE="autoConfig"
-            FF_PROXY_PAC="$PAC_URL"
-            FF_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
             CHROME_PROXY_MODE="pac_script"
             CHROME_PROXY_PAC="$PAC_URL"
         fi
         ;;
 
     SYSTEM)
-        FF_PROXY_MODE="system"
         CHROME_PROXY_MODE="system"
         ;;
 
     *)
         log_nivel AVISO "BROWSER_POLICY desconhecida '$BROWSER_POLICY'. Aplicando DIRECT."
-        FF_PROXY_MODE="none"
         CHROME_PROXY_MODE="direct"
-        ;;
-esac
-
-# ============================================================
-# Montar bloco "Proxy" do policies.json do Firefox
-# ============================================================
-case "$FF_PROXY_MODE" in
-    none)
-        FIREFOX_PROXY_JSON='"Proxy": { "Mode": "none", "Locked": true }'
-        ;;
-    system)
-        FIREFOX_PROXY_JSON='"Proxy": { "Mode": "system", "Locked": true }'
-        ;;
-    manual)
-        FIREFOX_PROXY_JSON="\"Proxy\": {
-            \"Mode\": \"manual\",
-            \"HTTPProxy\": \"${FF_PROXY_HTTP}\",
-            \"SSLProxy\": \"${FF_PROXY_SSL}\",
-            \"Passthrough\": \"${FF_NO_PROXY}\",
-            \"Locked\": true
-        }"
-        ;;
-    autoConfig)
-        FIREFOX_PROXY_JSON="\"Proxy\": {
-            \"Mode\": \"autoConfig\",
-            \"AutoConfigURL\": \"${FF_PROXY_PAC}\",
-            \"Passthrough\": \"${FF_NO_PROXY}\",
-            \"Locked\": true
-        }"
         ;;
 esac
 
@@ -388,7 +353,6 @@ cat > /usr/lib/firefox-esr/distribution/policies.json <<EOF
                 { "Name": "${OM_ACRONYM}", "URL": "${HOMEPAGE}", "Method": "GET" }
             ]
         },
-        ${FIREFOX_PROXY_JSON},
         "Certificates": { "ImportEnterpriseRoots": true },
         "ExtensionSettings": { "*": { "installation_mode": "allowed" } },
         "DisableSetDesktopBackground": false,
@@ -432,7 +396,7 @@ if [ -d /opt/firefox-moderno ]; then
        /opt/firefox-moderno/distribution/policies.json 2>/dev/null || true
 fi
 
-log_nivel INFO "Firefox configurado (policy de proxy: $FF_PROXY_MODE)"
+log_nivel INFO "Firefox configurado (sem Proxy em policies.json; proxy por user.js via AD)"
 
 # ============================================================
 # Chrome / Chromium
