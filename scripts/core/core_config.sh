@@ -22,6 +22,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="14-config"
+
 echo "============================================================"
 echo "Criar arquivo de configuracao persistente"
 echo "============================================================"
@@ -45,7 +48,7 @@ WALLPAPER_LOGIN_URL="{{WALLPAPER_LOGIN_URL}}"
 LOGO_URL="{{LOGO_URL}}"
 GREETER_URL="{{GREETER_URL}}"
 
-echo ">>> Normalizando URLs de assets para forma absoluta..."
+log_nivel INFO "Normalizando URLs de assets para forma absoluta..."
 for url_var in WALLPAPER_URL WALLPAPER_LOGIN_URL LOGO_URL GREETER_URL; do
     url_val="${!url_var}"
     [ -z "$url_val" ] && continue
@@ -87,10 +90,10 @@ MIRROR_LOCAL_OM_URL="{{MIRROR_LOCAL_OM_URL}}"
 PROXY_COUNT="${PROXY_COUNT:-0}"
 PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
 
-echo ">>> APT_POLICY: $APT_POLICY"
-echo ">>> CLI_POLICY: $CLI_POLICY"
-echo ">>> BROWSER_POLICY: $BROWSER_POLICY"
-echo ">>> Proxies: $PROXY_COUNT (default: ${PROXY_DEFAULT_NAME:-<nenhum>})"
+log_nivel INFO "APT_POLICY: $APT_POLICY"
+log_nivel INFO "CLI_POLICY: $CLI_POLICY"
+log_nivel INFO "BROWSER_POLICY: $BROWSER_POLICY"
+log_nivel INFO "Proxies: $PROXY_COUNT (default: ${PROXY_DEFAULT_NAME:-<nenhum>})"
 
 # ============================================================
 # Preservar SERIAL_APLICADO
@@ -100,7 +103,7 @@ if [ -f "$CONFIG_FILE" ]; then
     VALOR_EXISTENTE="$(grep -m1 '^SERIAL_APLICADO=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2- | tr -d '"')"
     [ -n "$VALOR_EXISTENTE" ] && SERIAL_APLICADO_ATUAL="$VALOR_EXISTENTE"
 fi
-echo ">>> SERIAL_APLICADO preservado: $SERIAL_APLICADO_ATUAL"
+log_nivel INFO "SERIAL_APLICADO preservado: $SERIAL_APLICADO_ATUAL"
 
 # ============================================================
 # Escrever config.env (cabecalho + variaveis + array de proxies)
@@ -238,7 +241,7 @@ EOF
 } >> "$CONFIG_FILE"
 
 chmod 644 "$CONFIG_FILE"
-echo ">>> config.env gravado em $CONFIG_FILE"
+log_nivel INFO "config.env gravado em $CONFIG_FILE"
 
 # ============================================================
 # Atualizar secrets.env com as senhas dos proxies
@@ -270,6 +273,6 @@ done
 install -m 0600 "$TMP_SECRETS" "$SECRETS_FILE"
 rm -f "$TMP_SECRETS"
 
-echo ">>> secrets.env atualizado (${PROXY_COUNT} senha(s) de proxy)"
-echo ">>> Arquivo de configuracao criado!"
+log_nivel INFO "secrets.env atualizado (${PROXY_COUNT} senha(s) de proxy)"
+log_nivel OK "Arquivo de configuracao criado!"
 echo "============================================================"

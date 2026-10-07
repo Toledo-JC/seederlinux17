@@ -12,6 +12,9 @@
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="11-printers"
+
 echo "============================================================"
 echo "Configurar CUPS e impressoras"
 echo "============================================================"
@@ -24,21 +27,21 @@ DEFAULT_PRINTER="{{DEFAULT_PRINTER}}"
 PRINTERS="{{PRINTERS}}"
 DOMINIO="{{DOMINIO}}"
 
-echo ">>> Servidor de impressao: $PRINT_SERVER"
-echo ">>> Impressora padrao: $DEFAULT_PRINTER"
+log_nivel INFO "Servidor de impressao: $PRINT_SERVER"
+log_nivel INFO "Impressora padrao: $DEFAULT_PRINTER"
 
 # Normalizar PRINT_SERVER: remover http:// ou https:// do prefixo e
 # barra final (operador pode cadastrar URL completa no painel, mas
 # o CUPS/IPP espera apenas host:port).
 PRINT_SERVER="$(echo "$PRINT_SERVER" | sed -E 's|^https?://||' | sed 's|/$||')"
-echo ">>> Servidor de impressao (normalizado): $PRINT_SERVER"
+log_nivel INFO "Servidor de impressao (normalizado): $PRINT_SERVER"
 
 # ============================================================
 # Verificar se ha servidor de impressao
 # ============================================================
 if [ -z "$PRINT_SERVER" ] || [ "$PRINT_SERVER" = "" ]; then
-    echo ">>> AVISO: PRINT_SERVER nao definido. Pulando configuracao."
-    echo ">>> [07] Impressoras nao configuradas (servidor ausente)."
+    log_nivel AVISO "PRINT_SERVER nao definido. Pulando configuracao."
+    log_nivel INFO "[07] Impressoras nao configuradas (servidor ausente)."
     echo "============================================================"
     exit 0
 fi
@@ -47,8 +50,8 @@ fi
 # Verificar se o CUPS foi instalado (no core_packages.sh)
 # ============================================================
 if ! command -v cupsctl &>/dev/null; then
-    echo ">>> AVISO: CUPS nao instalado. Pulando configuracao."
-    echo ">>> [07] Impressoras nao configuradas (CUPS ausente)."
+    log_nivel AVISO "CUPS nao instalado. Pulando configuracao."
+    log_nivel INFO "[07] Impressoras nao configuradas (CUPS ausente)."
     echo "============================================================"
     exit 0
 fi
@@ -56,7 +59,7 @@ fi
 # ============================================================
 # Configurar CUPS
 # ============================================================
-echo ">>> Configurando CUPS..."
+log_nivel INFO "Configurando CUPS..."
 
 # Habilitar e iniciar CUPS
 systemctl enable cups
@@ -99,7 +102,7 @@ systemctl restart cups
 # ============================================================
 # Configurar impressoras via servidor CUPS remoto
 # ============================================================
-echo ">>> Configurando impressoras via servidor remoto..."
+log_nivel INFO "Configurando impressoras via servidor remoto..."
 
 # Criar arquivo de configuracao client.conf do CUPS
 cat > /etc/cups/client.conf <<EOF
@@ -111,22 +114,22 @@ EOF
 # Instalar cada impressora listada
 # ============================================================
 if [ -n "$PRINTERS" ] && [ "$PRINTERS" != "" ]; then
-    echo ">>> Instalando impressoras listadas..."
+    log_nivel INFO "Instalando impressoras listadas..."
     for PRINTER in $PRINTERS; do
-        echo ">>> Configurando impressora: $PRINTER"
+        log_nivel INFO "Configurando impressora: $PRINTER"
         # Adicionar impressora via lpadmin (IPP via servidor)
         lpadmin -p "$PRINTER" -E -v "ipp://${PRINT_SERVER}/printers/${PRINTER}" \
             -m everywhere 2>/dev/null || {
-            echo ">>> AVISO: Falha ao adicionar impressora $PRINTER"
+            log_nivel AVISO "Falha ao adicionar impressora $PRINTER"
         }
     done
 else
-    echo ">>> Nenhuma impressora listada. Usando descoberta automatica."
+    log_nivel INFO "Nenhuma impressora listada. Usando descoberta automatica."
     # Descoberta automatica via servidor remoto
     lpinfo -h "$PRINT_SERVER" -v 2>/dev/null | grep ipp | while read -r line; do
         PRINTER_URI=$(echo "$line" | awk '{print $2}')
         PRINTER_NAME=$(basename "$PRINTER_URI")
-        echo ">>> Impressora encontrada: $PRINTER_NAME"
+        log_nivel INFO "Impressora encontrada: $PRINTER_NAME"
         lpadmin -p "$PRINTER_NAME" -E -v "$PRINTER_URI" -m everywhere 2>/dev/null || true
     done
 fi
@@ -135,9 +138,9 @@ fi
 # Definir impressora padrao
 # ============================================================
 if [ -n "$DEFAULT_PRINTER" ] && [ "$DEFAULT_PRINTER" != "" ]; then
-    echo ">>> Definindo impressora padrao: $DEFAULT_PRINTER"
+    log_nivel INFO "Definindo impressora padrao: $DEFAULT_PRINTER"
     lpadmin -d "$DEFAULT_PRINTER" 2>/dev/null || {
-        echo ">>> AVISO: Falha ao definir impressora padrao"
+        log_nivel AVISO "Falha ao definir impressora padrao"
     }
 fi
 
@@ -146,6 +149,6 @@ fi
 # ============================================================
 systemctl restart cups
 
-echo ">>> CUPS e impressoras configurados!"
+log_nivel OK "CUPS e impressoras configurados!"
 echo "============================================================"
 )

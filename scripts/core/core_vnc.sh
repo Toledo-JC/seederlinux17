@@ -17,6 +17,9 @@
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="12-vnc"
+
 echo "============================================================"
 echo "Configurar x11vnc"
 echo "============================================================"
@@ -32,19 +35,19 @@ DISPLAY_MANAGER="{{DISPLAY_MANAGER}}"
 if [ -n "$VNC_PASSWORD_B64" ] && [ "$VNC_PASSWORD_B64" != "" ]; then
     VNC_PASSWORD=$(echo "$VNC_PASSWORD_B64" | base64 -d 2>/dev/null)
     if [ -z "$VNC_PASSWORD" ]; then
-        echo ">>> AVISO: Falha ao decodificar VNC_PASSWORD_B64. Sera gerada senha aleatoria."
+        log_nivel AVISO "Falha ao decodificar VNC_PASSWORD_B64. Sera gerada senha aleatoria."
     fi
 fi
 unset VNC_PASSWORD_B64
 
-echo ">>> VNC habilitado: $VNC_ENABLED"
+log_nivel INFO "VNC habilitado: $VNC_ENABLED"
 
 # ============================================================
 # Verificar se VNC esta habilitado
 # ============================================================
 if [ "$VNC_ENABLED" != "true" ]; then
-    echo ">>> VNC desativado. Pulando configuracao."
-    echo ">>> [08] x11vnc desativado."
+    log_nivel INFO "VNC desativado. Pulando configuracao."
+    log_nivel INFO "[08] x11vnc desativado."
     echo "============================================================"
     exit 0
 fi
@@ -53,8 +56,8 @@ fi
 # Verificar se o x11vnc foi instalado (no core_packages.sh)
 # ============================================================
 if ! command -v x11vnc &>/dev/null; then
-    echo ">>> AVISO: x11vnc nao instalado. Pulando configuracao."
-    echo ">>> [08] x11vnc nao configurado (pacote ausente)."
+    log_nivel AVISO "x11vnc nao instalado. Pulando configuracao."
+    log_nivel INFO "[08] x11vnc nao configurado (pacote ausente)."
     echo "============================================================"
     exit 0
 fi
@@ -68,13 +71,13 @@ if [ -z "$DISPLAY_MANAGER" ] || [ "$DISPLAY_MANAGER" = "" ]; then
     elif systemctl is-active --quiet sddm 2>/dev/null; then DISPLAY_MANAGER="sddm"
     else DISPLAY_MANAGER="lightdm"
     fi
-    echo ">>> Display Manager detectado: $DISPLAY_MANAGER"
+    log_nivel INFO "Display Manager detectado: $DISPLAY_MANAGER"
 fi
 
 # ============================================================
 # Configurar senha do VNC (SEM expor em texto plano)
 # ============================================================
-echo ">>> Configurando senha do VNC..."
+log_nivel INFO "Configurando senha do VNC..."
 mkdir -p /etc/x11vnc
 mkdir -p /etc/seederlinux
 
@@ -83,14 +86,14 @@ SECRETS_FILE="/etc/seederlinux/secrets.env"
 if [ -n "$VNC_PASSWORD" ] && [ "$VNC_PASSWORD" != "" ]; then
     x11vnc -storepasswd "$VNC_PASSWORD" /etc/x11vnc/vncpasswd
     chmod 600 /etc/x11vnc/vncpasswd
-    echo ">>> Senha VNC configurada (fornecida pela OM)"
+    log_nivel INFO "Senha VNC configurada (fornecida pela OM)"
     echo "VNC_PASSWORD_SET=true" >> "$SECRETS_FILE"
 else
-    echo ">>> VNC_PASSWORD nao definido. Gerando senha aleatoria."
+    log_nivel INFO "VNC_PASSWORD nao definido. Gerando senha aleatoria."
     RANDOM_PASS=$(openssl rand -base64 12)
     x11vnc -storepasswd "$RANDOM_PASS" /etc/x11vnc/vncpasswd
     chmod 600 /etc/x11vnc/vncpasswd
-    echo ">>> Senha VNC gerada com sucesso"
+    log_nivel INFO "Senha VNC gerada com sucesso"
     echo "VNC_PASSWORD_SET=true" >> "$SECRETS_FILE"
 fi
 
@@ -102,7 +105,7 @@ unset RANDOM_PASS
 # ============================================================
 # Criar servico systemd para x11vnc
 # ============================================================
-echo ">>> Criando servico systemd x11vnc..."
+log_nivel INFO "Criando servico systemd x11vnc..."
 
 # Detectar display Xorg ativo em runtime; cai em :0 se nao encontrar.
 VNC_DISPLAY="$(ps aux | grep -E '[X]org' | grep -oE ':[0-9]+' | head -1)"
@@ -130,10 +133,10 @@ EOF
 systemctl daemon-reload
 systemctl enable x11vnc.service
 systemctl start x11vnc.service 2>/dev/null || {
-    echo ">>> AVISO: Nao foi possivel iniciar x11vnc agora."
-    echo ">>> O servico sera iniciado apos o display manager."
+    log_nivel AVISO "Nao foi possivel iniciar x11vnc agora."
+    log_nivel INFO "O servico sera iniciado apos o display manager."
 }
 
-echo ">>> x11vnc configurado!"
+log_nivel OK "x11vnc configurado!"
 echo "============================================================"
 )

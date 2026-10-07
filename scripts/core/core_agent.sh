@@ -27,13 +27,16 @@
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="23-agent"
+
 echo "============================================================"
 echo "Instalar agente de check-in (seeder-agent)"
 echo "============================================================"
 
 INSTALL_AGENT="{{INSTALL_AGENT}}"
 if [ "$INSTALL_AGENT" != "true" ]; then
-    echo ">>> Instalacao do agente desativada (INSTALL_AGENT=false). Pulando."
+    log_nivel INFO "Instalacao do agente desativada (INSTALL_AGENT=false). Pulando."
     echo "============================================================"
     exit 0
 fi
@@ -44,9 +47,9 @@ AGENT_NO_CHECK_CERT="{{AGENT_NO_CHECK_CERT}}"
 
 SEEDER_SERVER="${SEEDER_SERVER%/}"
 
-echo ">>> Servidor: $SEEDER_SERVER"
-echo ">>> Organizacao: $OM_ACRONYM"
-echo ">>> Ignorar cert SSL: $AGENT_NO_CHECK_CERT"
+log_nivel INFO "Servidor: $SEEDER_SERVER"
+log_nivel INFO "Organizacao: $OM_ACRONYM"
+log_nivel INFO "Ignorar cert SSL: $AGENT_NO_CHECK_CERT"
 
 # ============================================================
 # Montar flag do certificado
@@ -64,7 +67,7 @@ fi
 # tiver http_proxy configurado (por OM com proxy de CLI), o wget
 # tenta passar pelo proxy e recebe 407.
 
-echo ">>> Baixando agente de ${SEEDER_SERVER}/downloads/agent.py ..."
+log_nivel INFO "Baixando agente de ${SEEDER_SERVER}/downloads/agent.py ..."
 mkdir -p /usr/local/bin
 
 AGENT_URL="${SEEDER_SERVER}/downloads/agent.py"
@@ -72,24 +75,24 @@ AGENT_TMP="/tmp/seeder-agent-download.$$"
 
 if wget -q --no-check-certificate --no-proxy --timeout=30 -O "$AGENT_TMP" "$AGENT_URL"; then
     if [ ! -s "$AGENT_TMP" ]; then
-        echo ">>> ERRO: Agente baixado mas arquivo esta vazio. Verifique $AGENT_URL"
+        log_nivel ERRO "Agente baixado mas arquivo esta vazio. Verifique $AGENT_URL"
         rm -f "$AGENT_TMP"
         echo "============================================================"
         exit 1
     fi
     install -m 0755 "$AGENT_TMP" /usr/local/bin/seeder-agent
     rm -f "$AGENT_TMP"
-    echo ">>> Agente instalado em /usr/local/bin/seeder-agent"
+    log_nivel INFO "Agente instalado em /usr/local/bin/seeder-agent"
 
     # Sanity check: verifica que o arquivo tem o cabecalho esperado
     if ! head -5 /usr/local/bin/seeder-agent | grep -q "SeederLinux"; then
-        echo ">>> AVISO: agente baixado nao parece ser o esperado."
-        echo ">>>        Primeiras linhas:"
+        log_nivel AVISO "agente baixado nao parece ser o esperado."
+        log_nivel INFO "Primeiras linhas:"
         head -3 /usr/local/bin/seeder-agent | sed 's/^/    /'
     fi
 else
-    echo ">>> ERRO: Falha ao baixar o agente de $AGENT_URL"
-    echo ">>>        Verifique conectividade L3 com o Seeder."
+    log_nivel ERRO "Falha ao baixar o agente de $AGENT_URL"
+    log_nivel INFO "Verifique conectividade L3 com o Seeder."
     rm -f "$AGENT_TMP"
     echo "============================================================"
     exit 1
@@ -120,16 +123,16 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 chmod 644 /etc/cron.d/seeder-agent
 
-echo ">>> Cron configurado: /etc/cron.d/seeder-agent"
+log_nivel INFO "Cron configurado: /etc/cron.d/seeder-agent"
 
 # ============================================================
 # Primeiro check-in (em background, sem bloquear o bundle)
 # ============================================================
-echo ">>> Executando primeiro check-in em background..."
+log_nivel INFO "Executando primeiro check-in em background..."
 mkdir -p /var/log/seeder
 nohup /usr/local/bin/seeder-agent --org "$OM_ACRONYM" --no-check-certificate \
     > /tmp/seeder-first-checkin.log 2>&1 &
 
-echo ">>> Agente instalado e agendado!"
+log_nivel OK "Agente instalado e agendado!"
 echo "============================================================"
 )

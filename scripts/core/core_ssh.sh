@@ -7,6 +7,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="08-ssh"
+
 echo "============================================================"
 echo "Configurar SSH"
 echo "============================================================"
@@ -14,22 +17,22 @@ echo "============================================================"
 SSH_PORT="{{SSH_PORT}}"
 SSH_GROUPS="{{SSH_GROUPS}}"
 
-echo ">>> Porta SSH: ${SSH_PORT:-22}"
-echo ">>> Grupos SSH: ${SSH_GROUPS:-nenhum}"
+log_nivel INFO "Porta SSH: ${SSH_PORT:-22}"
+log_nivel INFO "Grupos SSH: ${SSH_GROUPS:-nenhum}"
 
 # Configurar porta
 if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "" ] && [ "$SSH_PORT" != "22" ]; then
-    echo ">>> Configurando porta SSH: $SSH_PORT"
+    log_nivel INFO "Configurando porta SSH: $SSH_PORT"
     if [ -f /etc/ssh/sshd_config ]; then
         cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
         sed -i "s/^#*Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config
-        echo ">>> Porta SSH alterada para $SSH_PORT"
+        log_nivel INFO "Porta SSH alterada para $SSH_PORT"
     fi
 fi
 
 # Configurar AllowGroups
 if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
-    echo ">>> Configurando AllowGroups: $SSH_GROUPS"
+    log_nivel INFO "Configurando AllowGroups: $SSH_GROUPS"
     if [ -f /etc/ssh/sshd_config ]; then
         IFS=$'\n,' read -ra GRP_ARRAY <<< "$SSH_GROUPS"
         GRP_LIST=""
@@ -50,7 +53,7 @@ if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
             if ! grep -q "^AllowGroups " /etc/ssh/sshd_config; then
                 echo "AllowGroups $GRP_LIST" >> /etc/ssh/sshd_config
             fi
-            echo ">>> AllowGroups configurado: $GRP_LIST"
+            log_nivel INFO "AllowGroups configurado: $GRP_LIST"
         fi
     fi
 fi
@@ -59,8 +62,8 @@ fi
 if [ -n "$GRP_LIST" ]; then
     for GRP in $GRP_LIST; do
         if ! getent group "$GRP" >/dev/null 2>&1; then
-            echo ">>> AVISO: grupo '$GRP' nao existe no sistema/AD."
-            echo ">>>        AllowGroups vai BLOQUEAR todo mundo ate corrigir."
+            log_nivel AVISO "grupo '$GRP' nao existe no sistema/AD."
+            log_nivel INFO "AllowGroups vai BLOQUEAR todo mundo ate corrigir."
         fi
     done
 fi
@@ -80,5 +83,5 @@ if [ -f /etc/ssh/sshd_config ]; then
     systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
 fi
 
-echo ">>> SSH configurado!"
+log_nivel OK "SSH configurado!"
 echo "============================================================"

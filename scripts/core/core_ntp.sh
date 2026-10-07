@@ -31,6 +31,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="02-ntp"
+
 echo "============================================================"
 echo "Sincronizar horario (NTP adaptativo)"
 echo "============================================================"
@@ -51,39 +54,30 @@ NTP_SERVER="${NTP_SERVER#https://}"
 NTP_STATE_DIR="/etc/seederlinux"
 NTP_STATE_FILE="${NTP_STATE_DIR}/ntp-state.env"
 mkdir -p "$NTP_STATE_DIR"
-
-# ============================================================
-# Helpers de log estruturado (prefixo literal - o lib/diag.sh
-# será usado a partir do Commit 3, quando todos os scripts forem
-# instrumentados juntos).
-# ============================================================
-_dns_tag="02-ntp"
-log_dns() { local _nivel="$1"; shift; printf '[%-5s] [%s] %s\n' "$_nivel" "$_dns_tag" "$*"; }
-
 # ============================================================
 # Exibir informacoes
 # ============================================================
-echo ">>> Servidor NTP: $NTP_SERVER"
-echo ">>> Fallback:     $DNS_INTERNET"
+log_nivel INFO "Servidor NTP: $NTP_SERVER"
+log_nivel INFO "Fallback:     $DNS_INTERNET"
 
 if [ -z "$NTP_SERVER" ] || [ "$NTP_SERVER" = "" ]; then
-    log_dns AVISO "NTP_SERVER vazio. Pulando configuracao NTP."
-    log_dns ACAO  "Defina NTP_SERVER no painel (IP ou FQDN do servidor NTP/DC)."
+    log_nivel AVISO "NTP_SERVER vazio. Pulando configuracao NTP."
+    log_nivel ACAO  "Defina NTP_SERVER no painel (IP ou FQDN do servidor NTP/DC)."
     exit 0
 fi
 
 # ============================================================
 # Pre-flight: L3 (informativo apenas - ICMP bloqueado nao impede NTP)
 # ============================================================
-log_dns TESTE "Pre-flight: testando alcance do servidor NTP $NTP_SERVER"
+log_nivel TESTE "Pre-flight: testando alcance do servidor NTP $NTP_SERVER"
 
 if command -v ping >/dev/null 2>&1; then
     if ping -c 2 -W 2 "$NTP_SERVER" >/dev/null 2>&1; then
-        log_dns OK    "L3 (ICMP): $NTP_SERVER responde"
+        log_nivel OK    "L3 (ICMP): $NTP_SERVER responde"
     else
-        log_dns AVISO "L3 (ICMP): $NTP_SERVER NAO responde a ping"
-        log_dns DIAG  "Isso NAO impede NTP - muitos servidores bloqueiam ICMP"
-        log_dns DIAG  "Prosseguindo para o teste NTP real"
+        log_nivel AVISO "L3 (ICMP): $NTP_SERVER NAO responde a ping"
+        log_nivel DIAG  "Isso NAO impede NTP - muitos servidores bloqueiam ICMP"
+        log_nivel DIAG  "Prosseguindo para o teste NTP real"
     fi
 fi
 
@@ -124,10 +118,10 @@ _parar_todos_ntp() {
 # Tentativa 1: systemd-timesyncd
 # ============================================================
 _try_systemd_timesyncd() {
-    log_dns TENT  "Tentativa 1/5: systemd-timesyncd (default Ubuntu)"
+    log_nivel TENT  "Tentativa 1/5: systemd-timesyncd (default Ubuntu)"
 
     if ! systemctl list-unit-files systemd-timesyncd.service >/dev/null 2>&1; then
-        log_dns DIAG  "systemd-timesyncd nao disponivel nesta distro"
+        log_nivel DIAG  "systemd-timesyncd nao disponivel nesta distro"
         return 1
     fi
 
@@ -140,22 +134,22 @@ _try_systemd_timesyncd() {
 NTP=$NTP_SERVER
 FallbackNTP=$DNS_INTERNET
 EOF
-        log_dns DIAG  "Config: /etc/systemd/timesyncd.conf -> NTP=$NTP_SERVER"
+        log_nivel DIAG  "Config: /etc/systemd/timesyncd.conf -> NTP=$NTP_SERVER"
     fi
 
     systemctl enable systemd-timesyncd 2>/dev/null || true
     systemctl restart systemd-timesyncd 2>/dev/null || true
 
-    log_dns TESTE "Aguardando 20s por sincronizacao..."
+    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         if _ntp_sincronizado; then
-            log_dns OK    "Sincronizado em $((i*2))s via systemd-timesyncd"
+            log_nivel OK    "Sincronizado em $((i*2))s via systemd-timesyncd"
             return 0
         fi
     done
-    log_dns AVISO "systemd-timesyncd nao sincronizou em 20s"
-    log_dns DIAG  "Provavel causa: DC Windows (w32time) incompativel com systemd-timesyncd"
+    log_nivel AVISO "systemd-timesyncd nao sincronizou em 20s"
+    log_nivel DIAG  "Provavel causa: DC Windows (w32time) incompativel com systemd-timesyncd"
     return 1
 }
 
@@ -163,12 +157,12 @@ EOF
 # Tentativa 2: chrony
 # ============================================================
 _try_chrony() {
-    log_dns TENT  "Tentativa 2/5: chrony"
+    log_nivel TENT  "Tentativa 2/5: chrony"
 
     if ! command -v chronyd >/dev/null 2>&1; then
-        log_dns DIAG  "chrony nao instalado - instalando..."
+        log_nivel DIAG  "chrony nao instalado - instalando..."
         DEBIAN_FRONTEND=noninteractive apt-get install -y chrony 2>/dev/null || {
-            log_dns AVISO "Falha ao instalar chrony. Pulando."
+            log_nivel AVISO "Falha ao instalar chrony. Pulando."
             return 1
         }
     fi
@@ -181,25 +175,25 @@ driftfile /var/lib/chrony/chrony.drift
 makestep 1.0 3
 rtcsync
 EOF
-    log_dns DIAG  "Config: /etc/chrony/chrony.conf -> server $NTP_SERVER iburst trust"
+    log_nivel DIAG  "Config: /etc/chrony/chrony.conf -> server $NTP_SERVER iburst trust"
 
     systemctl enable chrony 2>/dev/null || true
     systemctl restart chrony 2>/dev/null || true
 
-    log_dns TESTE "Aguardando 20s por sincronizacao..."
+    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         chronyc makestep 2>/dev/null || true
         if _ntp_sincronizado; then
-            log_dns OK    "Sincronizado em $((i*2))s via chrony"
+            log_nivel OK    "Sincronizado em $((i*2))s via chrony"
             return 0
         fi
     done
-    log_dns AVISO "chrony nao sincronizou em 20s"
-    log_dns DIAG  "chronyc sources abaixo (para o tecnico ver o motivo):"
+    log_nivel AVISO "chrony nao sincronizou em 20s"
+    log_nivel DIAG  "chronyc sources abaixo (para o tecnico ver o motivo):"
     chronyc sources -v 2>/dev/null | sed 's/^/    /' || true
-    log_dns DIAG  "Causa tipica: DC Windows se declara stratum 1 sem refid valido"
-    log_dns DIAG  "chrony rejeita por padrao. NTPsec aceita. Avancando."
+    log_nivel DIAG  "Causa tipica: DC Windows se declara stratum 1 sem refid valido"
+    log_nivel DIAG  "chrony rejeita por padrao. NTPsec aceita. Avancando."
     return 1
 }
 
@@ -207,12 +201,12 @@ EOF
 # Tentativa 3: ntpsec
 # ============================================================
 _try_ntpsec() {
-    log_dns TENT  "Tentativa 3/5: ntpsec"
+    log_nivel TENT  "Tentativa 3/5: ntpsec"
 
     if ! dpkg -l ntpsec 2>/dev/null | grep -q "^ii"; then
-        log_dns DIAG  "ntpsec nao instalado - instalando..."
+        log_nivel DIAG  "ntpsec nao instalado - instalando..."
         DEBIAN_FRONTEND=noninteractive apt-get install -y ntpsec 2>/dev/null || {
-            log_dns AVISO "Falha ao instalar ntpsec. Pulando."
+            log_nivel AVISO "Falha ao instalar ntpsec. Pulando."
             return 1
         }
     fi
@@ -227,21 +221,21 @@ restrict -4 default kod notrap nomodify nopeer noquery limited
 restrict -6 default kod notrap nomodify nopeer noquery limited
 restrict 127.0.0.1
 EOF
-    log_dns DIAG  "Config: /etc/ntpsec/ntp.conf -> server $NTP_SERVER iburst"
+    log_nivel DIAG  "Config: /etc/ntpsec/ntp.conf -> server $NTP_SERVER iburst"
 
     systemctl enable ntpsec 2>/dev/null || true
     systemctl restart ntpsec 2>/dev/null || true
 
-    log_dns TESTE "Aguardando 20s por sincronizacao..."
+    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         if _ntp_sincronizado; then
-            log_dns OK    "Sincronizado em $((i*2))s via ntpsec"
+            log_nivel OK    "Sincronizado em $((i*2))s via ntpsec"
             return 0
         fi
     done
-    log_dns AVISO "ntpsec nao sincronizou em 20s"
-    log_dns DIAG  "ntpq -p abaixo:"
+    log_nivel AVISO "ntpsec nao sincronizou em 20s"
+    log_nivel DIAG  "ntpq -p abaixo:"
     ntpq -p 2>/dev/null | sed 's/^/    /' || true
     return 1
 }
@@ -250,19 +244,19 @@ EOF
 # Tentativa 4: ntp (ISC classico)
 # ============================================================
 _try_ntp_isc() {
-    log_dns TENT  "Tentativa 4/5: ntp (ISC classico)"
+    log_nivel TENT  "Tentativa 4/5: ntp (ISC classico)"
 
     # Se ntpsec esta instalado, ele ja fornece /usr/sbin/ntpd.
     # Removemos ntpsec antes de instalar o ntp ISC para evitar conflito.
     if dpkg -l ntpsec 2>/dev/null | grep -q "^ii"; then
-        log_dns DIAG  "Removendo ntpsec para instalar ntp ISC..."
+        log_nivel DIAG  "Removendo ntpsec para instalar ntp ISC..."
         DEBIAN_FRONTEND=noninteractive apt-get remove -y ntpsec 2>/dev/null || true
     fi
 
     if ! dpkg -l ntp 2>/dev/null | grep -q "^ii"; then
-        log_dns DIAG  "ntp ISC nao instalado - instalando..."
+        log_nivel DIAG  "ntp ISC nao instalado - instalando..."
         DEBIAN_FRONTEND=noninteractive apt-get install -y ntp 2>/dev/null || {
-            log_dns AVISO "Falha ao instalar ntp ISC. Pulando."
+            log_nivel AVISO "Falha ao instalar ntp ISC. Pulando."
             return 1
         }
     fi
@@ -275,20 +269,20 @@ driftfile /var/lib/ntp/ntp.drift
 restrict default kod nomodify notrap nopeer noquery
 restrict 127.0.0.1
 EOF
-    log_dns DIAG  "Config: /etc/ntp.conf -> server $NTP_SERVER iburst"
+    log_nivel DIAG  "Config: /etc/ntp.conf -> server $NTP_SERVER iburst"
 
     systemctl enable ntp 2>/dev/null || true
     systemctl restart ntp 2>/dev/null || true
 
-    log_dns TESTE "Aguardando 20s por sincronizacao..."
+    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         if _ntp_sincronizado; then
-            log_dns OK    "Sincronizado em $((i*2))s via ntp ISC"
+            log_nivel OK    "Sincronizado em $((i*2))s via ntp ISC"
             return 0
         fi
     done
-    log_dns AVISO "ntp ISC nao sincronizou em 20s"
+    log_nivel AVISO "ntp ISC nao sincronizou em 20s"
     return 1
 }
 
@@ -296,27 +290,27 @@ EOF
 # Tentativa 5: ntpdate + cron (ultimo recurso)
 # ============================================================
 _try_ntpdate_cron() {
-    log_dns TENT  "Tentativa 5/5: ntpdate + cron (step one-shot)"
+    log_nivel TENT  "Tentativa 5/5: ntpdate + cron (step one-shot)"
 
     if ! command -v ntpdate >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y ntpdate 2>/dev/null || {
-            log_dns AVISO "Falha ao instalar ntpdate. Desistindo."
+            log_nivel AVISO "Falha ao instalar ntpdate. Desistindo."
             return 1
         }
     fi
 
     _parar_todos_ntp
 
-    log_dns TESTE "Executando ntpdate -u $NTP_SERVER (step unico)..."
+    log_nivel TESTE "Executando ntpdate -u $NTP_SERVER (step unico)..."
     local _out
     _out="$(ntpdate -u "$NTP_SERVER" 2>&1 || true)"
     echo "$_out" | sed 's/^/    /'
 
     if echo "$_out" | grep -qiE "step|adjust"; then
-        log_dns OK    "Relogio ajustado via ntpdate"
-        log_dns DIAG  "ntpdate e' one-shot; sera reagendado via cron a cada 5min"
-        log_dns DIAG  "Isso NAO substitui um daemon NTP - e' paliativo"
-        log_dns ACAO  "Corrigir o NTP do servidor ($NTP_SERVER) para o daemon funcionar"
+        log_nivel OK    "Relogio ajustado via ntpdate"
+        log_nivel DIAG  "ntpdate e' one-shot; sera reagendado via cron a cada 5min"
+        log_nivel DIAG  "Isso NAO substitui um daemon NTP - e' paliativo"
+        log_nivel ACAO  "Corrigir o NTP do servidor ($NTP_SERVER) para o daemon funcionar"
 
         mkdir -p /var/lib/seederlinux
         touch /var/lib/seederlinux/ntpdate-last-ok
@@ -332,7 +326,7 @@ EOF
         chmod 644 /etc/cron.d/seederlinux-ntpdate
         return 0
     fi
-    log_dns AVISO "ntpdate falhou"
+    log_nivel AVISO "ntpdate falhou"
     return 1
 }
 
@@ -359,8 +353,8 @@ fi
 # ============================================================
 echo ""
 if [ "$NTP_RESULT" = "OK" ]; then
-    log_dns OK    "NTP sincronizado via: $NTP_CLIENT"
-    log_dns DIAG  "Horario local: $(date -Is)"
+    log_nivel OK    "NTP sincronizado via: $NTP_CLIENT"
+    log_nivel DIAG  "Horario local: $(date -Is)"
 
     cat > "$NTP_STATE_FILE" <<EOF
 # SeederLinux - Estado do NTP
@@ -371,16 +365,16 @@ NTP_LAST_OK="$(date +%s)"
 EOF
     chmod 644 "$NTP_STATE_FILE"
 else
-    log_dns ERRO  "NTP NAO sincronizou com nenhum dos 5 clientes"
-    log_dns DIAG  "Causas mais provaveis:"
-    log_dns DIAG  "  1. Firewall do servidor bloqueando UDP/123 inbound"
-    log_dns DIAG  "  2. w32time (Windows) desconfigurado no servidor"
-    log_dns DIAG  "  3. Servidor NTP incorreto no painel"
-    log_dns DIAG  "  4. Rede L3 indisponivel entre estacao e servidor"
-    log_dns ACAO  "No servidor (Windows, como admin): w32tm /query /status"
-    log_dns ACAO  "Abrir firewall UDP 123 inbound no servidor"
-    log_dns ACAO  "Na estacao: ntpdate -q $NTP_SERVER"
-    log_dns DIAG  "O bundle continua, mas Kerberos pode falhar com 'Clock skew too great'"
+    log_nivel ERRO  "NTP NAO sincronizou com nenhum dos 5 clientes"
+    log_nivel DIAG  "Causas mais provaveis:"
+    log_nivel DIAG  "  1. Firewall do servidor bloqueando UDP/123 inbound"
+    log_nivel DIAG  "  2. w32time (Windows) desconfigurado no servidor"
+    log_nivel DIAG  "  3. Servidor NTP incorreto no painel"
+    log_nivel DIAG  "  4. Rede L3 indisponivel entre estacao e servidor"
+    log_nivel ACAO  "No servidor (Windows, como admin): w32tm /query /status"
+    log_nivel ACAO  "Abrir firewall UDP 123 inbound no servidor"
+    log_nivel ACAO  "Na estacao: ntpdate -q $NTP_SERVER"
+    log_nivel DIAG  "O bundle continua, mas Kerberos pode falhar com 'Clock skew too great'"
 
     cat > "$NTP_STATE_FILE" <<EOF
 # SeederLinux - Estado do NTP (NAO SINCRONIZADO)
@@ -393,5 +387,5 @@ EOF
     chmod 644 "$NTP_STATE_FILE"
 fi
 
-echo ">>> NTP configurado!"
+log_nivel OK "NTP configurado!"
 echo "============================================================"

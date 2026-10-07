@@ -30,6 +30,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="21-logoff"
+
 echo "============================================================"
 echo "Logoff minimalista"
 echo "============================================================"
@@ -45,7 +48,7 @@ MOUNT_BASE="{{MOUNT_BASE}}"
 # ============================================================
 # 1. Criar o script PERMANENTE em /usr/local/bin/seederlinux-logoff
 # ============================================================
-echo ">>> Criando script permanente: /usr/local/bin/seederlinux-logoff"
+log_nivel INFO "Criando script permanente: /usr/local/bin/seederlinux-logoff"
 
 cat > /usr/local/bin/seederlinux-logoff <<'PERMSCRIPT'
 #!/bin/bash
@@ -146,6 +149,6 @@ exit 0
 PERMSCRIPT
 
 chmod 755 /usr/local/bin/seederlinux-logoff
-echo ">>> Script permanente criado: /usr/local/bin/seederlinux-logoff"
-echo ">>> Logoff minimalista instalado!"
+log_nivel INFO "Script permanente criado: /usr/local/bin/seederlinux-logoff"
+log_nivel OK "Logoff minimalista instalado!"
 echo "============================================================"

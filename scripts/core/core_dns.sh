@@ -26,6 +26,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="01-dns"
+
 echo "============================================================"
 echo "Configurar DNS e resolucao de nomes"
 echo "============================================================"
@@ -40,28 +43,20 @@ DNS_PRIMARIO="{{DNS_PRIMARIO}}"
 DNS_SECUNDARIO="{{DNS_SECUNDARIO}}"
 DNS_INTERNET="{{DNS_INTERNET}}"
 OM_ACRONYM="{{OM_ACRONYM}}"
-
-# Remover protocolo indevido do NTP_SERVER (a OM pode ter cadastrado
-# "http://host" em vez de "host"; normalizamos aqui para nao quebrar
-# o chrony/ntp, que esperam apenas hostname/IP).
-NTP_SERVER="${NTP_SERVER#http://}"
-NTP_SERVER="${NTP_SERVER#https://}"
-
 NON_INTERACTIVE="${NON_INTERACTIVE:-false}"
 
 # ============================================================
 # Exibir informacoes
 # ============================================================
-echo ">>> Dominio: $DOMINIO"
-echo ">>> DNS primario: $DNS_PRIMARIO"
-echo ">>> DNS secundario: ${DNS_SECUNDARIO}"
-echo ">>> NTP: $NTP_SERVER"
+log_nivel INFO "Dominio: $DOMINIO"
+log_nivel INFO "DNS primario: $DNS_PRIMARIO"
+log_nivel INFO "DNS secundario: ${DNS_SECUNDARIO}"
 
 # ============================================================
 # Hostname interativo
 # ============================================================
 CURRENT_HOSTNAME=$(hostname)
-echo ">>> Hostname atual: $CURRENT_HOSTNAME"
+log_nivel INFO "Hostname atual: $CURRENT_HOSTNAME"
 
 if [ "$NON_INTERACTIVE" = "true" ]; then
     CHANGE_HOST="n"
@@ -71,11 +66,11 @@ fi
 
 if [[ "$CHANGE_HOST" =~ ^[Ss]$ ]]; then
     if [ "$NON_INTERACTIVE" = "true" ]; then
-        echo ">>> Modo não interativo: mantendo hostname atual."
+        log_nivel INFO "Modo não interativo: mantendo hostname atual."
     else
         read -p ">>> Novo hostname: " NEW_HOSTNAME
         hostnamectl set-hostname "$NEW_HOSTNAME"
-        echo ">>> Hostname alterado para: $NEW_HOSTNAME"
+        log_nivel INFO "Hostname alterado para: $NEW_HOSTNAME"
     fi
 fi
 
@@ -95,7 +90,7 @@ HOSTNAME_FQDN="${HOSTNAME_SHORT}.${DOMINIO}"
 # antes (chattr -i), trata o caso de symlink do systemd-resolved e
 # reescreve do zero.
 # ============================================================
-echo ">>> Configurando DNS temporario (Fase 1: internet primeiro para baixar pacotes)..."
+log_nivel INFO "Configurando DNS temporario (Fase 1: internet primeiro para baixar pacotes)..."
 
 # 1) Remover imutabilidade eventualmente deixada pelo core_domain.sh
 #    (Fase 2 usa chattr +i para proteger o resolv.conf do AD).
@@ -136,13 +131,13 @@ fi
 chmod 644 /etc/resolv.conf
 
 # 5) Log do conteudo real (util para debug em bundle)
-echo ">>> DNS temporario configurado:"
+log_nivel INFO "DNS temporario configurado:"
 sed 's/^/    /' /etc/resolv.conf
 
 # ============================================================
 # /etc/hosts - garantir resolucao do proprio host e do dominio
 # ============================================================
-echo ">>> Configurando /etc/hosts..."
+log_nivel INFO "Configurando /etc/hosts..."
 
 cp /etc/hosts /etc/hosts.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
 
@@ -160,7 +155,7 @@ for DC in $DC_IP_LIST; do
     echo "$DC    ${DC_HOSTNAME}.${DOMINIO} ${DC_HOSTNAME}" >> /etc/hosts
 done
 
-echo ">>> /etc/hosts configurado"
+log_nivel INFO "/etc/hosts configurado"
 
 # ============================================================
 # Aviso de contexto: sem mirror local
@@ -181,11 +176,11 @@ echo ">>> /etc/hosts configurado"
 # Se um tecnico reordenar os scripts na UI, manter essa restricao.
 # ============================================================
 if [ "${REPOSITORY_MODE:-PUBLIC}" = "PUBLIC" ]; then
-    echo "[INFO]  [01-dns] REPOSITORY_MODE=PUBLIC (sem mirror local)"
-    echo "[INFO]  [01-dns] Fase 1 exige internet real (DNS de internet na frente)"
-    echo "[DIAG]  [01-dns] Se a OM tiver mirror interno, mudar REPOSITORY_MODE no painel"
-    echo "[DIAG]  [01-dns] Ordem obrigatoria: core_dns (01) antes de core_ntp (02) antes de core_domain (07)"
+    log_nivel INFO "REPOSITORY_MODE=PUBLIC (sem mirror local)"
+    log_nivel INFO "Fase 1 exige internet real (DNS de internet na frente)"
+    log_nivel DIAG "Se a OM tiver mirror interno, mudar REPOSITORY_MODE no painel"
+    log_nivel DIAG "Ordem obrigatoria: core_dns (01) antes de core_ntp (02) antes de core_domain (07)"
 fi
 
-echo ">>> DNS e resolucao de nomes configurados!"
+log_nivel OK "DNS e resolucao de nomes configurados!"
 echo "============================================================"
