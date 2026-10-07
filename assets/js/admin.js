@@ -1164,7 +1164,7 @@ const variableHelpText = {
     HOMEPAGE: 'Inclua http:// ou https://. Ex: http://www.intraer',
     PRINTERS: 'Nomes separados por vírgula. Ex: printer1,printer2',
     COMPARTILHAMENTOS: 'Nomes separados por vírgula. Ex: publico,usuarios,setores',
-    SSH_GROUPS: 'Grupos separados por vírgula; use aspas duplas para nomes com espaços. Exemplos: root,_dasti; root,_dasti,"Domain Admins"; "_dasti","admins. do dominio". Grupos com espaço são aceitos no sudoers via GID, mas não no AllowGroups do SSH; para SSH, use apenas grupos sem espaço (ex: _dasti).'
+    SSH_GROUPS: 'Grupos separados por vírgula; nomes com espaços podem ser informados entre aspas duplas. O valor é normalizado para minúsculas ao salvar. Grupos com espaços são aceitos no sudoers via GID, mas não no AllowGroups do SSH.'
 };
 
 function getVariableTooltip(variable) {
@@ -1715,8 +1715,8 @@ function renderTypedInput(v) {
         let note = '';
         if (v.name === 'JAVA_EXCEPTIONS') ph = 'Uma URL por linha';
         if (v.name === 'SSH_GROUPS') {
-            ph = 'Grupos separados por vírgula. Ex: linux-admins,_DASTI';
-            note = '<span class="text-xs text-slate-400 mt-1 block">Digite o nome EXATO do grupo como exposto pelo AD (ex: _DASTI, linux-admins). Não use "\\ " nem espaços — espaços viram separadores no AllowGroups.</span>';
+            ph = 'Grupos separados por vírgula. Ex: linux-admins,_DASTI,"Domain Admins"';
+            note = '<span class="text-xs text-slate-400 mt-1 block">Nomes com espaços devem ser colocados entre aspas. O texto será normalizado para minúsculas; grupos com espaços são ignorados no AllowGroups do SSH, mas podem ser usados nas regras sudo.</span>';
         }
         return `<textarea data-var-id="${varId}" rows="2" class="var-textarea" placeholder="${ph}">${Utils.escapeHtml(val)}</textarea>${note}`;
     }
@@ -2085,6 +2085,43 @@ function filterByCategory(c) {
 }
 window.filterByCategory = filterByCategory;
 
+function normalizeSshGroupsCsv(value) {
+    const fields = [];
+    let field = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < String(value || '').length; i++) {
+        const char = String(value || '')[i];
+        if (char === '"') {
+            field += char;
+            if (inQuotes && String(value || '')[i + 1] === '"') {
+                field += '"';
+                i++;
+            } else {
+                inQuotes = !inQuotes;
+            }
+        } else if (char === ',' && !inQuotes) {
+            fields.push(field);
+            field = '';
+        } else {
+            field += char;
+        }
+    }
+    fields.push(field);
+
+    return fields.map((item) => {
+        let token = item.trim();
+        while (token.length >= 2 && token.startsWith('"') && token.endsWith('"')) {
+            token = token.slice(1, -1);
+        }
+        token = token.replace(/""/g, '"').trim().toLowerCase();
+        if (!token) return '';
+        return /[\s,"]/.test(token)
+            ? `"${token.replace(/"/g, '""')}"`
+            : token;
+    }).filter(Boolean).join(',');
+}
+
 async function saveVariables() {
     if (!currentOrgId) { Toast.error('Selecione uma organizacao antes de salvar'); return; }
 
@@ -2111,6 +2148,11 @@ async function saveVariables() {
             collected[varId] = value;
         }
     });
+
+    const sshGroupsVariable = allVariables.find(variable => variable.name === 'SSH_GROUPS');
+    if (sshGroupsVariable && String(sshGroupsVariable.id) in collected) {
+        collected[String(sshGroupsVariable.id)] = normalizeSshGroupsCsv(collected[String(sshGroupsVariable.id)]);
+    }
 
     // Encode password fields marked as b64 before sending to API
     document.querySelectorAll('[data-b64-encode="1"][data-var-id]').forEach(el => {
@@ -2152,6 +2194,15 @@ async function saveVariables() {
     }
 }
 window.saveVariables = saveVariables;
+
+document.addEventListener('blur', (event) => {
+    const input = event.target;
+    if (!input || !input.matches('textarea[data-var-id]')) return;
+    const variable = allVariables.find(item => String(item.id) === String(input.dataset.varId));
+    if (variable && variable.name === 'SSH_GROUPS') {
+        input.value = normalizeSshGroupsCsv(input.value);
+    }
+}, true);
 
 // Re-render vars quando toggle "pai" muda (para esconder/mostrar dependentes)
 document.addEventListener('change', (e) => {

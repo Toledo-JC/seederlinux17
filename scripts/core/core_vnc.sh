@@ -63,18 +63,6 @@ if ! command -v x11vnc &>/dev/null; then
 fi
 
 # ============================================================
-# Detectar Display Manager se nao definido
-# ============================================================
-if [ -z "$DISPLAY_MANAGER" ] || [ "$DISPLAY_MANAGER" = "" ]; then
-    if systemctl is-active --quiet lightdm 2>/dev/null; then DISPLAY_MANAGER="lightdm"
-    elif systemctl is-active --quiet gdm3 2>/dev/null; then DISPLAY_MANAGER="gdm3"
-    elif systemctl is-active --quiet sddm 2>/dev/null; then DISPLAY_MANAGER="sddm"
-    else DISPLAY_MANAGER="lightdm"
-    fi
-    log_nivel INFO "Display Manager detectado: $DISPLAY_MANAGER"
-fi
-
-# ============================================================
 # Configurar senha do VNC (SEM expor em texto plano)
 # ============================================================
 log_nivel INFO "Configurando senha do VNC..."
@@ -108,25 +96,89 @@ unset RANDOM_PASS
 log_nivel INFO "Criando servico systemd x11vnc..."
 
 # ============================================================
-# Display e autenticação do x11vnc
-#
-# Uso fixo de `:0` + `-auth guess`. Motivo (achado em campo):
-#   1. O Xorg no Debian/Ubuntu/Mint/Zorin usa `:0` por padrão. A
-#      tentativa de "extrair o display do ps" pegou `:41` de um
-#      processo alheio e quebrou o x11vnc (loop infinito).
-#   2. O `-auth guess` do x11vnc descobre o Xauthority correto
-#      sozinho em GDM3, LightDM e SDDM - inclusive quando o GDM
-#      roda em /run/user/<uid-gdm>/gdm/Xauthority. Extrair o
-#      caminho via ps pegou o Xauthority do USUÁRIO (toledojcct)
-#      e não do GDM, apontando para um diretório inexistente.
-#
-# Se algum dia `:0` não for o display (ex: multi-seat com :1), o
-# operador edita o unit manualmente. Não tentar ser esperto.
+# Detectar o Display Manager ativo ou instalado
 # ============================================================
+detectar_dm_ativo() {
+    if systemctl is-active --quiet lightdm 2>/dev/null; then echo "lightdm"
+    elif systemctl is-active --quiet gdm3 2>/dev/null; then echo "gdm3"
+    elif systemctl is-active --quiet sddm 2>/dev/null; then echo "sddm"
+    elif systemctl is-active --quiet lxdm 2>/dev/null; then echo "lxdm"
+    elif systemctl is-active --quiet slim 2>/dev/null; then echo "slim"
+    else echo ""
+    fi
+}
+
+detectar_dm_instalado() {
+    if dpkg -l lightdm 2>/dev/null | grep -q "^ii"; then echo "lightdm"
+    elif dpkg -l gdm3 2>/dev/null | grep -q "^ii"; then echo "gdm3"
+    elif dpkg -l sddm 2>/dev/null | grep -q "^ii"; then echo "sddm"
+    elif dpkg -l lxdm 2>/dev/null | grep -q "^ii"; then echo "lxdm"
+    elif dpkg -l slim 2>/dev/null | grep -q "^ii"; then echo "slim"
+    else echo ""
+    fi
+}
+
+DISPLAY_MANAGER="$(detectar_dm_ativo)"
+[ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(detectar_dm_instalado)"
+[ -n "$DISPLAY_MANAGER" ] && log_nivel INFO "Display Manager: $DISPLAY_MANAGER"
+
+# ============================================================
+# Resolver Xauthority para o Display Manager detectado
+# ============================================================
+VNC_XAUTH=""
+
+case "$DISPLAY_MANAGER" in
+    lightdm)
+        if [ -r /var/run/lightdm/root/:0 ]; then
+            VNC_XAUTH="/var/run/lightdm/root/:0"
+        fi
+        ;;
+    sddm)
+        for d in /var/run/sddm/xauth_* /run/sddm/xauth_*; do
+            [ -r "$d" ] && VNC_XAUTH="$d" && break
+        done
+        ;;
+    lxdm)
+        if [ -r /var/run/lxdm/lxdm.auth ]; then
+            VNC_XAUTH="/var/run/lxdm/lxdm.auth"
+        fi
+        ;;
+    slim)
+        if [ -r /var/run/slim.auth ]; then
+            VNC_XAUTH="/var/run/slim.auth"
+        fi
+        ;;
+    gdm3)
+        for d in /run/user/*/gdm/Xauthority /var/run/gdm3/*/database/Xauthority /run/gdm3/*/database/Xauthority; do
+            if [ -r "$d" ]; then
+                mkdir -p /etc/x11vnc
+                cp -f "$d" /etc/x11vnc/Xauthority 2>/dev/null && \
+                    chmod 600 /etc/x11vnc/Xauthority && \
+                    VNC_XAUTH="/etc/x11vnc/Xauthority"
+                break
+            fi
+        done
+        ;;
+esac
+
+if [ -z "$VNC_XAUTH" ]; then
+    for d in /var/run/*/root/:0 /var/run/*/*.auth /run/*/*.auth /run/user/*/gdm/Xauthority; do
+        if [ -r "$d" ]; then
+            VNC_XAUTH="$d"
+            break
+        fi
+    done
+fi
+
+if [ -n "$VNC_XAUTH" ]; then
+    VNC_AUTH_ARG="-auth $VNC_XAUTH"
+    log_nivel INFO "Xauthority: $VNC_XAUTH"
+else
+    VNC_AUTH_ARG="-auth guess"
+    log_nivel AVISO "Xauthority nao encontrado - usando '-auth guess' (pode falhar em GDM3)"
+fi
 
 VNC_DISPLAY=":0"
-VNC_AUTH_ARG="-auth guess"
-
 log_nivel INFO "Display: $VNC_DISPLAY"
 log_nivel INFO "Argumento de auth: $VNC_AUTH_ARG"
 
@@ -134,13 +186,14 @@ cat > /etc/systemd/system/x11vnc.service <<EOF
 [Unit]
 Description=x11vnc Server - SeederLinux
 After=display-manager.service
+Wants=display-manager.service
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/x11vnc -display ${VNC_DISPLAY} ${VNC_AUTH_ARG} -forever -loop -noxdamage -repeat -rfbauth /etc/x11vnc/vncpasswd -rfbport 5900 -shared -o /var/log/x11vnc.log
 ExecStop=/usr/bin/killall x11vnc
 Restart=on-failure
-RestartSec=10
+RestartSec=15
 
 [Install]
 WantedBy=graphical.target

@@ -1422,6 +1422,31 @@ function handleDeleteOrganization($id) {
 }
 
 // VARIABLES
+function normalizeSshGroups($value) {
+    $groups = str_getcsv((string)$value, ',', '"', '');
+    $normalized = [];
+
+    foreach ($groups as $group) {
+        $group = trim((string)$group);
+        while (strlen($group) >= 2 && $group[0] === '"' && substr($group, -1) === '"') {
+            $group = substr($group, 1, -1);
+        }
+        $group = str_replace('""', '"', trim($group));
+        $group = function_exists('mb_strtolower')
+            ? mb_strtolower($group, 'UTF-8')
+            : strtolower($group);
+        if ($group === '') continue;
+
+        if (preg_match('/[\s,"]/', $group)) {
+            $normalized[] = '"' . str_replace('"', '""', $group) . '"';
+        } else {
+            $normalized[] = $group;
+        }
+    }
+
+    return implode(',', $normalized);
+}
+
 function handleGetVariables($orgId) {
     $user = getCurrentUser();
     // operador_om só pode acessar sua própria OM
@@ -1554,6 +1579,9 @@ function handleUpdateVariables($input) {
             $varName = $definitionNamesById[(int)$varId] ?? '';
             if (in_array($varName, $policyVarNames, true) && in_array($value, ['PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) {
                 $value = 'PROXY';
+            }
+            if ($varName === 'SSH_GROUPS') {
+                $value = normalizeSshGroups($value);
             }
             if (in_array($varName, $repositoryBooleanNames, true)) {
                 $normalized = mirrorInputBoolean(['value' => $value], 'value');
@@ -2916,14 +2944,8 @@ BUNDLE_HEADER;
             }
         }
 
-        // SSH_GROUPS: permitir hifens (nomes de grupo do AD como "linux-admins"),
-        // remover espacos e barras (quebram AllowGroups — viram separadores).
-        // O operador deve digitar o nome EXATO do grupo como exposto pelo AD,
-        // sem "\ " nem espacos. Ver UI para documentacao.
         if ($name === 'SSH_GROUPS') {
-            $cleaned = preg_replace('/[^a-zA-Z0-9_,-]/', '', $val);
-            $parts = array_filter(array_map('trim', explode(',', $cleaned)), fn($p) => $p !== '');
-            $v['value'] = implode(',', $parts);
+            $v['value'] = normalizeSshGroups($val);
         }
 
         // HOMEPAGE: remover espacos nas extremidades e normalizar espacos internos (sem forcar protocolo)
