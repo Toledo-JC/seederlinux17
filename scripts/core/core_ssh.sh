@@ -48,18 +48,7 @@ if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
     log_nivel INFO "Configurando AllowGroups: $SSH_GROUPS"
     if [ -f /etc/ssh/sshd_config ]; then
         GRP_LIST_PARSE="$(_parse_ssh_groups "$SSH_GROUPS")"
-        GRP_LIST=""
-        while IFS= read -r GRP; do
-            [ -z "$GRP" ] && continue
-            GRP="${GRP#"${GRP%%[![:space:]]*}"}"
-            GRP="${GRP%"${GRP##*[![:space:]]}"}"
-            [ -n "$GRP" ] || continue
-            if [ -z "$GRP_LIST" ]; then
-                GRP_LIST="$GRP"
-            else
-                GRP_LIST="$GRP_LIST $GRP"
-            fi
-        done <<< "$GRP_LIST_PARSE"
+        mapfile -t GRP_ARRAY <<< "$GRP_LIST_PARSE"
     fi
 fi
 
@@ -67,13 +56,13 @@ fi
 # Grupos que não existem no sistema/AD são removidos da lista.
 # Se TODOS forem removidos, NÃO escrever AllowGroups (senão tranca
 # todo mundo fora).
-if [ -n "$GRP_LIST" ]; then
+if [ -n "$GRP_LIST_PARSE" ]; then
     GRP_LIST_FILTRADO=""
     _sem_espaco_count=0
     _com_espaco_count=0
     _inexistente_count=0
 
-    for GRP in $GRP_LIST; do
+    for GRP in "${GRP_ARRAY[@]}"; do
         if echo "$GRP" | grep -q ' '; then
             log_nivel AVISO "grupo '$GRP' tem espaco - sshd AllowGroups nao suporta; ignorado"
             log_nivel DIAG  "Para permitir via SSH, use 'Match Group' no sshd_config (V2)"

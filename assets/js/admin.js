@@ -1164,7 +1164,7 @@ const variableHelpText = {
     HOMEPAGE: 'Inclua http:// ou https://. Ex: http://www.intraer',
     PRINTERS: 'Nomes separados por vírgula. Ex: printer1,printer2',
     COMPARTILHAMENTOS: 'Nomes separados por vírgula. Ex: publico,usuarios,setores',
-    SSH_GROUPS: 'Grupos (separados por vírgula): use aspas duplas para grupos com espaço no nome. Ex: root,_dasti; root,_dasti,"Domain Admins". Atenção: grupos com espaço não funcionam no AllowGroups do SSH; use apenas grupos sem espaço para SSH.'
+    SSH_GROUPS: 'Grupos separados por vírgula; use aspas duplas para nomes com espaços. Exemplos: root,_dasti; root,_dasti,"Domain Admins"; "_dasti","admins. do dominio". Grupos com espaço são aceitos no sudoers via GID, mas não no AllowGroups do SSH; para SSH, use apenas grupos sem espaço (ex: _dasti).'
 };
 
 function getVariableTooltip(variable) {
@@ -3933,4 +3933,3 @@ async function deleteOmProxy(id) {
     }
 }
 window.deleteOmProxy = deleteOmProxy;
-

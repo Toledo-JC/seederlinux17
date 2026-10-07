@@ -3296,18 +3296,7 @@ if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
     log_nivel INFO "Configurando AllowGroups: $SSH_GROUPS"
     if [ -f /etc/ssh/sshd_config ]; then
         GRP_LIST_PARSE="$(_parse_ssh_groups "$SSH_GROUPS")"
-        GRP_LIST=""
-        while IFS= read -r GRP; do
-            [ -z "$GRP" ] && continue
-            GRP="${GRP#"${GRP%%[![:space:]]*}"}"
-            GRP="${GRP%"${GRP##*[![:space:]]}"}"
-            [ -n "$GRP" ] || continue
-            if [ -z "$GRP_LIST" ]; then
-                GRP_LIST="$GRP"
-            else
-                GRP_LIST="$GRP_LIST $GRP"
-            fi
-        done <<< "$GRP_LIST_PARSE"
+        mapfile -t GRP_ARRAY <<< "$GRP_LIST_PARSE"
     fi
 fi
 
@@ -3315,13 +3304,13 @@ fi
 # Grupos que não existem no sistema/AD são removidos da lista.
 # Se TODOS forem removidos, NÃO escrever AllowGroups (senão tranca
 # todo mundo fora).
-if [ -n "$GRP_LIST" ]; then
+if [ -n "$GRP_LIST_PARSE" ]; then
     GRP_LIST_FILTRADO=""
     _sem_espaco_count=0
     _com_espaco_count=0
     _inexistente_count=0
 
-    for GRP in $GRP_LIST; do
+    for GRP in "${GRP_ARRAY[@]}"; do
         if echo "$GRP" | grep -q ' '; then
             log_nivel AVISO "grupo '$GRP' tem espaco - sshd AllowGroups nao suporta; ignorado"
             log_nivel DIAG  "Para permitir via SSH, use 'Match Group' no sshd_config (V2)"
@@ -3410,13 +3399,12 @@ VALUES (
 # política de proxy é 'fixed_servers' e o proxy exige Basic auth.
 # Eles ignoram silenciosamente a credencial e caem em DIRECT.
 #
-# Para resolver, é preciso uma extensão Chrome com
-# chrome.webRequest.onAuthRequired. Firefox suporta popup nativo
-# mas apenas no pacote .deb (o snap ignora policies.json).
+# O bundle nao injeta credenciais nem instala extensoes de
+# autenticacao. Para Chrome, use proxy transparente ou consulte o
+# administrador da OM. Firefox .deb suporta o popup nativo.
 #
 # Recomendação para as OMs: preferir Firefox .deb + Squid
-# transparente, ou aceitar que o usuário precisará de extensão
-# no Chrome.
+# transparente; no Chrome, seguir a orientacao do administrador.
 #
 # Configura políticas corporativas para Firefox ESR, Google Chrome e
 # Chromium, incluindo homepage, proxy, certificados e telemetria.
@@ -3898,10 +3886,9 @@ fi
 # credenciais no popup nativo do navegador na primeira navegacao.
 # Cada usuario tem a sua — o bundle nao injeta credencial.
 #
-# Isso vale para os dois navegadores. A extensao Chrome que
-# existia antes (chrome.webRequest.onAuthRequired) foi removida
-# por decisao de projeto: credencial de usuario nao fica em
-# arquivo global lido por todos.
+# Isso vale para os dois navegadores. A extensao de autenticacao
+# automatica do Chrome foi removida por decisao de projeto:
+# credencial de usuario nao fica em arquivo global lido por todos.
 #
 # Nota: Chrome/Chromium NAO exibem popup de auth em
 # `fixed_servers` — comportamento conhecido. Usuarios precisam
