@@ -30,24 +30,36 @@ if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "" ] && [ "$SSH_PORT" != "22" ]; then
     fi
 fi
 
+_parse_ssh_groups() {
+    local raw="${1:-}"
+    python3 - "$raw" <<'PY'
+import csv, sys
+raw = sys.argv[1] if len(sys.argv) > 1 else ""
+for row in csv.reader([raw], skipinitialspace=True):
+    for item in row:
+        item = item.strip()
+        if item:
+            print(item)
+PY
+}
+
 # Configurar AllowGroups
 if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
     log_nivel INFO "Configurando AllowGroups: $SSH_GROUPS"
     if [ -f /etc/ssh/sshd_config ]; then
-        IFS=$'\n,' read -ra GRP_ARRAY <<< "$SSH_GROUPS"
+        GRP_LIST_PARSE="$(_parse_ssh_groups "$SSH_GROUPS")"
         GRP_LIST=""
-        for GRP in "${GRP_ARRAY[@]}"; do
-            # Trim leading/trailing whitespace sem xargs (xargs consome "\ ")
+        while IFS= read -r GRP; do
+            [ -z "$GRP" ] && continue
             GRP="${GRP#"${GRP%%[![:space:]]*}"}"
             GRP="${GRP%"${GRP##*[![:space:]]}"}"
-            if [ -n "$GRP" ] && [ "$GRP" != "" ]; then
-                if [ -z "$GRP_LIST" ]; then
-                    GRP_LIST="$GRP"
-                else
-                    GRP_LIST="$GRP_LIST $GRP"
-                fi
+            [ -n "$GRP" ] || continue
+            if [ -z "$GRP_LIST" ]; then
+                GRP_LIST="$GRP"
+            else
+                GRP_LIST="$GRP_LIST $GRP"
             fi
-        done
+        done <<< "$GRP_LIST_PARSE"
     fi
 fi
 
@@ -57,15 +69,28 @@ fi
 # todo mundo fora).
 if [ -n "$GRP_LIST" ]; then
     GRP_LIST_FILTRADO=""
+    _sem_espaco_count=0
+    _com_espaco_count=0
+    _inexistente_count=0
+
     for GRP in $GRP_LIST; do
+        if echo "$GRP" | grep -q ' '; then
+            log_nivel AVISO "grupo '$GRP' tem espaco - sshd AllowGroups nao suporta; ignorado"
+            log_nivel DIAG  "Para permitir via SSH, use 'Match Group' no sshd_config (V2)"
+            _com_espaco_count=$((_com_espaco_count + 1))
+            continue
+        fi
+
         if getent group "$GRP" >/dev/null 2>&1; then
             if [ -z "$GRP_LIST_FILTRADO" ]; then
                 GRP_LIST_FILTRADO="$GRP"
             else
                 GRP_LIST_FILTRADO="$GRP_LIST_FILTRADO $GRP"
             fi
+            _sem_espaco_count=$((_sem_espaco_count + 1))
         else
             log_nivel AVISO "grupo '$GRP' nao existe - removido do AllowGroups."
+            _inexistente_count=$((_inexistente_count + 1))
         fi
     done
 
@@ -75,8 +100,9 @@ if [ -n "$GRP_LIST" ]; then
             echo "AllowGroups $GRP_LIST_FILTRADO" >> /etc/ssh/sshd_config
         fi
         log_nivel INFO "AllowGroups final: $GRP_LIST_FILTRADO"
+        log_nivel INFO "  (grupos validos: $_sem_espaco_count | com espaco ignorados: $_com_espaco_count | inexistentes: $_inexistente_count)"
     else
-        log_nivel ERRO "nenhum grupo do AllowGroups existe - NAO aplicando AllowGroups."
+        log_nivel ERRO "nenhum grupo do AllowGroups e' valido - NAO aplicando AllowGroups."
         log_nivel INFO "Verifique o SSH_GROUPS no painel da OM."
         sed -i '/^AllowGroups /d' /etc/ssh/sshd_config 2>/dev/null || true
     fi

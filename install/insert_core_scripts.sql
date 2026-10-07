@@ -350,6 +350,49 @@ _parar_todos_ntp() {
 }
 
 # ============================================================
+# PROBE DO SERVIDOR NTP
+#
+# Antes de tentar a cascata de clientes, faz um probe rapido
+# para descobrir qual cliente consegue conversar com o servidor.
+# Motivo: DCs Windows (w32time) respondem de forma estranha ao
+# systemd-timesyncd ("Server has too large root distance"), que
+# pode "sincronizar por 1s" e cair. Probar antes evita perder
+# 20s por cliente tentando o errado.
+#
+# Metodos, do mais simples ao mais robusto:
+#   1. ntpdate -q (consulta, nao ajusta) — prova conversacao SNTP
+#   2. ntpdig / ntpq — variantes
+#   3. Se nenhum comando estiver disponivel, aceita "probe cego"
+#      (tenta todos os clientes na ordem)
+# ============================================================
+log_nivel TESTE "Probe: testando comunicacao com $NTP_SERVER"
+
+NTP_PROBE_OK=false
+NTP_PROBE_METHOD=""
+
+if command -v ntpdate >/dev/null 2>&1; then
+    if ntpdate -q "$NTP_SERVER" 2>&1 | grep -qE 'server|offset|stratum'; then
+        NTP_PROBE_OK=true
+        NTP_PROBE_METHOD="ntpdate -q"
+    fi
+fi
+
+if [ "$NTP_PROBE_OK" != "true" ] && command -v ntpdig >/dev/null 2>&1; then
+    if ntpdig -t 5 "$NTP_SERVER" 2>&1 | grep -qE 'reply|offset|stratum'; then
+        NTP_PROBE_OK=true
+        NTP_PROBE_METHOD="ntpdig"
+    fi
+fi
+
+if [ "$NTP_PROBE_OK" = "true" ]; then
+    log_nivel OK "Probe OK via $NTP_PROBE_METHOD — servidor responde SNTP"
+    log_nivel DIAG "Para DC Windows (w32time), NTPsec costuma ser o cliente vencedor"
+else
+    log_nivel AVISO "Probe nao conseguiu confirmar conversacao SNTP"
+    log_nivel DIAG  "Vou testar todos os clientes na ordem — pode ser firewall UDP/123"
+fi
+
+# ============================================================
 # Tentativa 1: systemd-timesyncd
 # ============================================================
 _try_systemd_timesyncd() {
@@ -584,11 +627,32 @@ elif _try_ntpdate_cron; then
 fi
 
 # ============================================================
-# Resultado
+# Validacao final
+#
+# A cascata pode ter "aceito" um cliente que sincronizou por 1s
+# e caiu depois (bug observado: systemd-timesyncd com w32time).
+# Aqui confirmamos o estado atual com 3 leituras em 3s.
+# Se as 3 confirmarem, aceita. Senao, marca como falha.
 # ============================================================
 echo ""
-if [ "$NTP_RESULT" = "OK" ]; then
-    log_nivel OK    "NTP sincronizado via: $NTP_CLIENT"
+log_nivel TESTE "Validacao final: confirmando sincronizacao em 3 leituras..."
+
+_confirmacoes=0
+for _i in 1 2 3; do
+    sleep 1
+    if [ "$(timedatectl show --property=NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
+        _confirmacoes=$((_confirmacoes + 1))
+    elif command -v chronyc >/dev/null 2>&1 && chronyc tracking 2>/dev/null | grep -q "Leap status.*Normal"; then
+        _confirmacoes=$((_confirmacoes + 1))
+    elif command -v ntpq >/dev/null 2>&1 && ntpq -p 2>/dev/null | grep -qE "^\*"; then
+        _confirmacoes=$((_confirmacoes + 1))
+    fi
+done
+
+log_nivel INFO "Confirmacoes: $_confirmacoes/3"
+
+if [ "$NTP_RESULT" = "OK" ] && [ "$_confirmacoes" -ge 2 ]; then
+    log_nivel OK    "NTP validado: $NTP_CLIENT"
     log_nivel DIAG  "Horario local: $(date -Is)"
 
     cat > "$NTP_STATE_FILE" <<EOF
@@ -597,6 +661,22 @@ if [ "$NTP_RESULT" = "OK" ]; then
 NTP_CLIENT="$NTP_CLIENT"
 NTP_SERVER="$NTP_SERVER"
 NTP_LAST_OK="$(date +%s)"
+EOF
+    chmod 644 "$NTP_STATE_FILE"
+elif [ "$NTP_RESULT" = "OK" ]; then
+    log_nivel AVISO "cliente '$NTP_CLIENT' reportou OK mas validacao falhou"
+    log_nivel DIAG  "Isso e' o sintoma de w32time respondendo de forma intermitente"
+    log_nivel DIAG  "Persistindo como NAO-SINCRONIZADO para forcar nova tentativa no proximo logon"
+    NTP_RESULT="FALHOU_VALIDACAO"
+
+    cat > "$NTP_STATE_FILE" <<EOF
+# SeederLinux - Estado do NTP (VALIDACAO FALHOU)
+# Gerado por core_ntp.sh em $(date -Is)
+NTP_CLIENT=""
+NTP_SERVER="$NTP_SERVER"
+NTP_LAST_OK="0"
+NTP_LAST_FAIL="$(date +%s)"
+NTP_LAST_CLIENT_ATTEMPTED="$NTP_CLIENT"
 EOF
     chmod 644 "$NTP_STATE_FILE"
 else
@@ -2992,6 +3072,38 @@ while IFS= read -r _g; do
 done < <(printf '%s\n' "${_sudo_candidatos[@]}" | awk '!seen[$0]++')
 _sudo_candidatos=("${_sudo_deduplicados[@]}")
 
+# ============================================================
+# Aquecer o cache do SSSD antes de consultar getent group.
+# Motivo: logo apos restart do sssd, o cache pode estar vazio -
+# o getent retorna vazio para grupos que existem no AD, e o
+# sudoers fica sem regra (bug observado em campo).
+#
+# Estrategia: reinicia sssd, aguarda ate 30s com retry, testa
+# getent no primeiro candidato como "sentinela". Se o sentinela
+# resolver, prossegue; se nao, avisa mas continua (alguns
+# grupos podem nao existir mesmo).
+# ============================================================
+log_nivel INFO "Aguardando cache do SSSD popular..."
+systemctl restart sssd 2>/dev/null || true
+sleep 3
+
+_sentinela="${_sudo_candidatos[0]:-}"
+if [ -n "$_sentinela" ]; then
+    _tent=0
+    while [ "$_tent" -lt 15 ]; do
+        if getent group "$_sentinela" >/dev/null 2>&1; then
+            log_nivel INFO "Cache populado (sentinela '$_sentinela' resolvido)"
+            break
+        fi
+        _tent=$((_tent + 1))
+        sleep 2
+    done
+    if [ "$_tent" -ge 15 ]; then
+        log_nivel AVISO "cache do SSSD nao populou '$_sentinela' em 30s"
+        log_nivel DIAG  "Pode ser que o grupo nao exista no AD, ou o SSSD esteja com problema"
+    fi
+fi
+
 {
     echo "# SeederLinux - Acesso sudo para grupos do dominio"
     echo "# Regras por GID numerico para evitar problemas com case,"
@@ -3166,24 +3278,36 @@ if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "" ] && [ "$SSH_PORT" != "22" ]; then
     fi
 fi
 
+_parse_ssh_groups() {
+    local raw="${1:-}"
+    python3 - "$raw" <<'PY'
+import csv, sys
+raw = sys.argv[1] if len(sys.argv) > 1 else ""
+for row in csv.reader([raw], skipinitialspace=True):
+    for item in row:
+        item = item.strip()
+        if item:
+            print(item)
+PY
+}
+
 # Configurar AllowGroups
 if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
     log_nivel INFO "Configurando AllowGroups: $SSH_GROUPS"
     if [ -f /etc/ssh/sshd_config ]; then
-        IFS=$'\n,' read -ra GRP_ARRAY <<< "$SSH_GROUPS"
+        GRP_LIST_PARSE="$(_parse_ssh_groups "$SSH_GROUPS")"
         GRP_LIST=""
-        for GRP in "${GRP_ARRAY[@]}"; do
-            # Trim leading/trailing whitespace sem xargs (xargs consome "\ ")
+        while IFS= read -r GRP; do
+            [ -z "$GRP" ] && continue
             GRP="${GRP#"${GRP%%[![:space:]]*}"}"
             GRP="${GRP%"${GRP##*[![:space:]]}"}"
-            if [ -n "$GRP" ] && [ "$GRP" != "" ]; then
-                if [ -z "$GRP_LIST" ]; then
-                    GRP_LIST="$GRP"
-                else
-                    GRP_LIST="$GRP_LIST $GRP"
-                fi
+            [ -n "$GRP" ] || continue
+            if [ -z "$GRP_LIST" ]; then
+                GRP_LIST="$GRP"
+            else
+                GRP_LIST="$GRP_LIST $GRP"
             fi
-        done
+        done <<< "$GRP_LIST_PARSE"
     fi
 fi
 
@@ -3193,15 +3317,28 @@ fi
 # todo mundo fora).
 if [ -n "$GRP_LIST" ]; then
     GRP_LIST_FILTRADO=""
+    _sem_espaco_count=0
+    _com_espaco_count=0
+    _inexistente_count=0
+
     for GRP in $GRP_LIST; do
+        if echo "$GRP" | grep -q ' '; then
+            log_nivel AVISO "grupo '$GRP' tem espaco - sshd AllowGroups nao suporta; ignorado"
+            log_nivel DIAG  "Para permitir via SSH, use 'Match Group' no sshd_config (V2)"
+            _com_espaco_count=$((_com_espaco_count + 1))
+            continue
+        fi
+
         if getent group "$GRP" >/dev/null 2>&1; then
             if [ -z "$GRP_LIST_FILTRADO" ]; then
                 GRP_LIST_FILTRADO="$GRP"
             else
                 GRP_LIST_FILTRADO="$GRP_LIST_FILTRADO $GRP"
             fi
+            _sem_espaco_count=$((_sem_espaco_count + 1))
         else
             log_nivel AVISO "grupo '$GRP' nao existe - removido do AllowGroups."
+            _inexistente_count=$((_inexistente_count + 1))
         fi
     done
 
@@ -3211,8 +3348,9 @@ if [ -n "$GRP_LIST" ]; then
             echo "AllowGroups $GRP_LIST_FILTRADO" >> /etc/ssh/sshd_config
         fi
         log_nivel INFO "AllowGroups final: $GRP_LIST_FILTRADO"
+        log_nivel INFO "  (grupos validos: $_sem_espaco_count | com espaco ignorados: $_com_espaco_count | inexistentes: $_inexistente_count)"
     else
-        log_nivel ERRO "nenhum grupo do AllowGroups existe - NAO aplicando AllowGroups."
+        log_nivel ERRO "nenhum grupo do AllowGroups e' valido - NAO aplicando AllowGroups."
         log_nivel INFO "Verifique o SSH_GROUPS no painel da OM."
         sed -i '/^AllowGroups /d' /etc/ssh/sshd_config 2>/dev/null || true
     fi
@@ -3610,7 +3748,6 @@ cat > /usr/lib/firefox-esr/distribution/policies.json <<EOF
             "Locked": true,
             "StartPage": "homepage"
         },
-        "HomepageURL": "${HOMEPAGE}",
         "SearchBar": "unified",
         "SearchEngines": {
             "Add": [
@@ -3754,230 +3891,23 @@ if command -v snap >/dev/null 2>&1 && snap list chromium 2>/dev/null | grep -q "
 fi
 
 # ============================================================
-# Extensao Chrome para autenticacao de proxy (Basic auth)
+# AUTENTICACAO DE PROXY NOS NAVEGADORES — NAO E CONFIGURADA AQUI
 # ============================================================
-# Chrome/Chromium NAO exibem popup de auth quando a policy de proxy
-# e 'fixed_servers'. Esta extensao usa chrome.webRequest.onAuthRequired
-# para responder automaticamente com as credenciais do proxy, lidas de
-# /etc/seederlinux/proxy-auth.json (gerado abaixo a partir das vars
-# PROXY_K_USER / PROXY_K_PASS_B64 do proxy selecionado).
+# Firefox e Chrome recebem apenas host:port do proxy. Quando o
+# proxy exige autenticacao (ex: GAPE-BE), o usuario digita suas
+# credenciais no popup nativo do navegador na primeira navegacao.
+# Cada usuario tem a sua — o bundle nao injeta credencial.
 #
-# So e criada quando a policy de proxy e PROXY/PROXY_NO_AUTH/PROXY_WITH_AUTH
-# (ou seja, CHROME_PROXY_MODE=fixed_servers) e ha credenciais disponiveis.
-# ------------------------------------------------------------
-if [ "$CHROME_PROXY_MODE" = "fixed_servers" ]; then
-    NOME_EXT="$(_resolver_proxy_nome_efetivo)"
-
-    # Resolver credenciais do proxy nomeado
-    PROXY_AUTH_USER=""
-    PROXY_AUTH_PASS=""
-    if [ -n "$NOME_EXT" ] && [ "${PROXY_COUNT:-0}" -ge 1 ] 2>/dev/null; then
-        _i=1
-        while [ "$_i" -le "$PROXY_COUNT" ]; do
-            _v_name="PROXY_${_i}_NAME"
-            if [ "${!_v_name}" = "$NOME_EXT" ]; then
-                _v_user="PROXY_${_i}_USER"
-                _v_pass_b64="PROXY_${_i}_PASS_B64"
-                PROXY_AUTH_USER="${!_v_user}"
-                                _v_pass_b64_val="${!_v_pass_b64}"
-                if [[ "$_v_pass_b64_val" == "__"*"__" ]] || [ -z "$_v_pass_b64_val" ]; then
-                    PROXY_AUTH_PASS=""
-                else
-                    PROXY_AUTH_PASS="$(printf '%s' "$_v_pass_b64_val" | base64 -d 2>/dev/null || true)"
-                fi
-                break
-            fi
-            _i=$((_i+1))
-        done
-    fi
-
-    if [ -n "$PROXY_AUTH_USER" ] && [ -n "$PROXY_AUTH_PASS" ]; then
-        log_nivel INFO "Criando extensao Chrome para auth de proxy (onAuthRequired)..."
-
-        EXT_DIR="/opt/seederlinux/extensions/proxy-auth"
-        mkdir -p "$EXT_DIR"
-
-        # manifest.json — MV3 com webRequestAuthProvider
-        cat > "$EXT_DIR/manifest.json" <<MANIFEST
-{
-    "manifest_version": 3,
-    "name": "SeederLinux Proxy Auth",
-    "version": "1.0",
-    "description": "Autenticacao automatica de proxy corporativo",
-    "permissions": ["webRequest", "webRequestAuthProvider"],
-    "host_permissions": ["<all_urls>"],
-    "background": { "service_worker": "background.js" }
-}
-MANIFEST
-
-        # background.js — credenciais injetadas via sed abaixo.
-        # Um UNICO listener onAuthRequired (dois listeners causam
-        # comportamento indefinido em MV3 service workers).
-        cat > "$EXT_DIR/background.js" <<'BGJS'
-// SeederLinux Proxy Auth — responde automaticamente aos desafios
-// de Basic auth do proxy corporativo. As credenciais sao injetadas
-// neste arquivo no momento da geracao do bundle pelo core_browser.sh.
-const PROXY_USER = "__PROXY_AUTH_USER__";
-const PROXY_PASS = "__PROXY_AUTH_PASS__";
-
-chrome.webRequest.onAuthRequired.addListener(
-    (details, callback) => {
-        if (details.isProxy && PROXY_USER && PROXY_PASS) {
-            callback({
-                authCredentials: {
-                    username: PROXY_USER,
-                    password: PROXY_PASS
-                }
-            });
-        } else {
-            // auth de site (nao-proxy) ou credenciais vazias: deixar o browser pedir
-            callback();
-        }
-    },
-    { urls: ["<all_urls>"] },
-    ["asyncBlocking"]
-);
-BGJS
-
-        # Gravar credenciais em arquivo protegido (para auditoria/debug)
-        mkdir -p /etc/seederlinux
-        cat > /etc/seederlinux/proxy-auth.json <<AUTHJSON
-{
-    "username": "${PROXY_AUTH_USER}",
-    "password": "${PROXY_AUTH_PASS}"
-}
-AUTHJSON
-        chmod 600 /etc/seederlinux/proxy-auth.json
-
-        # Injetar credenciais no background.js (substituir placeholders)
-        _ESC_USER="$(printf '%s' "$PROXY_AUTH_USER" | sed 's/[\/&]/\\&/g')"
-        _ESC_PASS="$(printf '%s' "$PROXY_AUTH_PASS" | sed 's/[\/&]/\\&/g')"
-        sed -i "s/__PROXY_AUTH_USER__/${_ESC_USER}/g" "$EXT_DIR/background.js"
-        sed -i "s/__PROXY_AUTH_PASS__/${_ESC_PASS}/g" "$EXT_DIR/background.js"
-
-        # ============================================================
-        # Empacotar como CRX3 + update.xml para ExtensionInstallForcelist
-        # ============================================================
-        # ExtensionInstallForcelist exige um ID de extensao valido (32
-        # chars a-p) e um update_url que sirva um XML de update apontando
-        # para o .crx. Geramos a chave RSA, calculamos o ID, empacotamos
-        # o CRX3 e criamos o update.xml — tudo via openssl + python3.
-        log_nivel INFO "Empacotando extensao como CRX3..."
-
-        # 1. Gerar chave RSA (reutilizavel se ja existir)
-        EXT_KEY="$EXT_DIR/extension.pem"
-        if [ ! -f "$EXT_KEY" ]; then
-            openssl genrsa -out "$EXT_KEY" 2048 2>/dev/null
-        fi
-        chmod 600 "$EXT_KEY"
-
-        # 2. Extrair chave publica em DER
-        openssl rsa -in "$EXT_KEY" -pubout -outform DER -out "$EXT_DIR/pubkey.der" 2>/dev/null
-
-        # 3. Calcular ID da extensao + empacotar CRX3 via Python3
-        CRX_RESULT=$(python3 - "$EXT_DIR" <<'PYCRX'
-import sys, os, struct, hashlib, zipfile, io
-
-ext_dir = sys.argv[1]
-key_path = os.path.join(ext_dir, "extension.pem")
-pubkey_path = os.path.join(ext_dir, "pubkey.der")
-
-# Ler chave publica DER
-with open(pubkey_path, "rb") as f:
-    pub_der = f.read()
-
-# Extension ID = first 16 bytes of SHA256(DER pubkey), hex -> a-p
-digest = hashlib.sha256(pub_der).digest()[:16]
-ext_id = "".join(chr(ord("a") + int(c, 16)) for c in digest.hex())
-print(f"EXT_ID={ext_id}")
-
-# Zip dos arquivos da extensao (manifest.json + background.js)
-zip_buf = io.BytesIO()
-with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-    for fname in ("manifest.json", "background.js"):
-        fpath = os.path.join(ext_dir, fname)
-        if os.path.isfile(fpath):
-            zf.write(fpath, fname)
-zip_data = zip_buf.getvalue()
-
-# Assinar o zip com a chave privada RSA (SHA256 + PKCS#1 v1.5)
-import subprocess
-sig = subprocess.run(
-    ["openssl", "dgst", "-sha256", "-sign", key_path],
-    input=zip_data, capture_output=True
-).stdout
-
-# Construir CRX3 header (protobuf simplificado)
-def varint(n):
-    out = bytearray()
-    while n > 0x7f:
-        out.append(0x80 | (n & 0x7f))
-        n >>= 7
-    out.append(n)
-    return bytes(out)
-
-def field(field_num, data):
-    return varint((field_num << 3) | 2) + varint(len(data)) + data
-
-# AsymmetricKeyProof { bytes public_key=1; bytes signature=2; }
-asym = field(1, pub_der) + field(2, sig)
-# CrxFileHeader { repeated AsymmetricKeyProof sha256_with_rsa=2; }
-crx_header = field(2, asym)
-
-crx = b"Cr24" + struct.pack("<I", 3) + struct.pack("<I", len(crx_header)) + crx_header + zip_data
-crx_path = os.path.join(ext_dir, "proxy-auth.crx")
-with open(crx_path, "wb") as f:
-    f.write(crx)
-print(f"CRX={crx_path}")
-PYCRX
-        )
-        log_nivel INFO "$CRX_RESULT"
-        EXT_ID="$(echo "$CRX_RESULT" | grep '^EXT_ID=' | cut -d= -f2)"
-
-        if [ -n "$EXT_ID" ] && [ -f "$EXT_DIR/proxy-auth.crx" ]; then
-            # 4. Criar update.xml (formato GUpdate)
-            cat > "$EXT_DIR/update.xml" <<UPDXML
-<?xml version="1.0" encoding="UTF-8"?>
-<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
-  <app appid="${EXT_ID}">
-    <updatecheck codebase="file://${EXT_DIR}/proxy-auth.crx" version="1.0" />
-  </app>
-</gupdate>
-UPDXML
-
-            # 5. Adicionar ExtensionInstallForcelist ao policies.json do Chrome
-            for POLICY_DIR in /etc/opt/chrome/policies/managed \
-                               /etc/chromium/policies/managed; do
-                [ -f "$POLICY_DIR/seederlinux.json" ] || continue
-                python3 -c "
-import json
-path = '$POLICY_DIR/seederlinux.json'
-with open(path) as f:
-    data = json.load(f)
-data['ExtensionInstallForcelist'] = ['${EXT_ID};file://${EXT_DIR}/update.xml']
-data['ExtensionInstallSources'] = ['file:///opt/seederlinux/extensions/*']
-with open(path, 'w') as f:
-    json.dump(data, f, indent=4)
-" 2>/dev/null || true
-            done
-
-            log_nivel INFO "Extensao CRX3 empacotada: ID=$EXT_ID"
-            log_nivel INFO "update.xml em $EXT_DIR/update.xml"
-            log_nivel INFO "ExtensionInstallForcelist adicionado as policies do Chrome"
-        else
-            log_nivel AVISO "Falha ao empacotar CRX3. Extensao nao sera auto-instalada."
-            log_nivel INFO "Para instalar manualmente: chrome://extensions -> Modo desenvolvedor -> Carregar $EXT_DIR"
-        fi
-
-        log_nivel INFO "Credenciais gravadas em /etc/seederlinux/proxy-auth.json (600)"
-        unset PROXY_AUTH_USER PROXY_AUTH_PASS _ESC_USER _ESC_PASS EXT_ID
-    else
-        log_nivel AVISO "Proxy exige auth mas sem credenciais (PROXY_*_USER/PASS)."
-        log_nivel INFO "Extensao de auth nao criada. Chrome nao autenticara o proxy."
-    fi
-else
-    log_nivel INFO "Policy de proxy nao e fixed_servers. Extensao de auth nao necessaria."
-fi
+# Isso vale para os dois navegadores. A extensao Chrome que
+# existia antes (chrome.webRequest.onAuthRequired) foi removida
+# por decisao de projeto: credencial de usuario nao fica em
+# arquivo global lido por todos.
+#
+# Nota: Chrome/Chromium NAO exibem popup de auth em
+# `fixed_servers` — comportamento conhecido. Usuarios precisam
+# de extensao manual ou proxy transparente. Isso e' documentado
+# no AVISO-PROXY.txt para o usuario final.
+# ============================================================
 
 # ============================================================
 # Aviso ao usuario sobre proxy por grupo do AD
@@ -3987,18 +3917,21 @@ mkdir -p /usr/share/doc/seederlinux
 cat > /usr/share/doc/seederlinux/AVISO-PROXY.txt <<'AVISOEOF'
 AVISO — PROXY CORPORATIVO
 
-Este computador usa proxies diferentes conforme o seu grupo no
-Active Directory.
+Este computador usa proxies corporativos com autenticacao.
 
-- O CHROME usa sempre o proxy PADRAO configurado pela OM.
-- O FIREFOX usa o proxy do SEU grupo, se houver um especifico.
-  Senao, usa o padrao.
+- O FIREFOX pede a sua senha do proxy na primeira navegacao
+  (popup nativo do browser). Cada usuario tem a sua.
+- O CHROME/CHROMIUM nao exibe popup com proxy fixo (limitacao
+  conhecida do navegador). Se voce precisar autenticar no
+  Chrome, procure o administrador da OM.
 
-IMPORTANTE:
-- Se o seu grupo mudou, ou se voce foi movido para outro grupo,
-  e necessario fazer LOGOFF e LOGON novamente para que o Firefox
-  receba o novo proxy.
-- O Chrome nao precisa de logoff — sempre usa o padrao.
+O proxy padrao da OM e' o mesmo para todos os usuarios.
+Se voce pertence a um grupo especifico (ex: _SPTF), o FIREFOX
+usa o proxy do seu grupo apos o login. O CHROME sempre usa o
+proxy padrao.
+
+Se voce foi movido de grupo, faca LOGOFF e LOGON novamente
+para que o Firefox receba o novo proxy.
 
 Em caso de duvida, procure o administrador da sua OM.
 AVISOEOF
@@ -4486,13 +4419,41 @@ unset RANDOM_PASS
 # ============================================================
 log_nivel INFO "Criando servico systemd x11vnc..."
 
-# Detectar display Xorg ativo em runtime; cai em :0 se nao encontrar.
+# ============================================================
+# Detectar display e Xauthority ativos
+#
+# Em GDM3 com Xorg, o Xauthority fica em um caminho variavel
+# (ex: /run/user/<uid>/gdm/Xauthority) e o `-auth guess` do
+# x11vnc nao encontra. Extraimos o caminho exato da linha de
+# comando do processo Xorg (`-auth /caminho`) e usamos no
+# ExecStart. Se a detecção falhar, cai em `guess` como fallback.
+# ============================================================
+
+# Display ativo
 VNC_DISPLAY="$(ps aux | grep -E '[X]org' | grep -oE ':[0-9]+' | head -1)"
 [ -z "$VNC_DISPLAY" ] && VNC_DISPLAY=":0"
 
-# -auth guess: o x11vnc descobre o Xauthority correto sozinho em
-# qualquer DM (lightdm, gdm3, sddm). O caminho /run/user/0/gdm/Xauthority
-# nao existe no Ubuntu 24.04 e faz o x11vnc falhar com "XOpenDisplay failed".
+# Xauthority ativo (extraido do processo Xorg)
+VNC_XAUTH=""
+if command -v ps >/dev/null 2>&1; then
+    VNC_XAUTH="$(ps aux \
+        | grep -E '[X]org' \
+        | grep -oE '\-auth [^ ]+' \
+        | awk '{print $2}' \
+        | head -1)"
+fi
+
+if [ -n "$VNC_XAUTH" ] && [ -f "$VNC_XAUTH" ]; then
+    log_nivel INFO "Xauthority detectado: $VNC_XAUTH"
+    VNC_AUTH_ARG="-auth $VNC_XAUTH"
+else
+    log_nivel INFO "Xauthority nao detectado via ps - usando '-auth guess'"
+    VNC_AUTH_ARG="-auth guess"
+fi
+
+log_nivel INFO "Display: $VNC_DISPLAY"
+log_nivel INFO "Argumento de auth: $VNC_AUTH_ARG"
+
 cat > /etc/systemd/system/x11vnc.service <<EOF
 [Unit]
 Description=x11vnc Server - SeederLinux
@@ -4500,7 +4461,7 @@ After=display-manager.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/x11vnc -display ${VNC_DISPLAY} -auth guess -forever -loop -noxdamage -repeat -rfbauth /etc/x11vnc/vncpasswd -rfbport 5900 -shared -o /var/log/x11vnc.log
+ExecStart=/usr/bin/x11vnc -display ${VNC_DISPLAY} ${VNC_AUTH_ARG} -forever -loop -noxdamage -repeat -rfbauth /etc/x11vnc/vncpasswd -rfbport 5900 -shared -o /var/log/x11vnc.log
 ExecStop=/usr/bin/killall x11vnc
 Restart=on-failure
 RestartSec=5
@@ -6774,7 +6735,11 @@ fi
 
 # Whitelist: share precisa estar na lista COMPARTILHAMENTOS.
 AUTORIZADO=false
-for s in ${COMPARTILHAMENTOS:-}; do
+IFS=',' read -ra _shares_arr <<< "${COMPARTILHAMENTOS:-}"
+for s in "${_shares_arr[@]}"; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [ -z "$s" ] && continue
     if [ "$s" = "$SHARE" ]; then AUTORIZADO=true; break; fi
 done
 if [ "$AUTORIZADO" != "true" ]; then
@@ -6823,7 +6788,11 @@ if [ -f /etc/seederlinux/config.env ]; then
 fi
 
 AUTORIZADO=false
-for s in ${COMPARTILHAMENTOS:-}; do
+IFS=',' read -ra _shares_arr <<< "${COMPARTILHAMENTOS:-}"
+for s in "${_shares_arr[@]}"; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [ -z "$s" ] && continue
     if [ "$s" = "$SHARE" ]; then AUTORIZADO=true; break; fi
 done
 if [ "$AUTORIZADO" != "true" ]; then
@@ -6883,7 +6852,11 @@ chmod 1777 /var/log/logon-logoff
 # ============================================================
 mkdir -p "$MOUNT_DIR"
 if [ -n "$COMPARTILHAMENTOS" ]; then
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
         mkdir -p "${MOUNT_DIR}/${SHARE}"
     done
 fi
@@ -6929,7 +6902,12 @@ mkdir -p "$USER_HOME/Desktop" "$USER_HOME/Downloads" "$USER_HOME/Documents" 2>/d
 # ============================================================
 if [ -n "$SERVIDOR_ARQUIVOS" ] && [ -n "$COMPARTILHAMENTOS" ]; then
     MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
+
         SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
         if ! mountpoint -q "$SHARE_MOUNT" 2>/dev/null; then
             if sudo -n /usr/local/bin/seederlinux-mount-share \
@@ -7431,7 +7409,12 @@ echo "=== Logoff (minimo): $(date) - Usuario: $USERNAME ==="
 # ============================================================
 if [ -n "$COMPARTILHAMENTOS" ]; then
     MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
+
         SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
         if mountpoint -q "$SHARE_MOUNT" 2>/dev/null; then
             umount "$SHARE_MOUNT" 2>/dev/null || umount -l "$SHARE_MOUNT" 2>/dev/null || {
@@ -7465,7 +7448,11 @@ find /tmp -user "$USERNAME" -type f -mmin +60 -delete 2>/dev/null || true
 # mapeamento mudar antes do proximo login)
 # ============================================================
 if [ -n "$COMPARTILHAMENTOS" ]; then
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
         rm -f "$USER_HOME/Desktop/${SHARE}.desktop" 2>/dev/null || true
     done
 fi
@@ -8497,7 +8484,6 @@ sync_firefox_policy() {
       "Locked": true,
       "StartPage": "homepage"
     },
-    "HomepageURL": "${HOMEPAGE:-}",
     "SearchBar": "unified",
     "SearchEngines": {
       "Add": [
@@ -8540,7 +8526,7 @@ EOF
         mkdir -p /opt/firefox-moderno/distribution
         echo "$json" > /opt/firefox-moderno/distribution/policies.json
     fi
-    echo "OK: Firefox policy aplicada (modo: $policy)"
+    echo "OK: Firefox policy aplicada (sem Proxy em policies.json - Modelo B)"
 }
 
 # ============================================================
@@ -9075,7 +9061,12 @@ sync_shares() {
         uid="$(id -u "$u" 2>/dev/null)" || continue
         gid="$(id -g "$u" 2>/dev/null)" || continue
         local SHARE
-        for SHARE in $COMPARTILHAMENTOS; do
+        IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+        for SHARE in "${_shares_arr[@]}"; do
+            SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+            SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+            [ -z "$SHARE" ] && continue
+
             local SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
             mkdir -p "$SHARE_MOUNT"
             mountpoint -q "$SHARE_MOUNT" 2>/dev/null && continue

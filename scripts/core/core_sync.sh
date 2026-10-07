@@ -405,7 +405,6 @@ sync_firefox_policy() {
       "Locked": true,
       "StartPage": "homepage"
     },
-    "HomepageURL": "${HOMEPAGE:-}",
     "SearchBar": "unified",
     "SearchEngines": {
       "Add": [
@@ -448,7 +447,7 @@ EOF
         mkdir -p /opt/firefox-moderno/distribution
         echo "$json" > /opt/firefox-moderno/distribution/policies.json
     fi
-    echo "OK: Firefox policy aplicada (modo: $policy)"
+    echo "OK: Firefox policy aplicada (sem Proxy em policies.json - Modelo B)"
 }
 
 # ============================================================
@@ -983,7 +982,12 @@ sync_shares() {
         uid="$(id -u "$u" 2>/dev/null)" || continue
         gid="$(id -g "$u" 2>/dev/null)" || continue
         local SHARE
-        for SHARE in $COMPARTILHAMENTOS; do
+        IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+        for SHARE in "${_shares_arr[@]}"; do
+            SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+            SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+            [ -z "$SHARE" ] && continue
+
             local SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
             mkdir -p "$SHARE_MOUNT"
             mountpoint -q "$SHARE_MOUNT" 2>/dev/null && continue

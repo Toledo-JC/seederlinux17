@@ -115,6 +115,49 @@ _parar_todos_ntp() {
 }
 
 # ============================================================
+# PROBE DO SERVIDOR NTP
+#
+# Antes de tentar a cascata de clientes, faz um probe rapido
+# para descobrir qual cliente consegue conversar com o servidor.
+# Motivo: DCs Windows (w32time) respondem de forma estranha ao
+# systemd-timesyncd ("Server has too large root distance"), que
+# pode "sincronizar por 1s" e cair. Probar antes evita perder
+# 20s por cliente tentando o errado.
+#
+# Metodos, do mais simples ao mais robusto:
+#   1. ntpdate -q (consulta, nao ajusta) — prova conversacao SNTP
+#   2. ntpdig / ntpq — variantes
+#   3. Se nenhum comando estiver disponivel, aceita "probe cego"
+#      (tenta todos os clientes na ordem)
+# ============================================================
+log_nivel TESTE "Probe: testando comunicacao com $NTP_SERVER"
+
+NTP_PROBE_OK=false
+NTP_PROBE_METHOD=""
+
+if command -v ntpdate >/dev/null 2>&1; then
+    if ntpdate -q "$NTP_SERVER" 2>&1 | grep -qE 'server|offset|stratum'; then
+        NTP_PROBE_OK=true
+        NTP_PROBE_METHOD="ntpdate -q"
+    fi
+fi
+
+if [ "$NTP_PROBE_OK" != "true" ] && command -v ntpdig >/dev/null 2>&1; then
+    if ntpdig -t 5 "$NTP_SERVER" 2>&1 | grep -qE 'reply|offset|stratum'; then
+        NTP_PROBE_OK=true
+        NTP_PROBE_METHOD="ntpdig"
+    fi
+fi
+
+if [ "$NTP_PROBE_OK" = "true" ]; then
+    log_nivel OK "Probe OK via $NTP_PROBE_METHOD — servidor responde SNTP"
+    log_nivel DIAG "Para DC Windows (w32time), NTPsec costuma ser o cliente vencedor"
+else
+    log_nivel AVISO "Probe nao conseguiu confirmar conversacao SNTP"
+    log_nivel DIAG  "Vou testar todos os clientes na ordem — pode ser firewall UDP/123"
+fi
+
+# ============================================================
 # Tentativa 1: systemd-timesyncd
 # ============================================================
 _try_systemd_timesyncd() {
@@ -349,11 +392,32 @@ elif _try_ntpdate_cron; then
 fi
 
 # ============================================================
-# Resultado
+# Validacao final
+#
+# A cascata pode ter "aceito" um cliente que sincronizou por 1s
+# e caiu depois (bug observado: systemd-timesyncd com w32time).
+# Aqui confirmamos o estado atual com 3 leituras em 3s.
+# Se as 3 confirmarem, aceita. Senao, marca como falha.
 # ============================================================
 echo ""
-if [ "$NTP_RESULT" = "OK" ]; then
-    log_nivel OK    "NTP sincronizado via: $NTP_CLIENT"
+log_nivel TESTE "Validacao final: confirmando sincronizacao em 3 leituras..."
+
+_confirmacoes=0
+for _i in 1 2 3; do
+    sleep 1
+    if [ "$(timedatectl show --property=NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
+        _confirmacoes=$((_confirmacoes + 1))
+    elif command -v chronyc >/dev/null 2>&1 && chronyc tracking 2>/dev/null | grep -q "Leap status.*Normal"; then
+        _confirmacoes=$((_confirmacoes + 1))
+    elif command -v ntpq >/dev/null 2>&1 && ntpq -p 2>/dev/null | grep -qE "^\*"; then
+        _confirmacoes=$((_confirmacoes + 1))
+    fi
+done
+
+log_nivel INFO "Confirmacoes: $_confirmacoes/3"
+
+if [ "$NTP_RESULT" = "OK" ] && [ "$_confirmacoes" -ge 2 ]; then
+    log_nivel OK    "NTP validado: $NTP_CLIENT"
     log_nivel DIAG  "Horario local: $(date -Is)"
 
     cat > "$NTP_STATE_FILE" <<EOF
@@ -362,6 +426,22 @@ if [ "$NTP_RESULT" = "OK" ]; then
 NTP_CLIENT="$NTP_CLIENT"
 NTP_SERVER="$NTP_SERVER"
 NTP_LAST_OK="$(date +%s)"
+EOF
+    chmod 644 "$NTP_STATE_FILE"
+elif [ "$NTP_RESULT" = "OK" ]; then
+    log_nivel AVISO "cliente '$NTP_CLIENT' reportou OK mas validacao falhou"
+    log_nivel DIAG  "Isso e' o sintoma de w32time respondendo de forma intermitente"
+    log_nivel DIAG  "Persistindo como NAO-SINCRONIZADO para forcar nova tentativa no proximo logon"
+    NTP_RESULT="FALHOU_VALIDACAO"
+
+    cat > "$NTP_STATE_FILE" <<EOF
+# SeederLinux - Estado do NTP (VALIDACAO FALHOU)
+# Gerado por core_ntp.sh em $(date -Is)
+NTP_CLIENT=""
+NTP_SERVER="$NTP_SERVER"
+NTP_LAST_OK="0"
+NTP_LAST_FAIL="$(date +%s)"
+NTP_LAST_CLIENT_ATTEMPTED="$NTP_CLIENT"
 EOF
     chmod 644 "$NTP_STATE_FILE"
 else

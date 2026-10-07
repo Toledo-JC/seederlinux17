@@ -107,13 +107,41 @@ unset RANDOM_PASS
 # ============================================================
 log_nivel INFO "Criando servico systemd x11vnc..."
 
-# Detectar display Xorg ativo em runtime; cai em :0 se nao encontrar.
+# ============================================================
+# Detectar display e Xauthority ativos
+#
+# Em GDM3 com Xorg, o Xauthority fica em um caminho variavel
+# (ex: /run/user/<uid>/gdm/Xauthority) e o `-auth guess` do
+# x11vnc nao encontra. Extraimos o caminho exato da linha de
+# comando do processo Xorg (`-auth /caminho`) e usamos no
+# ExecStart. Se a detecção falhar, cai em `guess` como fallback.
+# ============================================================
+
+# Display ativo
 VNC_DISPLAY="$(ps aux | grep -E '[X]org' | grep -oE ':[0-9]+' | head -1)"
 [ -z "$VNC_DISPLAY" ] && VNC_DISPLAY=":0"
 
-# -auth guess: o x11vnc descobre o Xauthority correto sozinho em
-# qualquer DM (lightdm, gdm3, sddm). O caminho /run/user/0/gdm/Xauthority
-# nao existe no Ubuntu 24.04 e faz o x11vnc falhar com "XOpenDisplay failed".
+# Xauthority ativo (extraido do processo Xorg)
+VNC_XAUTH=""
+if command -v ps >/dev/null 2>&1; then
+    VNC_XAUTH="$(ps aux \
+        | grep -E '[X]org' \
+        | grep -oE '\-auth [^ ]+' \
+        | awk '{print $2}' \
+        | head -1)"
+fi
+
+if [ -n "$VNC_XAUTH" ] && [ -f "$VNC_XAUTH" ]; then
+    log_nivel INFO "Xauthority detectado: $VNC_XAUTH"
+    VNC_AUTH_ARG="-auth $VNC_XAUTH"
+else
+    log_nivel INFO "Xauthority nao detectado via ps - usando '-auth guess'"
+    VNC_AUTH_ARG="-auth guess"
+fi
+
+log_nivel INFO "Display: $VNC_DISPLAY"
+log_nivel INFO "Argumento de auth: $VNC_AUTH_ARG"
+
 cat > /etc/systemd/system/x11vnc.service <<EOF
 [Unit]
 Description=x11vnc Server - SeederLinux
@@ -121,7 +149,7 @@ After=display-manager.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/x11vnc -display ${VNC_DISPLAY} -auth guess -forever -loop -noxdamage -repeat -rfbauth /etc/x11vnc/vncpasswd -rfbport 5900 -shared -o /var/log/x11vnc.log
+ExecStart=/usr/bin/x11vnc -display ${VNC_DISPLAY} ${VNC_AUTH_ARG} -forever -loop -noxdamage -repeat -rfbauth /etc/x11vnc/vncpasswd -rfbport 5900 -shared -o /var/log/x11vnc.log
 ExecStop=/usr/bin/killall x11vnc
 Restart=on-failure
 RestartSec=5

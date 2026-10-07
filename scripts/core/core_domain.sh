@@ -888,6 +888,38 @@ while IFS= read -r _g; do
 done < <(printf '%s\n' "${_sudo_candidatos[@]}" | awk '!seen[$0]++')
 _sudo_candidatos=("${_sudo_deduplicados[@]}")
 
+# ============================================================
+# Aquecer o cache do SSSD antes de consultar getent group.
+# Motivo: logo apos restart do sssd, o cache pode estar vazio -
+# o getent retorna vazio para grupos que existem no AD, e o
+# sudoers fica sem regra (bug observado em campo).
+#
+# Estrategia: reinicia sssd, aguarda ate 30s com retry, testa
+# getent no primeiro candidato como "sentinela". Se o sentinela
+# resolver, prossegue; se nao, avisa mas continua (alguns
+# grupos podem nao existir mesmo).
+# ============================================================
+log_nivel INFO "Aguardando cache do SSSD popular..."
+systemctl restart sssd 2>/dev/null || true
+sleep 3
+
+_sentinela="${_sudo_candidatos[0]:-}"
+if [ -n "$_sentinela" ]; then
+    _tent=0
+    while [ "$_tent" -lt 15 ]; do
+        if getent group "$_sentinela" >/dev/null 2>&1; then
+            log_nivel INFO "Cache populado (sentinela '$_sentinela' resolvido)"
+            break
+        fi
+        _tent=$((_tent + 1))
+        sleep 2
+    done
+    if [ "$_tent" -ge 15 ]; then
+        log_nivel AVISO "cache do SSSD nao populou '$_sentinela' em 30s"
+        log_nivel DIAG  "Pode ser que o grupo nao exista no AD, ou o SSSD esteja com problema"
+    fi
+fi
+
 {
     echo "# SeederLinux - Acesso sudo para grupos do dominio"
     echo "# Regras por GID numerico para evitar problemas com case,"

@@ -1164,7 +1164,7 @@ const variableHelpText = {
     HOMEPAGE: 'Inclua http:// ou https://. Ex: http://www.intraer',
     PRINTERS: 'Nomes separados por vírgula. Ex: printer1,printer2',
     COMPARTILHAMENTOS: 'Nomes separados por vírgula. Ex: publico,usuarios,setores',
-    SSH_GROUPS: 'Nome EXATO do grupo no AD, sem \\ ou espaços. Separar por vírgula. Ex: linux-admins,_DASTI'
+    SSH_GROUPS: 'Grupos (separados por vírgula): use aspas duplas para grupos com espaço no nome. Ex: root,_dasti; root,_dasti,"Domain Admins". Atenção: grupos com espaço não funcionam no AllowGroups do SSH; use apenas grupos sem espaço para SSH.'
 };
 
 function getVariableTooltip(variable) {

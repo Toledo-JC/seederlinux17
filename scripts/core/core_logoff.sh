@@ -93,7 +93,12 @@ echo "=== Logoff (minimo): $(date) - Usuario: $USERNAME ==="
 # ============================================================
 if [ -n "$COMPARTILHAMENTOS" ]; then
     MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
+
         SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
         if mountpoint -q "$SHARE_MOUNT" 2>/dev/null; then
             umount "$SHARE_MOUNT" 2>/dev/null || umount -l "$SHARE_MOUNT" 2>/dev/null || {
@@ -127,7 +132,11 @@ find /tmp -user "$USERNAME" -type f -mmin +60 -delete 2>/dev/null || true
 # mapeamento mudar antes do proximo login)
 # ============================================================
 if [ -n "$COMPARTILHAMENTOS" ]; then
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
         rm -f "$USER_HOME/Desktop/${SHARE}.desktop" 2>/dev/null || true
     done
 fi

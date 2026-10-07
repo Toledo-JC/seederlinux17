@@ -108,7 +108,11 @@ fi
 
 # Whitelist: share precisa estar na lista COMPARTILHAMENTOS.
 AUTORIZADO=false
-for s in ${COMPARTILHAMENTOS:-}; do
+IFS=',' read -ra _shares_arr <<< "${COMPARTILHAMENTOS:-}"
+for s in "${_shares_arr[@]}"; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [ -z "$s" ] && continue
     if [ "$s" = "$SHARE" ]; then AUTORIZADO=true; break; fi
 done
 if [ "$AUTORIZADO" != "true" ]; then
@@ -157,7 +161,11 @@ if [ -f /etc/seederlinux/config.env ]; then
 fi
 
 AUTORIZADO=false
-for s in ${COMPARTILHAMENTOS:-}; do
+IFS=',' read -ra _shares_arr <<< "${COMPARTILHAMENTOS:-}"
+for s in "${_shares_arr[@]}"; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [ -z "$s" ] && continue
     if [ "$s" = "$SHARE" ]; then AUTORIZADO=true; break; fi
 done
 if [ "$AUTORIZADO" != "true" ]; then
@@ -217,7 +225,11 @@ chmod 1777 /var/log/logon-logoff
 # ============================================================
 mkdir -p "$MOUNT_DIR"
 if [ -n "$COMPARTILHAMENTOS" ]; then
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
         mkdir -p "${MOUNT_DIR}/${SHARE}"
     done
 fi
@@ -263,7 +275,12 @@ mkdir -p "$USER_HOME/Desktop" "$USER_HOME/Downloads" "$USER_HOME/Documents" 2>/d
 # ============================================================
 if [ -n "$SERVIDOR_ARQUIVOS" ] && [ -n "$COMPARTILHAMENTOS" ]; then
     MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
+
         SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
         if ! mountpoint -q "$SHARE_MOUNT" 2>/dev/null; then
             if sudo -n /usr/local/bin/seederlinux-mount-share \
