@@ -125,29 +125,29 @@ if [ "$INSTALL_ONLYOFFICE" = "true" ]; then
 deb [signed-by=/usr/share/keyrings/onlyoffice-keyring.gpg] https://download.onlyoffice.com/repo/debian squeeze main
 EOF
 
-        apt-get update
-        apt-get install -y onlyoffice-desktopeditors || {
-            log_nivel AVISO "Falha ao instalar OnlyOffice via repositorio."
-            log_nivel INFO "Tentando download direto..."
+            apt-get update
+            apt-get install -y onlyoffice-desktopeditors || {
+                log_nivel AVISO "Falha ao instalar OnlyOffice via repositorio."
+                log_nivel INFO "Tentando download direto..."
 
-            # Metodo 2: Download direto do .deb
-            ONLYOFFICE_DEB="/tmp/onlyoffice-desktopeditors.deb"
-            if wget -q -O "$ONLYOFFICE_DEB" "https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors_amd64.deb"; then
-                dpkg -i "$ONLYOFFICE_DEB" || apt-get install -y -f
-                rm -f "$ONLYOFFICE_DEB"
-            else
-                log_nivel AVISO "Nao foi possivel baixar OnlyOffice."
-            fi
-        }
-        rm -f "$ONLYOFFICE_KEY"
-    else
-        log_nivel AVISO "Nao foi possivel obter chave do OnlyOffice."
-        log_nivel INFO "Tentando instalar via repositorio Debian..."
+                # Metodo 2: Download direto do .deb
+                ONLYOFFICE_DEB="/tmp/onlyoffice-desktopeditors.deb"
+                if wget -q -O "$ONLYOFFICE_DEB" "https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors_amd64.deb"; then
+                    dpkg -i "$ONLYOFFICE_DEB" || apt-get install -y -f
+                    rm -f "$ONLYOFFICE_DEB"
+                else
+                    log_nivel AVISO "Nao foi possivel baixar OnlyOffice."
+                fi
+            }
+            rm -f "$ONLYOFFICE_KEY"
+        else
+            log_nivel AVISO "Nao foi possivel obter chave do OnlyOffice."
+            log_nivel INFO "Tentando instalar via repositorio Debian..."
 
-        apt-get install -y onlyoffice-desktopeditors 2>/dev/null || {
-            log_nivel AVISO "OnlyOffice nao disponivel. Instalacao ignorada."
-        }
-    fi
+            apt-get install -y onlyoffice-desktopeditors 2>/dev/null || {
+                log_nivel AVISO "OnlyOffice nao disponivel. Instalacao ignorada."
+            }
+        fi
     fi
 else
     log_nivel INFO "OnlyOffice desativado (INSTALL_ONLYOFFICE=false). Pulando."
