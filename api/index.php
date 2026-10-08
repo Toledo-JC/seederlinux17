@@ -1425,25 +1425,16 @@ function handleDeleteOrganization($id) {
 function normalizeSshGroups($value) {
     $groups = str_getcsv((string)$value, ',', '"', '');
     $normalized = [];
-
     foreach ($groups as $group) {
         $group = trim((string)$group);
-        while (strlen($group) >= 2 && $group[0] === '"' && substr($group, -1) === '"') {
-            $group = substr($group, 1, -1);
-        }
-        $group = str_replace('""', '"', trim($group));
+        $group = trim($group, '"');
         $group = function_exists('mb_strtolower')
             ? mb_strtolower($group, 'UTF-8')
             : strtolower($group);
+        $group = preg_replace('/\s+/', '+', $group);
         if ($group === '') continue;
-
-        if (preg_match('/[\s,"]/', $group)) {
-            $normalized[] = '"' . str_replace('"', '""', $group) . '"';
-        } else {
-            $normalized[] = $group;
-        }
+        $normalized[] = $group;
     }
-
     return implode(',', $normalized);
 }
 

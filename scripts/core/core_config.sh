@@ -70,6 +70,14 @@ NTP_SERVER="${NTP_SERVER#http://}"
 NTP_SERVER="${NTP_SERVER#https://}"
 
 # ============================================================
+# Controladores de dominio
+# ============================================================
+DC_IP="{{DC_IP}}"
+DC_IP_LIST="{{DC_IP_LIST}}"
+# DC_IP_LIST vazio cai para DC_IP (fallback)
+[ -z "$DC_IP_LIST" ] && DC_IP_LIST="$DC_IP"
+
+# ============================================================
 # Politicas de proxy (multi-proxy)
 # ============================================================
 APT_POLICY="{{APT_POLICY}}"
@@ -116,8 +124,8 @@ cat > "$CONFIG_FILE" <<EOF
 # Dominio e Autenticacao
 DOMINIO="{{DOMINIO}}"
 DOMINIO_NETBIOS="{{DOMINIO_NETBIOS}}"
-DC_IP="{{DC_IP}}"
-DC_IP_LIST="{{DC_IP_LIST}}"
+DC_IP="${DC_IP}"
+DC_IP_LIST="${DC_IP_LIST}"
 DC_SECUNDARIO_IP="{{DC_SECUNDARIO_IP}}"
 DNS_PRIMARIO="{{DNS_PRIMARIO}}"
 DNS_SECUNDARIO="{{DNS_SECUNDARIO}}"
