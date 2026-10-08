@@ -3428,6 +3428,16 @@ function handleStationCheckin($input) {
     $orgAcronym = strtoupper(sanitizeInput($input['organization_acronym'] ?? ''));
     $stationToken = sanitizeInput($input['station_token'] ?? '');
 
+    // Fallback: accept the token from Authorization: Bearer <token>.
+    if (empty($stationToken)) {
+        $authHeader = $_SERVER['HTTP_AUTHORIZATION']
+                   ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+                   ?? '';
+        if (preg_match('/^Bearer\s+(\S+)$/i', trim($authHeader), $m)) {
+            $stationToken = sanitizeInput($m[1]);
+        }
+    }
+
     if (empty($hostname)) {
         jsonError('Hostname obrigatorio');
     }
