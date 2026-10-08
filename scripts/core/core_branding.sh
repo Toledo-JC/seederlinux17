@@ -58,6 +58,18 @@ THEME="{{THEME}}"
 DESKTOP_ENV="{{DESKTOP_ENV}}"
 DISPLAY_MANAGER="{{DISPLAY_MANAGER}}"
 SEEDER_SERVER="{{SEEDER_SERVER}}"
+REINSTALL_MODE="${REINSTALL_MODE:-auto}"
+
+STATE_ASSETS="/etc/seederlinux/branding-assets.state"
+LAST_WALLPAPER_URL=""
+LAST_WALLPAPER_LOGIN_URL=""
+LAST_LOGO_URL=""
+LAST_GREETER_URL=""
+
+if [ "$REINSTALL_MODE" = "auto" ] && [ -f "$STATE_ASSETS" ]; then
+    # shellcheck disable=SC1090
+    . "$STATE_ASSETS"
+fi
 
 # ============================================================
 # Prefixar URLs de assets com SEEDER_SERVER quando relativas
@@ -205,7 +217,13 @@ _baixar_ativo() {
 # ============================================================
 log_nivel INFO "Baixando wallpaper..."
 if [ -n "$WALLPAPER_URL" ] && [ "$WALLPAPER_URL" != "" ]; then
-    _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
+    if [ "$REINSTALL_MODE" = "auto" ] \
+       && [ "$WALLPAPER_URL" = "$LAST_WALLPAPER_URL" ] \
+       && [ -s /usr/share/backgrounds/seederlinux/wallpaper.jpg ]; then
+        log_nivel INFO "wallpaper inalterado - pulando download (auto)"
+    else
+        _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
+    fi
 else
     log_nivel INFO "WALLPAPER_URL nao definido. Pulando wallpaper."
 fi
@@ -215,7 +233,13 @@ fi
 # ============================================================
 log_nivel INFO "Baixando wallpaper de login..."
 if [ -n "$WALLPAPER_LOGIN_URL" ] && [ "$WALLPAPER_LOGIN_URL" != "" ]; then
-    _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+    if [ "$REINSTALL_MODE" = "auto" ] \
+       && [ "$WALLPAPER_LOGIN_URL" = "$LAST_WALLPAPER_LOGIN_URL" ] \
+       && [ -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
+        log_nivel INFO "wallpaper de login inalterado - pulando download (auto)"
+    else
+        _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
+    fi
 else
     log_nivel INFO "WALLPAPER_LOGIN_URL nao definido. Pulando wallpaper de login."
 fi
@@ -225,7 +249,13 @@ fi
 # ============================================================
 log_nivel INFO "Baixando logo..."
 if [ -n "$LOGO_URL" ] && [ "$LOGO_URL" != "" ]; then
-    _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
+    if [ "$REINSTALL_MODE" = "auto" ] \
+       && [ "$LOGO_URL" = "$LAST_LOGO_URL" ] \
+       && [ -s /usr/share/pixmaps/seederlinux-logo.png ]; then
+        log_nivel INFO "logo inalterado - pulando download (auto)"
+    else
+        _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
+    fi
 else
     log_nivel INFO "LOGO_URL nao definido. Pulando logo."
 fi
@@ -606,6 +636,14 @@ esac
 log_nivel INFO "Sumario dos assets instalados:"
 ls -la /usr/share/backgrounds/seederlinux/ 2>/dev/null | sed 's/^/    /'
 ls -la /usr/share/pixmaps/seederlinux-logo.png 2>/dev/null | sed 's/^/    /'
+
+{
+    echo "LAST_WALLPAPER_URL=\"${WALLPAPER_URL}\""
+    echo "LAST_WALLPAPER_LOGIN_URL=\"${WALLPAPER_LOGIN_URL}\""
+    echo "LAST_LOGO_URL=\"${LOGO_URL}\""
+    echo "LAST_GREETER_URL=\"${GREETER_URL}\""
+} > "$STATE_ASSETS"
+chmod 644 "$STATE_ASSETS"
 
 log_nivel OK "Identidade visual aplicada!"
 echo "============================================================"

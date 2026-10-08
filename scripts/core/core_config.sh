@@ -32,6 +32,7 @@ echo "============================================================"
 # ============================================================
 # Diretorio base
 # ============================================================
+REINSTALL_MODE="${REINSTALL_MODE:-auto}"
 mkdir -p /etc/seederlinux
 
 CONFIG_FILE="/etc/seederlinux/config.env"
@@ -170,6 +171,7 @@ GREETER_URL="${GREETER_URL}"
 THEME="{{THEME}}"
 
 # Ambiente Grafico
+REINSTALL_MODE="${REINSTALL_MODE}"
 DESKTOP_ENV="{{DESKTOP_ENV}}"
 DISPLAY_MANAGER="{{DISPLAY_MANAGER}}"
 

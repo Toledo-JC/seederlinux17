@@ -3188,6 +3188,7 @@ async function generateBundle() {
     if (description === null) return;
 
     const forceNotify = document.getElementById('force-notify')?.checked ?? false;
+    const reinstallMode = document.getElementById('reinstall-mode')?.value || 'auto';
 
     Toast.info('Gerando bundle...');
 
@@ -3196,7 +3197,8 @@ async function generateBundle() {
             organization_id: currentOrgId,
             scripts: selected,
             description: description.trim(),
-            force_notify: forceNotify
+            force_notify: forceNotify,
+            reinstall_mode: reinstallMode
         });
         if (res.success) {
             Toast.success('Bundle gerado com sucesso');

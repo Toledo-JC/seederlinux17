@@ -2617,6 +2617,17 @@ function handleGenerateBundle($input) {
     $selectedScripts = $input['scripts'] ?? [];
     $description = sanitizeInput($input['description'] ?? '');
 
+    $reinstallModeRaw = strtolower(trim((string)($input['reinstall_mode'] ?? 'auto')));
+    if ($reinstallModeRaw === 'never') {
+        $reinstallModeRaw = 'diagnostic';
+    }
+    $reinstallModeValidos = ['auto', 'force', 'repair', 'diagnostic'];
+    if (!in_array($reinstallModeRaw, $reinstallModeValidos, true)) {
+        error_log("SeederLinux: reinstall_mode invalido recebido: '$reinstallModeRaw' - forcando 'auto'");
+        $reinstallModeRaw = 'auto';
+    }
+    $REINSTALL_MODE = $reinstallModeRaw;
+
     if (!$orgId) jsonError('Organization ID required');
 
     // Verificar escopo: operador_om não pode acessar dados de outra OM
@@ -2999,6 +3010,7 @@ BUNDLE_HEADER;
     }
     $bundle .= "# ============================================\n\n";
     $bundle .= "export NON_INTERACTIVE=true\n";
+    $bundle .= "export REINSTALL_MODE='" . str_replace("'", "'\\''", $REINSTALL_MODE) . "'\n";
     foreach ($vars as $v) {
         if (in_array($v['type'], $skipExportTypes, true)) continue;
         if (in_array($v['name'], $skipExportNames, true)) continue;

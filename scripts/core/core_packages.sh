@@ -32,11 +32,25 @@ echo "============================================================"
 # ============================================================
 # Variáveis
 # ============================================================
+REINSTALL_MODE="${REINSTALL_MODE:-auto}"
 DESKTOP_ENV=""
 INSTALL_DESKTOP="false"
 
+case "$REINSTALL_MODE" in
+    repair|diagnostic)
+        log_nivel AVISO "REINSTALL_MODE=$REINSTALL_MODE ainda nao implementado - usando 'auto'"
+        REINSTALL_MODE="auto"
+        ;;
+    auto|force) ;;
+    *)
+        log_nivel AVISO "REINSTALL_MODE desconhecido '$REINSTALL_MODE' - usando 'auto'"
+        REINSTALL_MODE="auto"
+        ;;
+esac
+
 log_nivel INFO "Ambiente grafico solicitado (opcional): $DESKTOP_ENV"
 log_nivel INFO "Instalar ambiente grafico: $INSTALL_DESKTOP"
+log_nivel INFO "REINSTALL_MODE: $REINSTALL_MODE"
 
 # ============================================================
 # Detectar ambiente grafico ja instalado
@@ -75,8 +89,27 @@ log_nivel INFO "DM detectado na estacao: $DETECTED_DM"
 # ============================================================
 instalar_pacotes() {
     local grupo="$1"; shift
-    local falhou=0
+    local faltando=()
+    local pulados=0
+    local pkg
+
     for pkg in "$@"; do
+        if [ "$REINSTALL_MODE" = "auto" ] && dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
+            pulados=$((pulados + 1))
+            continue
+        fi
+        faltando+=("$pkg")
+    done
+
+    if [ "${#faltando[@]}" -eq 0 ]; then
+        log_nivel INFO "[$grupo] todos os $# pacotes ja instalados - pulando"
+        return 0
+    fi
+
+    log_nivel INFO "[$grupo] instalando ${#faltando[@]} de $# pacotes (pulados: $pulados)..."
+
+    local falhou=0
+    for pkg in "${faltando[@]}"; do
         if ! apt-get install -y "$pkg" 2>/dev/null; then
             log_nivel INFO "AVISO [$grupo]: falha ao instalar pacote '$pkg'"
             falhou=$((falhou + 1))
@@ -92,8 +125,23 @@ instalar_pacotes() {
 # ============================================================
 log_nivel INFO "Atualizando pacotes do sistema..."
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get -y upgrade
+APT_STATE="/var/lib/seederlinux/last-apt-update"
+mkdir -p /var/lib/seederlinux
+
+_apt_recente=false
+if [ "$REINSTALL_MODE" = "auto" ] && [ -f "$APT_STATE" ]; then
+    _age=$(( $(date +%s) - $(stat -c %Y "$APT_STATE" 2>/dev/null || echo 0) ))
+    if [ "$_age" -lt 3600 ]; then
+        log_nivel INFO "apt-get update executado ha ${_age}s (<1h) - pulando (auto)"
+        _apt_recente=true
+    fi
+fi
+
+if [ "$_apt_recente" != "true" ]; then
+    apt-get update
+    apt-get -y upgrade
+    touch "$APT_STATE"
+fi
 
 # ============================================================
 # Pacotes base do sistema
@@ -369,7 +417,9 @@ if snap list firefox 2>/dev/null | grep -q "^firefox"; then
     TEM_SNAP=true
 fi
 
-if [ "$TEM_DEB" = "true" ] && [ "$TEM_SNAP" != "true" ]; then
+if [ "$REINSTALL_MODE" = "auto" ] && [ -x /opt/firefox-moderno/firefox ]; then
+    log_nivel INFO "Firefox moderno ja instalado em /opt/firefox-moderno - pulando download (auto)"
+elif [ "$TEM_DEB" = "true" ] && [ "$TEM_SNAP" != "true" ]; then
     # Ja existe Firefox .deb nativo e nenhum snap — nada a fazer
     log_nivel INFO "Firefox .deb nativo ja instalado. Nenhuma acao necessaria."
 elif [ "$TEM_SNAP" = "true" ]; then
