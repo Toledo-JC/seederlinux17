@@ -4177,6 +4177,7 @@ function getScriptContent($scriptId, $organizationId) {
             [$organizationId, $scriptId]
         );
         if ($local && !empty($local['content'])) {
+            error_log("[SeederLinux] getScriptContent: source=om_override script_id={$scriptId} organization_id={$organizationId}");
             return $local['content'];
         }
     }
@@ -4188,7 +4189,10 @@ function getScriptContent($scriptId, $organizationId) {
          ORDER BY version_number DESC LIMIT 1",
         [$scriptId]
     );
-    if ($gap && !empty($gap['content'])) return $gap['content'];
+    if ($gap && !empty($gap['content'])) {
+        error_log("[SeederLinux] getScriptContent: source=gap_default script_id={$scriptId}");
+        return $gap['content'];
+    }
 
     // 3. Tenta factory
     $factory = Database::fetchOne(
@@ -4197,15 +4201,24 @@ function getScriptContent($scriptId, $organizationId) {
          ORDER BY version_number DESC LIMIT 1",
         [$scriptId]
     );
-    if ($factory && !empty($factory['content'])) return $factory['content'];
+    if ($factory && !empty($factory['content'])) {
+        error_log("[SeederLinux] getScriptContent: source=factory script_id={$scriptId}");
+        return $factory['content'];
+    }
 
     // 4. Fallback: scripts.content
     $script = Database::fetchOne("SELECT content FROM scripts WHERE id = ?", [$scriptId]);
-    if ($script && !empty($script['content'])) return $script['content'];
+    if ($script && !empty($script['content'])) {
+        error_log("[SeederLinux] getScriptContent: source=scripts.content script_id={$scriptId}");
+        return $script['content'];
+    }
 
     // 5. Último recurso: cria factory se não existir
     $fallbackFactory = ensureFactoryVersionForScript($scriptId);
-    if ($fallbackFactory && !empty($fallbackFactory['content'])) return $fallbackFactory['content'];
+    if ($fallbackFactory && !empty($fallbackFactory['content'])) {
+        error_log("[SeederLinux] getScriptContent: source=fallback_factory script_id={$scriptId}");
+        return $fallbackFactory['content'];
+    }
 
     return '';
 }
