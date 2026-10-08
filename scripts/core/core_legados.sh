@@ -50,6 +50,7 @@ INSTALL_JAVA8="{{INSTALL_JAVA8}}"
 INSTALL_FIREFOX52="{{INSTALL_FIREFOX52}}"
 BASE_URL="{{BASE_URL}}"
 JAVA_EXCEPTIONS="{{JAVA_EXCEPTIONS}}"
+LEGACY_ALLOW_EXTERNAL="${LEGACY_ALLOW_EXTERNAL:-false}"
 
 BASE_URL="${BASE_URL%/}"
 
@@ -208,26 +209,37 @@ if [ "$INSTALL_FIREFOX52" = "true" ]; then
     else
         # ------------------------------------------------------------------
         # Fallback: Mozilla (download publico)
-        # Respeita proxy do ambiente se houver.
+        #
+        # Controlado por LEGACY_ALLOW_EXTERNAL (default: false).
+        # Rede restrita (sem saida publica) nao deve tentar Mozilla -
+        # gera timeout longo e ruido. Se o pacote estiver no Seeder
+        # (feature de upload, V2), o primeiro caminho pega.
         # ------------------------------------------------------------------
-        log_nivel AVISO "Nao foi possivel baixar do repositorio interno."
-        log_nivel INFO "Tentando Mozilla (ftp.mozilla.org)..."
-
-        FF_MOZILLA_URL="https://ftp.mozilla.org/pub/firefox/releases/52.7.3esr/linux-x86_64/en-US/firefox-52.7.3esr.tar.bz2"
-        if wget -q --timeout=60 -O "$FF_LEGADO_TARBALL" "$FF_MOZILLA_URL" 2>/dev/null; then
-            if [ -s "$FF_LEGADO_TARBALL" ]; then
-                log_nivel INFO "Firefox 52.7 baixado da Mozilla"
-                if tar xjf "$FF_LEGADO_TARBALL" -C /opt/ 2>/dev/null; then
-                    mv /opt/firefox "$FF_LEGADO_DIR" 2>/dev/null || true
-                else
-                    log_nivel AVISO "falha ao extrair tarball da Mozilla."
-                fi
-            else
-                log_nivel AVISO "tarball da Mozilla baixou vazio."
-            fi
-            rm -f "$FF_LEGADO_TARBALL"
+        if [ "${LEGACY_ALLOW_EXTERNAL:-false}" != "true" ]; then
+            log_nivel AVISO "Nao foi possivel baixar do repositorio interno."
+            log_nivel DIAG "Fallback Mozilla DESABILITADO (LEGACY_ALLOW_EXTERNAL=false)"
+            log_nivel ACAO "Suba o tarball em ${BASE_URL}/downloads/ OU ative LEGACY_ALLOW_EXTERNAL no painel"
+            INSTALL_FIREFOX52="false"
         else
-            log_nivel AVISO "Nao foi possivel baixar Firefox 52.7 de nenhuma fonte."
+            log_nivel AVISO "Nao foi possivel baixar do repositorio interno."
+            log_nivel INFO "Tentando Mozilla (ftp.mozilla.org)..."
+
+            FF_MOZILLA_URL="https://ftp.mozilla.org/pub/firefox/releases/52.7.3esr/linux-x86_64/en-US/firefox-52.7.3esr.tar.bz2"
+            if wget -q --timeout=60 -O "$FF_LEGADO_TARBALL" "$FF_MOZILLA_URL" 2>/dev/null; then
+                if [ -s "$FF_LEGADO_TARBALL" ]; then
+                    log_nivel INFO "Firefox 52.7 baixado da Mozilla"
+                    if tar xjf "$FF_LEGADO_TARBALL" -C /opt/ 2>/dev/null; then
+                        mv /opt/firefox "$FF_LEGADO_DIR" 2>/dev/null || true
+                    else
+                        log_nivel AVISO "falha ao extrair tarball da Mozilla."
+                    fi
+                else
+                    log_nivel AVISO "tarball da Mozilla baixou vazio."
+                fi
+                rm -f "$FF_LEGADO_TARBALL"
+            else
+                log_nivel AVISO "Nao foi possivel baixar Firefox 52.7 de nenhuma fonte."
+            fi
         fi
     fi
 

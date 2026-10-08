@@ -1438,6 +1438,23 @@ function normalizeSshGroups($value) {
     return implode(',', $normalized);
 }
 
+/**
+ * Normaliza NTP_SERVER: remove http:// ou https:// e barra final.
+ * Scripts core (core_ntp.sh, core_config.sh) esperam host ou IP apenas.
+ *
+ * @param string|null $valor
+ * @return string
+ */
+function normalizeNtpServer($valor) {
+    if ($valor === null || $valor === '') {
+        return '';
+    }
+    $valor = trim($valor);
+    $valor = preg_replace('#^https?://#i', '', $valor);
+    $valor = rtrim($valor, '/');
+    return $valor;
+}
+
 function handleGetVariables($orgId) {
     $user = getCurrentUser();
     // operador_om só pode acessar sua própria OM
@@ -1573,6 +1590,9 @@ function handleUpdateVariables($input) {
             }
             if ($varName === 'SSH_GROUPS') {
                 $value = normalizeSshGroups($value);
+            }
+            if ($varName === 'NTP_SERVER') {
+                $value = normalizeNtpServer($value);
             }
             if (in_array($varName, $repositoryBooleanNames, true)) {
                 $normalized = mirrorInputBoolean(['value' => $value], 'value');
@@ -2904,11 +2924,6 @@ BUNDLE_HEADER;
             }
         }
 
-        // NTP_SERVER: remover protocolo
-        if ($name === 'NTP_SERVER') {
-            $v['value'] = preg_replace('#^https?://#', '', $val);
-        }
-
         // DC_IP_LIST: montar automaticamente a partir de DC_IP e DC_SECUNDARIO_IP
         if ($name === 'DC_IP_LIST') {
             $legacyValue = preg_replace('/\s+/', '', strtolower(trim((string)$val)));
@@ -2937,6 +2952,9 @@ BUNDLE_HEADER;
 
         if ($name === 'SSH_GROUPS') {
             $v['value'] = normalizeSshGroups($val);
+        }
+        if ($name === 'NTP_SERVER') {
+            $v['value'] = normalizeNtpServer($val);
         }
 
         // HOMEPAGE: remover espacos nas extremidades e normalizar espacos internos (sem forcar protocolo)
