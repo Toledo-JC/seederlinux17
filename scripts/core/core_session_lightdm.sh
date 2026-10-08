@@ -47,8 +47,11 @@
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="16-session-lightdm"
+
 echo "============================================================"
-echo "14a - Configurar LightDM (MATE, Cinnamon, XFCE, LXDE)"
+echo "Configurar LightDM (MATE, Cinnamon, XFCE, LXDE)"
 echo "============================================================"
 
 # ============================================================
@@ -111,9 +114,9 @@ if [ -z "$DESKTOP_ENV" ] && [ -f "$CONFIG_FILE" ]; then
 fi
 if [ -z "$DESKTOP_ENV" ]; then
     DESKTOP_ENV="$(detectar_de)"
-    echo ">>> DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
 else
-    echo ">>> DESKTOP_ENV: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV: $DESKTOP_ENV"
 fi
 
 # ============================================================
@@ -126,9 +129,9 @@ if [ -z "$DISPLAY_MANAGER" ]; then
     DISPLAY_MANAGER="$(detectar_dm_ativo)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(detectar_dm_instalado)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(dm_padrao_para_de "$DESKTOP_ENV")"
-    echo ">>> DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
 else
-    echo ">>> DISPLAY_MANAGER: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER: $DISPLAY_MANAGER"
 fi
 
 # ============================================================
@@ -148,25 +151,25 @@ sed -i '/^DESKTOP_ENV=/d;/^DISPLAY_MANAGER=/d' "$CONFIG_FILE"
 #    outro, encerra este bloco (nao o bundle) e segue para 14b/14c.
 # ============================================================
 if [ "$DISPLAY_MANAGER" != "lightdm" ]; then
-    echo ">>> DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e lightdm). Pulando."
+    log_nivel INFO "DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e lightdm). Pulando."
     echo "============================================================"
     exit 0
 fi
 
-echo ">>> Display Manager: $DISPLAY_MANAGER"
-echo ">>> Ambiente: $DESKTOP_ENV"
+log_nivel INFO "Display Manager: $DISPLAY_MANAGER"
+log_nivel INFO "Ambiente: $DESKTOP_ENV"
 
 # ============================================================
 # Verificar se LightDM + greeter estao presentes.
 # CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
 # no AD, quando o DNS ja foi trocado pro controlador de dominio e
 # nao resolve mais repositorios publicos. A instalacao real acontece
-# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# no core_packages.sh (etapa 04), enquanto o DNS de internet ainda
 # esta ativo. Aqui so verificamos e configuramos.
 # ============================================================
 if ! dpkg -l lightdm 2>/dev/null | grep -q "^ii"; then
-    echo ">>> ERRO: lightdm nao instalado (deveria ter sido no core_packages.sh)."
-    echo ">>> Pulando configuracao de LightDM."
+    log_nivel ERRO "lightdm nao instalado (deveria ter sido no core_packages.sh)."
+    log_nivel INFO "Pulando configuracao de LightDM."
     echo "============================================================"
     exit 0
 fi
@@ -176,12 +179,12 @@ if dpkg -l lightdm-slick-greeter 2>/dev/null | grep -q "^ii"; then
 elif dpkg -l lightdm-gtk-greeter 2>/dev/null | grep -q "^ii"; then
     GREETER_SESSION="lightdm-gtk-greeter"
 else
-    echo ">>> ERRO: nenhum greeter instalado."
-    echo ">>> Pulando configuracao de LightDM."
+    log_nivel ERRO "nenhum greeter instalado."
+    log_nivel INFO "Pulando configuracao de LightDM."
     echo "============================================================"
     exit 0
 fi
-echo ">>> Greeter a usar: $GREETER_SESSION"
+log_nivel INFO "Greeter a usar: $GREETER_SESSION"
 
 # Registrar LightDM como DM padrao (arquivo canonico do Debian/Ubuntu)
 echo "lightdm shared/default-x-display-manager select lightdm" | debconf-set-selections 2>/dev/null || true
@@ -191,7 +194,7 @@ echo "/usr/sbin/lightdm" > /etc/X11/default-display-manager
 # ============================================================
 # Configurar LightDM
 # ============================================================
-echo ">>> Configurando LightDM..."
+log_nivel INFO "Configurando LightDM..."
 mkdir -p /etc/lightdm
 
 cat > /etc/lightdm/lightdm.conf <<EOF
@@ -214,7 +217,7 @@ pam-autologin-service=lightdm-autologin
 session-cleanup-script=/usr/local/bin/seederlinux-logoff
 EOF
 
-echo ">>> LightDM configurado"
+log_nivel INFO "LightDM configurado"
 
 # ============================================================
 # Configurar greeter do LightDM
@@ -224,7 +227,7 @@ echo ">>> LightDM configurado"
 # (grava em outro arquivo quando aplicavel). Este greeter.conf fica
 # sem theme-name explicito, usando o tema padrao do sistema.
 # ============================================================
-echo ">>> Configurando greeter..."
+log_nivel INFO "Configurando greeter..."
 mkdir -p /etc/lightdm
 
 cat > /etc/lightdm/lightdm-gtk-greeter.conf <<EOF
@@ -236,12 +239,12 @@ logo = /usr/share/pixmaps/seederlinux-logo.png
 show-indicators = ~host;~spacer;~clock;~spacer;~session;~spacer;~power
 EOF
 
-echo ">>> Greeter configurado"
+log_nivel INFO "Greeter configurado"
 
 # ============================================================
 # Configurar Xsession
 # ============================================================
-echo ">>> Configurando Xsession..."
+log_nivel INFO "Configurando Xsession..."
 if [ ! -f /etc/lightdm/Xsession ]; then
     cat > /etc/lightdm/Xsession <<'XSESSION'
 #!/bin/bash
@@ -254,18 +257,18 @@ fi
 # ============================================================
 # Garantir que os scripts de logon/logoff existam
 # ============================================================
-echo ">>> Verificando scripts de logon/logoff..."
+log_nivel INFO "Verificando scripts de logon/logoff..."
 for SCRIPT in seederlinux-logon seederlinux-logoff; do
     if [ ! -f "/usr/local/bin/${SCRIPT}" ]; then
-        echo ">>> AVISO: /usr/local/bin/${SCRIPT} nao encontrado."
-        echo ">>> Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
+        log_nivel AVISO "/usr/local/bin/${SCRIPT} nao encontrado."
+        log_nivel INFO "Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
     fi
 done
 
 # ============================================================
 # Desabilitar outros display managers
 # ============================================================
-echo ">>> Desabilitando outros display managers..."
+log_nivel INFO "Desabilitando outros display managers..."
 systemctl disable gdm3 2>/dev/null || true
 systemctl disable sddm 2>/dev/null || true
 
@@ -286,11 +289,11 @@ ln -sf /lib/systemd/system/lightdm.service /etc/systemd/system/display-manager.s
 # ha caso legitimo de "precisa aplicar agora" que justifique matar
 # sessao de usuario logado.
 # ============================================================
-echo ">>> Configuracao de LightDM sera aplicada no proximo boot."
-echo ">>> (NAO reiniciamos o DM aqui: se o bundle rodar via cron/agente,"
-echo ">>>  ele nao tem \$DISPLAY nem \$SSH_CONNECTION - qualquer restart"
-echo ">>>  mataria a sessao do usuario logado.)"
+log_nivel INFO "Configuracao de LightDM sera aplicada no proximo boot."
+log_nivel INFO "(NAO reiniciamos o DM aqui: se o bundle rodar via cron/agente,"
+log_nivel INFO "ele nao tem \$DISPLAY nem \$SSH_CONNECTION - qualquer restart"
+log_nivel INFO "mataria a sessao do usuario logado.)"
 
-echo ">>> [14a] LightDM configurado!"
+log_nivel OK "LightDM configurado!"
 echo "============================================================"
 )

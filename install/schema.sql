@@ -292,12 +292,15 @@ CREATE TABLE IF NOT EXISTS scripts (
     is_core BOOLEAN DEFAULT false,
     is_active BOOLEAN DEFAULT true,
     execution_order INTEGER DEFAULT 0,
+    depends_on TEXT[] NOT NULL DEFAULT '{}',
     version INTEGER DEFAULT 1,
     organization_id INTEGER REFERENCES organizations(id) ON DELETE CASCADE,
     current_version_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE scripts ADD COLUMN IF NOT EXISTS depends_on TEXT[] NOT NULL DEFAULT '{}';
 
 CREATE INDEX IF NOT EXISTS idx_scripts_filename ON scripts(filename);
 CREATE INDEX IF NOT EXISTS idx_scripts_core ON scripts(is_core, execution_order);

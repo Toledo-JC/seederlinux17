@@ -7,62 +7,114 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="08-ssh"
+
 echo "============================================================"
-echo "07 - Configurar SSH"
+echo "Configurar SSH"
 echo "============================================================"
 
 SSH_PORT="{{SSH_PORT}}"
-SSH_GROUPS="{{SSH_GROUPS}}"
+# Herdar do header do bundle (fonte de verdade).
+# Formato canônico do painel: 'domain+admins' representa 'domain admins'.
+SSH_GROUPS="${SSH_GROUPS:-root,_dasti}"
 
-echo ">>> Porta SSH: ${SSH_PORT:-22}"
-echo ">>> Grupos SSH: ${SSH_GROUPS:-nenhum}"
+log_nivel INFO "Porta SSH: ${SSH_PORT:-22}"
+log_nivel INFO "Grupos SSH: ${SSH_GROUPS:-nenhum}"
 
 # Configurar porta
 if [ -n "$SSH_PORT" ] && [ "$SSH_PORT" != "" ] && [ "$SSH_PORT" != "22" ]; then
-    echo ">>> Configurando porta SSH: $SSH_PORT"
+    log_nivel INFO "Configurando porta SSH: $SSH_PORT"
     if [ -f /etc/ssh/sshd_config ]; then
         cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
         sed -i "s/^#*Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config
-        echo ">>> Porta SSH alterada para $SSH_PORT"
+        log_nivel INFO "Porta SSH alterada para $SSH_PORT"
     fi
 fi
 
-# Configurar AllowGroups
+# ============================================================
+# Configurar AllowGroups do sshd
+#
+# Parse CSV (respeitando aspas duplas) via Python. O resultado
+# é um array Bash — NUNCA concatenar em string com espaço,
+# senão nomes com espaço (ex: "Domain Admins") são quebrados
+# em dois tokens no loop seguinte.
+#
+# Formato canônico do painel usa '+' no lugar de espaço
+# (ex: domain+admins). Aqui revertimos + → espaço antes de
+# validar o grupo.
+#
+# sshd AllowGroups NÃO tem sintaxe para grupos com espaço. Grupos
+# com espaço são IGNORADOS no AllowGroups com aviso claro. Para
+# permitir via SSH, é preciso `Match Group` (V2).
+# ============================================================
 if [ -n "$SSH_GROUPS" ] && [ "$SSH_GROUPS" != "" ]; then
-    echo ">>> Configurando AllowGroups: $SSH_GROUPS"
+    log_nivel INFO "Configurando AllowGroups: $SSH_GROUPS"
     if [ -f /etc/ssh/sshd_config ]; then
-        IFS=$'\n,' read -ra GRP_ARRAY <<< "$SSH_GROUPS"
-        GRP_LIST=""
+
+        # Parse CSV (respeitando aspas) → array Bash
+        GRP_ARRAY=()
+        while IFS= read -r _item; do
+            [ -z "$_item" ] && continue
+            GRP_ARRAY+=("$_item")
+        done < <(python3 - "$SSH_GROUPS" <<'PY'
+import csv, sys
+raw = sys.argv[1] if len(sys.argv) > 1 else ""
+for row in csv.reader([raw], skipinitialspace=True):
+    for item in row:
+        item = item.strip()
+        if item:
+            print(item)
+PY
+        )
+
+        # Filtrar: só entra no AllowGroups se existir via getent E não tiver espaço
+        GRP_LIST_FILTRADO=""
+        _sem_espaco_count=0
+        _com_espaco_count=0
+        _inexistente_count=0
+
         for GRP in "${GRP_ARRAY[@]}"; do
-            # Trim leading/trailing whitespace sem xargs (xargs consome "\ ")
-            GRP="${GRP#"${GRP%%[![:space:]]*}"}"
-            GRP="${GRP%"${GRP##*[![:space:]]}"}"
-            if [ -n "$GRP" ] && [ "$GRP" != "" ]; then
-                if [ -z "$GRP_LIST" ]; then
-                    GRP_LIST="$GRP"
+            [ -z "$GRP" ] && continue
+
+            # Reverter + para espaço (formato canônico do painel)
+            GRP="$(printf '%s' "$GRP" | tr '+' ' ')"
+
+            # sshd AllowGroups não tem sintaxe para grupo com espaço
+            if echo "$GRP" | grep -q ' '; then
+                log_nivel AVISO "grupo '$GRP' tem espaco - sshd AllowGroups nao suporta; ignorado"
+                log_nivel DIAG  "Para permitir via SSH, use 'Match Group' no sshd_config (V2)"
+                _com_espaco_count=$((_com_espaco_count + 1))
+                continue
+            fi
+
+            if getent group "$GRP" >/dev/null 2>&1; then
+                if [ -z "$GRP_LIST_FILTRADO" ]; then
+                    GRP_LIST_FILTRADO="$GRP"
                 else
-                    GRP_LIST="$GRP_LIST $GRP"
+                    GRP_LIST_FILTRADO="$GRP_LIST_FILTRADO $GRP"
                 fi
+                _sem_espaco_count=$((_sem_espaco_count + 1))
+            else
+                log_nivel AVISO "grupo '$GRP' nao existe - removido do AllowGroups."
+                _inexistente_count=$((_inexistente_count + 1))
             fi
         done
-        if [ -n "$GRP_LIST" ]; then
-            sed -i "s/^#*AllowGroups .*/AllowGroups $GRP_LIST/" /etc/ssh/sshd_config
+
+        # Escrever o AllowGroups final (só com grupos válidos e sem espaço)
+        if [ -n "$GRP_LIST_FILTRADO" ]; then
+            sed -i "s/^#*AllowGroups .*/AllowGroups $GRP_LIST_FILTRADO/" /etc/ssh/sshd_config
             if ! grep -q "^AllowGroups " /etc/ssh/sshd_config; then
-                echo "AllowGroups $GRP_LIST" >> /etc/ssh/sshd_config
+                echo "AllowGroups $GRP_LIST_FILTRADO" >> /etc/ssh/sshd_config
             fi
-            echo ">>> AllowGroups configurado: $GRP_LIST"
+            log_nivel INFO "AllowGroups final: $GRP_LIST_FILTRADO"
+            log_nivel INFO "  (grupos validos: $_sem_espaco_count | com espaco ignorados: $_com_espaco_count | inexistentes: $_inexistente_count)"
+        else
+            log_nivel ERRO "nenhum grupo do AllowGroups e' valido - NAO aplicando AllowGroups."
+            log_nivel INFO "Verifique o SSH_GROUPS no painel da OM."
+            sed -i '/^AllowGroups /d' /etc/ssh/sshd_config 2>/dev/null || true
         fi
     fi
-fi
-
-# Validar grupos do AllowGroups (evita lockout silencioso)
-if [ -n "$GRP_LIST" ]; then
-    for GRP in $GRP_LIST; do
-        if ! getent group "$GRP" >/dev/null 2>&1; then
-            echo ">>> AVISO: grupo '$GRP' nao existe no sistema/AD."
-            echo ">>>        AllowGroups vai BLOQUEAR todo mundo ate corrigir."
-        fi
-    done
 fi
 
 # Ubuntu 24.04+ usa ssh.socket (socket activation) com ListenStream=22
@@ -81,5 +133,5 @@ if [ -f /etc/ssh/sshd_config ]; then
     systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
 fi
 
-echo ">>> [07] SSH configurado!"
+log_nivel OK "SSH configurado!"
 echo "============================================================"

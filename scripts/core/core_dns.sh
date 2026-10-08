@@ -1,18 +1,19 @@
 #!/bin/bash
 # ============================================================================
 # Core Script: core_dns.sh
-# SeederLinux Lite - DNS, NTP e resolucao de nomes
+# SeederLinux Lite - DNS e resolucao de nomes
 # ============================================================================
 # Configura DNS temporario para permitir resolucao durante o
-# provisionamento, ajusta /etc/resolv.conf, /etc/hosts e sincroniza NTP.
+# provisionamento e ajusta /etc/resolv.conf, /etc/hosts e hostname.
+# NTP foi movido para core_ntp.sh (script 02).
 #
 # CONTRATO DE FASES DO BUNDLE:
 #   Fase 1 (este script, etapa 01): DNS de internet na frente. Permite
-#     apt-get/wget nos scripts 02..05 (repositorios, pacotes, legados,
+#     apt-get/wget nos scripts 03..06 (repositorios, pacotes, legados,
 #     apps).
-#   Fase 2 (core_domain.sh, etapa 06): reescreve /etc/resolv.conf
+#   Fase 2 (core_domain.sh, etapa 07): reescreve /etc/resolv.conf
 #     apontando SOMENTE para DNS_PRIMARIO + DNS_SECUNDARIO do AD.
-#   Fase 3 (scripts 07..23): DNS do AD mantido, sem apt-get.
+#   Fase 3 (scripts 08..24): DNS do AD mantido, sem apt-get.
 #
 # Este script NAO trava o resolv.conf com chattr +i - quem faz isso e'
 # o core_domain.sh, na Fase 2. Este script apenas REMOVE a trava antes
@@ -25,8 +26,11 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="01-dns"
+
 echo "============================================================"
-echo "01 - Configurar DNS, NTP e resolucao de nomes"
+echo "Configurar DNS e resolucao de nomes"
 echo "============================================================"
 
 # ============================================================
@@ -38,30 +42,21 @@ DC_IP_LIST="{{DC_IP_LIST}}"
 DNS_PRIMARIO="{{DNS_PRIMARIO}}"
 DNS_SECUNDARIO="{{DNS_SECUNDARIO}}"
 DNS_INTERNET="{{DNS_INTERNET}}"
-NTP_SERVER="{{NTP_SERVER}}"
 OM_ACRONYM="{{OM_ACRONYM}}"
-
-# Remover protocolo indevido do NTP_SERVER (a OM pode ter cadastrado
-# "http://host" em vez de "host"; normalizamos aqui para nao quebrar
-# o chrony/ntp, que esperam apenas hostname/IP).
-NTP_SERVER="${NTP_SERVER#http://}"
-NTP_SERVER="${NTP_SERVER#https://}"
-
 NON_INTERACTIVE="${NON_INTERACTIVE:-false}"
 
 # ============================================================
 # Exibir informacoes
 # ============================================================
-echo ">>> Dominio: $DOMINIO"
-echo ">>> DNS primario: $DNS_PRIMARIO"
-echo ">>> DNS secundario: ${DNS_SECUNDARIO}"
-echo ">>> NTP: $NTP_SERVER"
+log_nivel INFO "Dominio: $DOMINIO"
+log_nivel INFO "DNS primario: $DNS_PRIMARIO"
+log_nivel INFO "DNS secundario: ${DNS_SECUNDARIO}"
 
 # ============================================================
 # Hostname interativo
 # ============================================================
 CURRENT_HOSTNAME=$(hostname)
-echo ">>> Hostname atual: $CURRENT_HOSTNAME"
+log_nivel INFO "Hostname atual: $CURRENT_HOSTNAME"
 
 if [ "$NON_INTERACTIVE" = "true" ]; then
     CHANGE_HOST="n"
@@ -71,11 +66,11 @@ fi
 
 if [[ "$CHANGE_HOST" =~ ^[Ss]$ ]]; then
     if [ "$NON_INTERACTIVE" = "true" ]; then
-        echo ">>> Modo não interativo: mantendo hostname atual."
+        log_nivel INFO "Modo não interativo: mantendo hostname atual."
     else
         read -p ">>> Novo hostname: " NEW_HOSTNAME
         hostnamectl set-hostname "$NEW_HOSTNAME"
-        echo ">>> Hostname alterado para: $NEW_HOSTNAME"
+        log_nivel INFO "Hostname alterado para: $NEW_HOSTNAME"
     fi
 fi
 
@@ -95,7 +90,7 @@ HOSTNAME_FQDN="${HOSTNAME_SHORT}.${DOMINIO}"
 # antes (chattr -i), trata o caso de symlink do systemd-resolved e
 # reescreve do zero.
 # ============================================================
-echo ">>> Configurando DNS temporario (Fase 1: internet primeiro para baixar pacotes)..."
+log_nivel INFO "Configurando DNS temporario (Fase 1: internet primeiro para baixar pacotes)..."
 
 # 1) Remover imutabilidade eventualmente deixada pelo core_domain.sh
 #    (Fase 2 usa chattr +i para proteger o resolv.conf do AD).
@@ -114,7 +109,7 @@ fi
 #    "nameserver " (vazias) que confundem o glibc.
 {
     echo "# SeederLinux - Fase 1 (DNS de internet temporario)"
-    echo "# Sera reescrito pelo core_domain.sh (script 06) na Fase 2."
+    echo "# Sera reescrito pelo core_domain.sh (script 07) na Fase 2."
     echo "# Gerado em: $(date -Is)"
     if [ -n "$DNS_INTERNET" ] && [ "$DNS_INTERNET" != "" ]; then
         echo "nameserver $DNS_INTERNET"
@@ -136,13 +131,13 @@ fi
 chmod 644 /etc/resolv.conf
 
 # 5) Log do conteudo real (util para debug em bundle)
-echo ">>> DNS temporario configurado:"
+log_nivel INFO "DNS temporario configurado:"
 sed 's/^/    /' /etc/resolv.conf
 
 # ============================================================
 # /etc/hosts - garantir resolucao do proprio host e do dominio
 # ============================================================
-echo ">>> Configurando /etc/hosts..."
+log_nivel INFO "Configurando /etc/hosts..."
 
 cp /etc/hosts /etc/hosts.bak.$(date +%Y%m%d%H%M%S) 2>/dev/null || true
 
@@ -160,68 +155,32 @@ for DC in $DC_IP_LIST; do
     echo "$DC    ${DC_HOSTNAME}.${DOMINIO} ${DC_HOSTNAME}" >> /etc/hosts
 done
 
-echo ">>> /etc/hosts configurado"
+log_nivel INFO "/etc/hosts configurado"
 
 # ============================================================
-# NTP - sincronizar horario com o servidor
+# Aviso de contexto: sem mirror local
 # ============================================================
-echo ">>> Configurando NTP..."
-
-# 1. Garantir chrony instalado (Ubuntu 24.04 nao traz por padrao)
-if ! command -v chronyd &>/dev/null; then
-    echo ">>> Instalando chrony..."
-    DEBIAN_FRONTEND=noninteractive apt-get install -y chrony 2>/dev/null || true
+# Este script prepara a Fase 1 (DNS de internet ativo). O NTP
+# agora roda no core_ntp.sh (script 02), logo apos este.
+#
+# Se REPOSITORY_MODE=PUBLIC, a estacao depende de internet real
+# para baixar pacotes nos scripts 03..06. Se a OM tem mirror
+# interno (MIRROR_LOCAL_SEEDER ou MIRROR_LOCAL_OM), a Fase 1 pode
+# ser mais curta.
+#
+# IMPORTANTE: o core_ntp.sh (02) PRECISA vir antes do
+# core_domain.sh (07), porque:
+#   - NTP depende de apt (na Fase 1) para instalar chrony/ntpsec
+#     se o cliente default falhar.
+#   - Kerberos (no core_domain.sh) depende de clock sincronizado.
+# Se um tecnico reordenar os scripts na UI, manter essa restricao.
+# ============================================================
+if [ "${REPOSITORY_MODE:-PUBLIC}" = "PUBLIC" ]; then
+    log_nivel INFO "REPOSITORY_MODE=PUBLIC (sem mirror local)"
+    log_nivel INFO "Fase 1 exige internet real (DNS de internet na frente)"
+    log_nivel DIAG "Se a OM tiver mirror interno, mudar REPOSITORY_MODE no painel"
+    log_nivel DIAG "Ordem obrigatoria: core_dns (01) antes de core_ntp (02) antes de core_domain (07)"
 fi
 
-# 2. Desabilitar systemd-timesyncd (conflita com chrony pelo socket NTP)
-systemctl stop systemd-timesyncd 2>/dev/null || true
-systemctl disable systemd-timesyncd 2>/dev/null || true
-
-if [ -n "$NTP_SERVER" ] && [ "$NTP_SERVER" != "" ]; then
-    # 3. Escrever config ANTES de tentar sincronizar
-    if [ -d /etc/chrony ]; then
-        cat > /etc/chrony/chrony.conf <<EOF
-server $NTP_SERVER iburst
-driftfile /var/lib/chrony/chrony.drift
-makestep 1.0 3
-rtcsync
-EOF
-        systemctl enable chrony 2>/dev/null || true
-        systemctl restart chrony 2>/dev/null || true
-
-        # 4. Esperar sync acontecer (ate 30s)
-        echo ">>> Aguardando sincronizacao NTP com $NTP_SERVER..."
-        NTP_OK=false
-        for i in $(seq 1 15); do
-            sleep 2
-            if timedatectl status 2>/dev/null | grep -q "synchronized: yes"; then
-                NTP_OK=true
-                break
-            fi
-            chronyc makestep 2>/dev/null || true
-        done
-
-        if [ "$NTP_OK" = "true" ]; then
-            echo ">>> NTP sincronizado com sucesso: $(date -Is)"
-        else
-            echo ">>> AVISO: NTP NAO sincronizou em 30s."
-            echo ">>>        Kerberos pode falhar com 'Clock skew too great'."
-            echo ">>>        Servidor: $NTP_SERVER"
-            chronyc sources 2>/dev/null | sed 's/^/    /' || true
-        fi
-    elif [ -f /etc/ntp.conf ]; then
-        cp /etc/ntp.conf /etc/ntp.conf.bak 2>/dev/null || true
-        cat > /etc/ntp.conf <<EOF
-server $NTP_SERVER iburst
-driftfile /var/lib/ntp/ntp.drift
-restrict default kod nomodify notrap nopeer noquery
-restrict 127.0.0.1
-EOF
-        systemctl restart ntp 2>/dev/null || true
-    fi
-else
-    echo ">>> NTP_SERVER nao definido, usando padrao do sistema"
-fi
-
-echo ">>> [01] DNS, NTP e resolucao de nomes configurados!"
+log_nivel OK "DNS e resolucao de nomes configurados!"
 echo "============================================================"

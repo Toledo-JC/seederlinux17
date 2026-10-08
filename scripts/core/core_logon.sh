@@ -47,8 +47,11 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="19-logon"
+
 echo "============================================================"
-echo "15 - Logon minimalista (via autostart)"
+echo "Logon minimalista (via autostart)"
 echo "============================================================"
 
 # ============================================================
@@ -78,7 +81,7 @@ MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
 # Isso da uma superficie de ataque MENOR que a versao anterior com
 # wildcards - e funciona em qualquer versao de sudo.
 # ============================================================
-echo ">>> Criando wrappers de mount/umount (compat sudo 1.9.x+)..."
+log_nivel INFO "Criando wrappers de mount/umount (compat sudo 1.9.x+)..."
 mkdir -p /usr/local/bin
 
 cat > /usr/local/bin/seederlinux-mount-share <<'MOUNT_WRAPPER'
@@ -105,7 +108,11 @@ fi
 
 # Whitelist: share precisa estar na lista COMPARTILHAMENTOS.
 AUTORIZADO=false
-for s in ${COMPARTILHAMENTOS:-}; do
+IFS=',' read -ra _shares_arr <<< "${COMPARTILHAMENTOS:-}"
+for s in "${_shares_arr[@]}"; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [ -z "$s" ] && continue
     if [ "$s" = "$SHARE" ]; then AUTORIZADO=true; break; fi
 done
 if [ "$AUTORIZADO" != "true" ]; then
@@ -154,7 +161,11 @@ if [ -f /etc/seederlinux/config.env ]; then
 fi
 
 AUTORIZADO=false
-for s in ${COMPARTILHAMENTOS:-}; do
+IFS=',' read -ra _shares_arr <<< "${COMPARTILHAMENTOS:-}"
+for s in "${_shares_arr[@]}"; do
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+    [ -z "$s" ] && continue
     if [ "$s" = "$SHARE" ]; then AUTORIZADO=true; break; fi
 done
 if [ "$AUTORIZADO" != "true" ]; then
@@ -180,7 +191,7 @@ chmod 0755 /usr/local/bin/seederlinux-umount-share
 # ============================================================
 # 2. sudoers restrito (sem wildcards - compat sudo 1.9.x+)
 # ============================================================
-echo ">>> Configurando sudoers restrito para logon..."
+log_nivel INFO "Configurando sudoers restrito para logon..."
 SUDOERS_FILE="/etc/sudoers.d/seederlinux-logon"
 cat > "$SUDOERS_FILE" <<EOF
 # SeederLinux - permissoes minimas para o logon do usuario.
@@ -197,11 +208,11 @@ ALL ALL=(root) NOPASSWD: SEEDERLINUX_MOUNT, SEEDERLINUX_UMOUNT, SEEDERLINUX_SYNC
 EOF
 chmod 440 "$SUDOERS_FILE"
 if ! visudo -cf "$SUDOERS_FILE"; then
-    echo ">>> ERRO: sintaxe invalida no sudoers gerado. Removendo."
+    log_nivel ERRO "sintaxe invalida no sudoers gerado. Removendo."
     rm -f "$SUDOERS_FILE"
     exit 1
 fi
-echo ">>> sudoers configurado: $SUDOERS_FILE"
+log_nivel INFO "sudoers configurado: $SUDOERS_FILE"
 
 # ============================================================
 # 3. Preparar diretorio de log (mundo-gravavel com sticky bit)
@@ -214,7 +225,11 @@ chmod 1777 /var/log/logon-logoff
 # ============================================================
 mkdir -p "$MOUNT_DIR"
 if [ -n "$COMPARTILHAMENTOS" ]; then
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
         mkdir -p "${MOUNT_DIR}/${SHARE}"
     done
 fi
@@ -225,7 +240,7 @@ chmod 755 "$MOUNT_DIR"
 #    Sera chamado via autostart XDG a cada login, DENTRO da sessao
 #    do usuario (nao mais como hook do display manager).
 # ============================================================
-echo ">>> Criando script permanente: /usr/local/bin/seederlinux-logon"
+log_nivel INFO "Criando script permanente: /usr/local/bin/seederlinux-logon"
 
 cat > /usr/local/bin/seederlinux-logon <<'PERMSCRIPT'
 #!/bin/bash
@@ -260,7 +275,12 @@ mkdir -p "$USER_HOME/Desktop" "$USER_HOME/Downloads" "$USER_HOME/Documents" 2>/d
 # ============================================================
 if [ -n "$SERVIDOR_ARQUIVOS" ] && [ -n "$COMPARTILHAMENTOS" ]; then
     MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
+
         SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
         if ! mountpoint -q "$SHARE_MOUNT" 2>/dev/null; then
             if sudo -n /usr/local/bin/seederlinux-mount-share \
@@ -314,14 +334,58 @@ if ! systemctl is-active --quiet seeder-sync.timer 2>/dev/null; then
 fi
 
 # ============================================================
+# Sincronizar NTP (rapido: timeout 3s, nao bloqueia login).
+#
+# Motivo: se a estacao ficou desligada por dias, o relogio pode
+# estar fora da janela de tolerancia do Kerberos (> 5 min) ate o
+# daemon NTP conseguir sincronizar. Forcar uma tentativa rapida
+# aqui evita que o usuario tome erro de autenticacao no primeiro
+# login apos boot.
+#
+# O cliente vencedor foi descoberto pelo core_ntp.sh (script 02)
+# e persistido em /etc/seederlinux/ntp-state.env.
+# ============================================================
+if [ -x /usr/local/bin/seederlinux-sync-ntp ]; then
+    timeout 3 /usr/local/bin/seederlinux-sync-ntp >/dev/null 2>&1 || true
+fi
+
+# ============================================================
+# Perfil do Firefox — criar se não existir (Modelo B)
+# ============================================================
+FIREFOX_DIR="$USER_HOME/.mozilla/firefox"
+FIREFOX_PROFILE_DIR="$FIREFOX_DIR/seederlinux.default"
+FIREFOX_PROFILES_INI="$FIREFOX_DIR/profiles.ini"
+
+if [ ! -f "$FIREFOX_PROFILES_INI" ]; then
+    mkdir -p "$FIREFOX_PROFILE_DIR"
+    chmod 700 "$USER_HOME/.mozilla" 2>/dev/null || true
+    chmod 700 "$FIREFOX_DIR" 2>/dev/null || true
+    chmod 700 "$FIREFOX_PROFILE_DIR" 2>/dev/null || true
+
+    cat > "$FIREFOX_PROFILES_INI" <<EOFINI
+[Profile0]
+Name=default
+IsRelative=1
+Path=seederlinux.default
+Default=1
+
+[General]
+StartWithLastProfile=1
+Version=2
+EOFINI
+    chmod 644 "$FIREFOX_PROFILES_INI"
+    echo "Firefox: perfil criado ($FIREFOX_PROFILE_DIR)"
+fi
+
+# ============================================================
 # Resolver e aplicar proxy do Firefox conforme grupo do AD.
 #
 # CHROME: sempre usa o proxy padrao (system-wide, aplicado pelo
 # core_browser.sh no provisionamento). Nao e tocado aqui.
 #
 # FIREFOX: aplica o proxy especifico do grupo do usuario em
-# ~/.mozilla/firefox/*/user.js. Se o usuario nao pertence a nenhum
-# grupo com proxy, cai no padrao (catch-all).
+# ~/.mozilla/firefox/seederlinux.default/user.js. Se o usuario nao
+# pertence a nenhum grupo com proxy, limpa o user.js.
 # ============================================================
 if [ -f /usr/local/lib/seederlinux/resolve-proxy.sh ]; then
     # shellcheck disable=SC1091
@@ -342,10 +406,8 @@ if [ -f /usr/local/lib/seederlinux/resolve-proxy.sh ]; then
             _proxy_host="${_hostport%:*}"
             _proxy_port="${_hostport##*:}"
 
-            for _profile in "$USER_HOME"/.mozilla/firefox/*.default* \
-                            "$USER_HOME"/.mozilla/firefox/*.default-release*; do
-                [ -d "$_profile" ] || continue
-                _userjs="$_profile/user.js"
+            _userjs="$FIREFOX_PROFILE_DIR/user.js"
+            if [ -d "$FIREFOX_PROFILE_DIR" ]; then
                 cat > "$_userjs" <<EOFPREF
 // SeederLinux — proxy por grupo do AD
 // Proxy: ${_proxy_name}
@@ -359,10 +421,15 @@ user_pref("network.proxy.no_proxies_on", "${_no_proxy}");
 EOFPREF
                 chmod 644 "$_userjs"
                 echo "Firefox: proxy aplicado (${_proxy_name}) em $_userjs"
-            done
+            fi
         fi
     else
-        echo "Firefox: nenhum proxy aplicavel (DIRECT)"
+        # Nenhum proxy aplicável: limpar user.js para não deixar proxy velho
+        _userjs="$FIREFOX_PROFILE_DIR/user.js"
+        if [ -f "$_userjs" ]; then
+            rm -f "$_userjs"
+            echo "Firefox: user.js removido (DIRECT)"
+        fi
     fi
 fi
 
@@ -371,13 +438,13 @@ exit 0
 PERMSCRIPT
 
 chmod 755 /usr/local/bin/seederlinux-logon
-echo ">>> Script permanente criado: /usr/local/bin/seederlinux-logon"
+log_nivel INFO "Script permanente criado: /usr/local/bin/seederlinux-logon"
 
 # ============================================================
 # 6. Registrar via autostart XDG (funciona em GNOME, Cinnamon, MATE,
 #    XFCE, KDE, LXDE/LXQt de forma padronizada - um mecanismo so)
 # ============================================================
-echo ">>> Registrando autostart..."
+log_nivel INFO "Registrando autostart..."
 mkdir -p /etc/xdg/autostart
 cat > /etc/xdg/autostart/seederlinux-logon.desktop <<EOF
 [Desktop Entry]
@@ -391,5 +458,5 @@ X-GNOME-Autostart-enabled=true
 X-KDE-autostart-after=panel
 EOF
 
-echo ">>> [15] Logon minimalista instalado (via autostart)!"
+log_nivel OK "Logon minimalista instalado (via autostart)!"
 echo "============================================================"

@@ -31,6 +31,9 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="15-branding"
+
 # CORRECAO: script envolvido em subshell - uma falha aqui (ex: asset
 # externo que nao baixa/extrai direito) nao pode mais derrubar o
 # bundle inteiro, so este modulo.
@@ -38,7 +41,7 @@ set -e
 set -e
 
 echo "============================================================"
-echo "13 - Aplicar identidade visual (branding)"
+echo "Aplicar identidade visual (branding)"
 echo "============================================================"
 
 # ============================================================
@@ -88,7 +91,7 @@ if [ -z "$DESKTOP_ENV" ] || [ "$DESKTOP_ENV" = "" ]; then
     else DESKTOP_ENV="unknown"
     fi
 fi
-echo ">>> Ambiente detectado: $DESKTOP_ENV"
+log_nivel INFO "Ambiente detectado: $DESKTOP_ENV"
 
 # ============================================================
 # Detectar display manager se nao definido
@@ -102,11 +105,11 @@ if [ -z "$DISPLAY_MANAGER" ] || [ "$DISPLAY_MANAGER" = "" ]; then
     else DISPLAY_MANAGER="unknown"
     fi
 fi
-echo ">>> Display Manager detectado: $DISPLAY_MANAGER"
+log_nivel INFO "Display Manager detectado: $DISPLAY_MANAGER"
 
-echo ">>> OM: $OM_ACRONYM - $OM_NAME"
-echo ">>> Ambiente: $DESKTOP_ENV / $DISPLAY_MANAGER"
-echo ">>> Tema: $THEME"
+log_nivel INFO "OM: $OM_ACRONYM - $OM_NAME"
+log_nivel INFO "Ambiente: $DESKTOP_ENV / $DISPLAY_MANAGER"
+log_nivel INFO "Tema: $THEME"
 
 # ============================================================
 # Criar diretorios de branding
@@ -167,13 +170,13 @@ _baixar_ativo() {
 
     if ! wget -q --no-check-certificate --no-proxy --timeout=20 -O "$tmp" "$url"; then
         rm -f "$tmp"
-        echo ">>> AVISO: falha de download de $(basename "$dest") ($url) - mantendo o existente"
+        log_nivel AVISO "falha de download de $(basename "$dest") ($url) - mantendo o existente"
         return 1
     fi
 
     if [ ! -s "$tmp" ]; then
         rm -f "$tmp"
-        echo ">>> AVISO: $(basename "$dest") baixou 0 bytes (404/proxy/DNS?) - mantendo o existente"
+        log_nivel AVISO "$(basename "$dest") baixou 0 bytes (404/proxy/DNS?) - mantendo o existente"
         return 1
     fi
 
@@ -184,7 +187,7 @@ _baixar_ativo() {
     mime="$(file -b --mime-type "$tmp" 2>/dev/null || echo "application/octet-stream")"
     if ! echo "$mime" | grep -q '^image/'; then
         rm -f "$tmp"
-        echo ">>> AVISO: $(basename "$dest") baixou $mime (nao e imagem - HTML de erro?) - mantendo o existente"
+        log_nivel AVISO "$(basename "$dest") baixou $mime (nao e imagem - HTML de erro?) - mantendo o existente"
         return 1
     fi
 
@@ -193,38 +196,38 @@ _baixar_ativo() {
     # sessoes de usuario conseguem ler.
     install -m 0644 "$tmp" "$dest"
     rm -f "$tmp"
-    echo ">>> $(basename "$dest") instalado ($mime)"
+    log_nivel INFO "$(basename "$dest") instalado ($mime)"
     return 0
 }
 
 # ============================================================
 # Baixar e instalar wallpaper (da sessao)
 # ============================================================
-echo ">>> Baixando wallpaper..."
+log_nivel INFO "Baixando wallpaper..."
 if [ -n "$WALLPAPER_URL" ] && [ "$WALLPAPER_URL" != "" ]; then
     _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
 else
-    echo ">>> WALLPAPER_URL nao definido. Pulando wallpaper."
+    log_nivel INFO "WALLPAPER_URL nao definido. Pulando wallpaper."
 fi
 
 # ============================================================
 # Baixar e instalar wallpaper de login
 # ============================================================
-echo ">>> Baixando wallpaper de login..."
+log_nivel INFO "Baixando wallpaper de login..."
 if [ -n "$WALLPAPER_LOGIN_URL" ] && [ "$WALLPAPER_LOGIN_URL" != "" ]; then
     _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
 else
-    echo ">>> WALLPAPER_LOGIN_URL nao definido. Pulando wallpaper de login."
+    log_nivel INFO "WALLPAPER_LOGIN_URL nao definido. Pulando wallpaper de login."
 fi
 
 # ============================================================
 # Baixar e instalar logo
 # ============================================================
-echo ">>> Baixando logo..."
+log_nivel INFO "Baixando logo..."
 if [ -n "$LOGO_URL" ] && [ "$LOGO_URL" != "" ]; then
     _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
 else
-    echo ">>> LOGO_URL nao definido. Pulando logo."
+    log_nivel INFO "LOGO_URL nao definido. Pulando logo."
 fi
 
 # ============================================================
@@ -240,12 +243,12 @@ fi
 # extensao do arquivo - funciona com qualquer formato, mesmo que o
 # nome/extensao esteja errado.
 # ============================================================
-echo ">>> Baixando greeter..."
+log_nivel INFO "Baixando greeter..."
 if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
     GREETER_TARBALL="/tmp/seederlinux-greeter.bin"
     if wget -q --no-check-certificate --no-proxy --timeout=20 -O "$GREETER_TARBALL" "$GREETER_URL" && [ -s "$GREETER_TARBALL" ]; then
         GREETER_MIME="$(file -b --mime-type "$GREETER_TARBALL" 2>/dev/null)"
-        echo ">>> Greeter detectado como: ${GREETER_MIME:-desconhecido}"
+        log_nivel INFO "Greeter detectado como: ${GREETER_MIME:-desconhecido}"
 
         case "$GREETER_MIME" in
             # --- Caso 1: arquivo compactado (tar/gzip/bzip2/xz) ---
@@ -267,13 +270,13 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
                                 cp -r /tmp/seederlinux-greeter/* /usr/share/sddm/themes/ 2>/dev/null || true
                                 ;;
                         esac
-                        echo ">>> Greeter (pacote) instalado"
+                        log_nivel INFO "Greeter (pacote) instalado"
                     else
-                        echo ">>> AVISO: falha ao extrair o pacote do greeter."
+                        log_nivel AVISO "falha ao extrair o pacote do greeter."
                     fi
                     rm -rf /tmp/seederlinux-greeter
                 else
-                    echo ">>> AVISO: conteudo nao reconhecido como tar/gzip/bzip2/xz."
+                    log_nivel AVISO "conteudo nao reconhecido como tar/gzip/bzip2/xz."
                 fi
                 ;;
 
@@ -296,7 +299,7 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
                 # O greeter precisa ler, entao modo tem que ser 0644
                 # explicito, sem depender de umask.
                 install -m 0644 "$GREETER_TARBALL" "$GREETER_IMG"
-                echo ">>> Greeter (imagem ${GREETER_EXT}) instalado: $GREETER_IMG"
+                log_nivel INFO "Greeter (imagem ${GREETER_EXT}) instalado: $GREETER_IMG"
 
                 # Se WALLPAPER_LOGIN_URL nao foi definido OU o arquivo
                 # de wallpaper de login ainda nao existe, usar o
@@ -309,22 +312,22 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
                 # correspondente estar instalado na imagem do SO.
                 if [ -z "$WALLPAPER_LOGIN_URL" ] || [ ! -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
                     install -m 0644 "$GREETER_TARBALL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
-                    echo ">>> Greeter usado como wallpaper de login"
+                    log_nivel INFO "Greeter usado como wallpaper de login"
                 else
-                    echo ">>> Wallpaper de login proprio ja instalado - greeter mantido apenas em $GREETER_IMG"
+                    log_nivel INFO "Wallpaper de login proprio ja instalado - greeter mantido apenas em $GREETER_IMG"
                 fi
                 ;;
 
             # --- Caso 3: qualquer outra coisa ---
             *)
-                echo ">>> AVISO: GREETER_URL nao e imagem nem pacote compactado valido"
-                echo ">>> (detectado como: ${GREETER_MIME:-desconhecido}). Pulando greeter customizado."
+                log_nivel AVISO "GREETER_URL nao e imagem nem pacote compactado valido"
+                log_nivel INFO "(detectado como: ${GREETER_MIME:-desconhecido}). Pulando greeter customizado."
                 ;;
         esac
 
         rm -f "$GREETER_TARBALL"
     else
-        echo ">>> AVISO: greeter baixado vazio ou com falha - pulando"
+        log_nivel AVISO "greeter baixado vazio ou com falha - pulando"
         rm -f "$GREETER_TARBALL"
     fi
 fi
@@ -344,7 +347,7 @@ LOGIN_WP="/usr/share/backgrounds/seederlinux/wallpaper-login.jpg"
 SESSION_WP="/usr/share/backgrounds/seederlinux/wallpaper.jpg"
 
 if [ ! -s "$LOGIN_WP" ] && [ -s "$SESSION_WP" ]; then
-    echo ">>> Wallpaper de login ausente - usando o da sessao como fallback"
+    log_nivel INFO "Wallpaper de login ausente - usando o da sessao como fallback"
     install -m 0644 "$SESSION_WP" "$LOGIN_WP"
 fi
 
@@ -359,16 +362,16 @@ fi
 # so aplicamos tema se THEME vier definido E existir de verdade em
 # /usr/share/themes - caso contrario mantemos o tema atual do
 # sistema/DE, sem sobrescrever nada.
-echo ">>> Aplicando tema GTK: $THEME"
+log_nivel INFO "Aplicando tema GTK: $THEME"
 THEME_APLICAR=false
 
 if [ -z "$THEME" ] || [ "$THEME" = "DEFAULT" ]; then
-    echo ">>> THEME=DEFAULT (ou vazio) - mantendo tema atual do sistema."
+    log_nivel INFO "THEME=DEFAULT (ou vazio) - mantendo tema atual do sistema."
 elif [ -d "/usr/share/themes/$THEME" ]; then
     THEME_APLICAR=true
-    echo ">>> THEME=$THEME - tema encontrado em /usr/share/themes."
+    log_nivel INFO "THEME=$THEME - tema encontrado em /usr/share/themes."
 else
-    echo ">>> AVISO: THEME=$THEME nao existe em /usr/share/themes - mantendo tema atual."
+    log_nivel AVISO "THEME=$THEME nao existe em /usr/share/themes - mantendo tema atual."
 fi
 
 if [ "$THEME_APLICAR" = "true" ]; then
@@ -386,15 +389,15 @@ gtk-button-images=1
 gtk-menu-images=1
 gtk-application-prefer-dark-theme=0
 EOF
-    echo ">>> Tema GTK configurado: $THEME"
+    log_nivel INFO "Tema GTK configurado: $THEME"
 else
-    echo ">>> Tema GTK NAO foi alterado (DEFAULT ou inexistente)."
+    log_nivel INFO "Tema GTK NAO foi alterado (DEFAULT ou inexistente)."
 fi
 
 # ============================================================
 # Aplicar wallpaper e configuracoes conforme o DE
 # ============================================================
-echo ">>> Aplicando configuracoes para: $DESKTOP_ENV"
+log_nivel INFO "Aplicando configuracoes para: $DESKTOP_ENV"
 
 case "$DESKTOP_ENV" in
     cinnamon)
@@ -544,7 +547,7 @@ esac
 # esta altura ja existe (download OK, fallback do greeter, ou
 # fallback do wallpaper da sessao).
 # ============================================================
-echo ">>> Configurando wallpaper de login..."
+log_nivel INFO "Configurando wallpaper de login..."
 case "$DISPLAY_MANAGER" in
     lightdm)
         mkdir -p /etc/lightdm
@@ -561,9 +564,9 @@ EOF
             fi
             # lightdm le este arquivo como usuario `lightdm`.
             chmod 0644 /etc/lightdm/lightdm-gtk-greeter.conf
-            echo ">>> lightdm-gtk-greeter.conf configurado (background=$LOGIN_WP)"
+            log_nivel INFO "lightdm-gtk-greeter.conf configurado (background=$LOGIN_WP)"
         else
-            echo ">>> AVISO: wallpaper-login.jpg ausente - greeter mantem padrao do sistema"
+            log_nivel AVISO "wallpaper-login.jpg ausente - greeter mantem padrao do sistema"
         fi
         ;;
     gdm3)
@@ -576,9 +579,9 @@ picture-uri='file:///usr/share/backgrounds/seederlinux/wallpaper-login.jpg'
 picture-options='zoom'
 EOF
             dconf update 2>/dev/null || true
-            echo ">>> GDM3 background configurado"
+            log_nivel INFO "GDM3 background configurado"
         else
-            echo ">>> AVISO: wallpaper-login.jpg ausente - GDM3 mantem padrao do sistema"
+            log_nivel AVISO "wallpaper-login.jpg ausente - GDM3 mantem padrao do sistema"
         fi
         ;;
     sddm)
@@ -590,9 +593,9 @@ ThemeDir=/usr/share/sddm/themes
 Current=seederlinux
 Background=/usr/share/backgrounds/seederlinux/wallpaper-login.jpg
 EOF
-            echo ">>> SDDM background configurado"
+            log_nivel INFO "SDDM background configurado"
         else
-            echo ">>> AVISO: wallpaper-login.jpg ausente - SDDM mantem padrao do sistema"
+            log_nivel AVISO "wallpaper-login.jpg ausente - SDDM mantem padrao do sistema"
         fi
         ;;
 esac
@@ -600,10 +603,10 @@ esac
 # ============================================================
 # Sumario final dos assets (observabilidade - facilita debug)
 # ============================================================
-echo ">>> Sumario dos assets instalados:"
+log_nivel INFO "Sumario dos assets instalados:"
 ls -la /usr/share/backgrounds/seederlinux/ 2>/dev/null | sed 's/^/    /'
 ls -la /usr/share/pixmaps/seederlinux-logo.png 2>/dev/null | sed 's/^/    /'
 
-echo ">>> [13] Identidade visual aplicada!"
+log_nivel OK "Identidade visual aplicada!"
 echo "============================================================"
 )

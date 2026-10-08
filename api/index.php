@@ -1422,6 +1422,31 @@ function handleDeleteOrganization($id) {
 }
 
 // VARIABLES
+function normalizeSshGroups($value) {
+    $groups = str_getcsv((string)$value, ',', '"', '');
+    $normalized = [];
+
+    foreach ($groups as $group) {
+        $group = trim((string)$group);
+        while (strlen($group) >= 2 && $group[0] === '"' && substr($group, -1) === '"') {
+            $group = substr($group, 1, -1);
+        }
+        $group = str_replace('""', '"', trim($group));
+        $group = function_exists('mb_strtolower')
+            ? mb_strtolower($group, 'UTF-8')
+            : strtolower($group);
+        if ($group === '') continue;
+
+        if (preg_match('/[\s,"]/', $group)) {
+            $normalized[] = '"' . str_replace('"', '""', $group) . '"';
+        } else {
+            $normalized[] = $group;
+        }
+    }
+
+    return implode(',', $normalized);
+}
+
 function handleGetVariables($orgId) {
     $user = getCurrentUser();
     // operador_om só pode acessar sua própria OM
@@ -1554,6 +1579,9 @@ function handleUpdateVariables($input) {
             $varName = $definitionNamesById[(int)$varId] ?? '';
             if (in_array($varName, $policyVarNames, true) && in_array($value, ['PROXY_NO_AUTH', 'PROXY_WITH_AUTH'], true)) {
                 $value = 'PROXY';
+            }
+            if ($varName === 'SSH_GROUPS') {
+                $value = normalizeSshGroups($value);
             }
             if (in_array($varName, $repositoryBooleanNames, true)) {
                 $normalized = mirrorInputBoolean(['value' => $value], 'value');
@@ -2592,11 +2620,6 @@ function handleGenerateBundle($input) {
         $org = Database::fetchOne("SELECT id, acronym, domain, serial_config FROM organizations WHERE id = ?", [$orgId]);
         if (!$org) jsonError('Organizacao nao encontrada', 404);
 
-        // Bump serial BEFORE generating bundle content so the header
-        // carries the new serial, not the old one.
-        $newSerial = bumpOrgSerial($orgId);
-        $org['serial_config'] = $newSerial;
-
         // Sanitizar URLs dinâmicas baseadas na sigla da OM
         $org = sanitize_org_urls($org);
 
@@ -2611,7 +2634,7 @@ function handleGenerateBundle($input) {
 
     if (empty($selectedScripts)) {
         $scripts = Database::fetchAll(
-            "SELECT s.id, s.name, s.filename, s.content, s.is_core,
+            "SELECT s.id, s.name, s.filename, s.content, s.is_core, s.depends_on,
                     COALESCE(osv.execution_order, s.execution_order) AS execution_order,
                     COALESCE(osv.is_active, TRUE) AS om_is_active
              FROM scripts s
@@ -2626,7 +2649,7 @@ function handleGenerateBundle($input) {
         $placeholders = implode(',', array_fill(0, count($selectedScripts), '?'));
         $params = array_merge($selectedScripts, [$orgId, $orgId]);
         $scripts = Database::fetchAll(
-            "SELECT s.id, s.name, s.filename, s.content, s.is_core,
+            "SELECT s.id, s.name, s.filename, s.content, s.is_core, s.depends_on,
                     COALESCE(osv.execution_order, s.execution_order) AS execution_order,
                     COALESCE(osv.is_active, TRUE) AS om_is_active
              FROM scripts s
@@ -2638,7 +2661,42 @@ function handleGenerateBundle($input) {
         );
     }
 
-    // Todos os 23 scripts Core são incluídos no bundle.
+    $actualOrder = [];
+    $positions = [];
+    foreach ($scripts as $script) {
+        $order = (int)($script['execution_order'] ?? 0);
+        $actualOrder[] = $order;
+        $positions[$script['filename']] = $order;
+    }
+    sort($actualOrder, SORT_NUMERIC);
+    $expectedOrder = count($scripts) > 0 ? range(1, count($scripts)) : [];
+    if ($actualOrder !== $expectedOrder) {
+        jsonError('Ordem de scripts invalida: ' . json_encode($actualOrder));
+    }
+
+    foreach ($scripts as $script) {
+        $dependencies = $script['depends_on'] ?? [];
+        if (is_string($dependencies)) {
+            $dependencies = trim($dependencies, '{}');
+            $dependencies = $dependencies === '' ? [] : explode(',', $dependencies);
+        }
+        foreach ($dependencies as $dependency) {
+            $dependency = trim($dependency);
+            if ($dependency === '') continue;
+            if (!isset($positions[$dependency])) {
+                jsonError("Script {$script['filename']} depende de $dependency, que nao esta no bundle.");
+            }
+            if ($positions[$dependency] >= (int)$script['execution_order']) {
+                jsonError("Script {$script['filename']} (posicao {$script['execution_order']}) depende de $dependency (posicao {$positions[$dependency]}), mas a dependencia vem depois.");
+            }
+        }
+    }
+
+    // Atualizar o serial somente depois de validar a ordem e as dependencias.
+    $newSerial = bumpOrgSerial($orgId);
+    $org['serial_config'] = $newSerial;
+
+    // Todos os 24 scripts Core são incluídos no bundle.
     // Cada script de sessão (lightdm, gdm3, sddm) decide internamente se executa ou não.
 
     $bundle = "#!/bin/bash\n";
@@ -2656,6 +2714,160 @@ function handleGenerateBundle($input) {
     $bundle .= "    echo \"ERRO: Este script deve ser executado como root (sudo).\"\n";
     $bundle .= "    exit 1\n";
     $bundle .= "fi\n\n";
+
+    // ========================================================================
+    // SeederLinux Lite - infraestrutura de log estruturado (Core Pipeline V2)
+    // ========================================================================
+    // 1. Abre $BUNDLE_LOG e faz tee de todo o output (tela + arquivo)
+    // 2. Instala /usr/local/lib/seederlinux/diag.sh a partir de uma
+    //    cópia embutida (não depende de rede - o script é autocontido)
+    // ========================================================================
+    $bundle .= <<<'BUNDLE_HEADER'
+
+# ============================================================
+# Infraestrutura de log estruturado (Core Pipeline V2)
+# ============================================================
+mkdir -p /var/log/seederlinux /usr/local/lib/seederlinux
+
+BUNDLE_LOG="/var/log/seederlinux/bundle-$(date +%Y%m%d-%H%M%S).log"
+export BUNDLE_LOG
+exec > >(tee -a "$BUNDLE_LOG") 2>&1
+
+echo "[INFO]  [bundle] Log estruturado ativo: $BUNDLE_LOG"
+
+cat > /usr/local/lib/seederlinux/diag.sh <<'SEEDER_DIAG_EOF'
+#!/bin/bash
+if [ -n "${SEEDER_DIAG_LOADED:-}" ]; then return 0; fi
+SEEDER_DIAG_LOADED=1
+SEEDER_LOG_INFO="INFO"
+SEEDER_LOG_TESTE="TESTE"
+SEEDER_LOG_TENT="TENT"
+SEEDER_LOG_OK="OK"
+SEEDER_LOG_AVISO="AVISO"
+SEEDER_LOG_DIAG="DIAG"
+SEEDER_LOG_ACAO="ACAO"
+SEEDER_LOG_ERRO="ERRO"
+log_nivel() {
+    local nivel="$1"
+    shift
+    local tag="${SCRIPT_ID:-core}"
+    printf '[%-5s] [%s] %s\n' "$nivel" "$tag" "$*"
+}
+SEEDER_DIAG_EOF
+chmod 644 /usr/local/lib/seederlinux/diag.sh
+
+# ============================================================
+# Instala componentes permanentes (scripts que rodam fora do bundle)
+# ============================================================
+cat > /usr/local/bin/seederlinux-sync-ntp <<'SEEDER_SYNC_NTP_EOF'
+#!/bin/bash
+# ============================================================================
+# seederlinux-sync-ntp
+# ============================================================================
+# Sincroniza o relogio usando o cliente NTP vencedor descoberto pelo
+# core_ntp.sh (script 02 do bundle). Lê o estado de
+# /etc/seederlinux/ntp-state.env e chama o comando certo.
+#
+# Chamado em:
+#   - systemd unit seederlinux-sync-ntp.service (no boot)
+#   - /usr/local/bin/seederlinux-logon (a cada login, timeout 3s)
+#   - (V2) seeder-sync timer a cada 10min (health check)
+#
+# Alvo: menos de 3 segundos. Se nao sincronizar nesse tempo, sai
+# silenciosamente - o daemon em background resolve.
+#
+# Exit codes:
+#   0 - sincronizado ou timeout tolerado
+#   1 - sem estado (nunca rodou core_ntp.sh), nada a fazer
+#   2 - cliente conhecido mas o comando falhou (raro)
+# ============================================================================
+
+set -u
+
+STATE_FILE="/etc/seederlinux/ntp-state.env"
+[ ! -f "$STATE_FILE" ] && exit 1
+
+# shellcheck disable=SC1090
+. "$STATE_FILE"
+
+[ -z "${NTP_CLIENT:-}" ] && exit 1
+[ -z "${NTP_SERVER:-}" ] && exit 1
+
+_tentar_sync() {
+    case "$NTP_CLIENT" in
+        systemd-timesyncd)
+            systemctl restart systemd-timesyncd 2>/dev/null || return 2
+            ;;
+        chrony)
+            systemctl restart chrony 2>/dev/null || return 2
+            chronyc makestep 2>/dev/null || true
+            ;;
+        ntpsec)
+            systemctl restart ntpsec 2>/dev/null || return 2
+            ;;
+        ntp-isc)
+            systemctl restart ntp 2>/dev/null || return 2
+            ;;
+        ntpdate+cron)
+            ntpdate -u "$NTP_SERVER" 2>/dev/null || return 2
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+    return 0
+}
+
+_tentar_sync || exit $?
+
+# Aguarda ate 3s para confirmar sincronizacao (nao bloqueia login)
+for i in 1 2 3; do
+    sleep 1
+    case "$NTP_CLIENT" in
+        systemd-timesyncd)
+            [ "$(timedatectl show --property=NTPSynchronized --value 2>/dev/null)" = "yes" ] && exit 0
+            ;;
+        chrony)
+            chronyc tracking 2>/dev/null | grep -q "Leap status.*Normal" && exit 0
+            ;;
+        ntpsec|ntp-isc)
+            ntpq -p 2>/dev/null | grep -qE "^\*" && exit 0
+            ;;
+        ntpdate+cron)
+            # ntpdate e' sincrono; se _tentar_sync retornou 0, ja esta OK
+            exit 0
+            ;;
+    esac
+done
+
+# Nao confirmou em 3s, mas nao abortou. O daemon em background resolve.
+exit 0
+SEEDER_SYNC_NTP_EOF
+chmod 755 /usr/local/bin/seederlinux-sync-ntp
+
+cat > /etc/systemd/system/seederlinux-sync-ntp.service <<'SEEDER_SYNC_NTP_SVC_EOF'
+[Unit]
+Description=SeederLinux - Sincroniza NTP no boot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/seederlinux-sync-ntp
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SEEDER_SYNC_NTP_SVC_EOF
+chmod 644 /etc/systemd/system/seederlinux-sync-ntp.service
+
+systemctl daemon-reload 2>/dev/null || true
+systemctl enable seederlinux-sync-ntp.service 2>/dev/null || true
+
+BUNDLE_START_EPOCH="$(date +%s)"
+export BUNDLE_START_EPOCH
+BUNDLE_HEADER;
+    $bundle .= "\n"; // nowdoc não inclui o newline final antes do delimitador
 
     $skipExportTypes = ['password'];
     $skipExportNames = ['INSTALL_DESKTOP'];
@@ -2732,14 +2944,8 @@ function handleGenerateBundle($input) {
             }
         }
 
-        // SSH_GROUPS: permitir hifens (nomes de grupo do AD como "linux-admins"),
-        // remover espacos e barras (quebram AllowGroups — viram separadores).
-        // O operador deve digitar o nome EXATO do grupo como exposto pelo AD,
-        // sem "\ " nem espacos. Ver UI para documentacao.
         if ($name === 'SSH_GROUPS') {
-            $cleaned = preg_replace('/[^a-zA-Z0-9_,-]/', '', $val);
-            $parts = array_filter(array_map('trim', explode(',', $cleaned)), fn($p) => $p !== '');
-            $v['value'] = implode(',', $parts);
+            $v['value'] = normalizeSshGroups($val);
         }
 
         // HOMEPAGE: remover espacos nas extremidades e normalizar espacos internos (sem forcar protocolo)
@@ -2876,6 +3082,60 @@ function handleGenerateBundle($input) {
     }
 
     $bundle .= "# === FIM DO BUNDLE ===\n";
+
+    $bundle .= <<<'BUNDLE_FOOTER'
+
+# ============================================================
+# Sumário do bundle
+# ============================================================
+_seederlinux_sumario() {
+    local dur=$(( $(date +%s) - ${BUNDLE_START_EPOCH:-0} ))
+    local ok aviso erro legado
+    ok="$(grep -c '^\[OK[[:space:]]*\]'       "$BUNDLE_LOG" 2>/dev/null || true)"
+    aviso="$(grep -c '^\[AVISO[[:space:]]*\]' "$BUNDLE_LOG" 2>/dev/null || true)"
+    erro="$(grep -c '^\[ERRO[[:space:]]*\]'   "$BUNDLE_LOG" 2>/dev/null || true)"
+    # Contador de legado: as mensagens ">>> ..." dos scripts ainda nao
+    # instrumentados (o grep -c ja imprime 0 quando nao ha match).
+    legado="$(grep -c '^>>>' "$BUNDLE_LOG" 2>/dev/null || true)"
+
+    echo ""
+    echo "=== SUMÁRIO DO BUNDLE ==="
+    echo "Serial:    {{SERIAL}}"
+    echo "Duração:   ${dur}s"
+    echo "Log:       $BUNDLE_LOG"
+    echo ""
+    echo "Mensagens estruturadas: $((ok + aviso + erro))"
+    echo "Mensagens legadas:      $legado"
+    echo ""
+    echo "Contadores: OK=$ok AVISO=$aviso ERRO=$erro"
+    echo ""
+
+    if [ "$erro" -gt 0 ]; then
+        echo "[ERROS ENCONTRADOS]"
+        grep -n '^\[ERRO[[:space:]]*\]' "$BUNDLE_LOG" | sed 's/^/    /'
+        echo ""
+        echo "Ações sugeridas:"
+        grep -n '^\[ACAO[[:space:]]*\]' "$BUNDLE_LOG" | sed 's/^/    /'
+        echo ""
+    fi
+
+    if [ "$aviso" -gt 0 ]; then
+        echo "[AVISOS]"
+        grep -n '^\[AVISO[[:space:]]*\]' "$BUNDLE_LOG" | sed 's/^/    /'
+        echo ""
+    fi
+
+    echo "=== FIM DO SUMÁRIO ==="
+}
+
+_seederlinux_sumario
+BUNDLE_FOOTER;
+    $bundle .= "\n"; // nowdoc não inclui o newline final antes do delimitador
+
+    // O rodapé é um nowdoc (literal): resolve o serial real da OM aqui,
+    // com a mesma variável já usada no header do bundle.
+    $bundle = str_replace('{{SERIAL}}', (string)$org['serial_config'], $bundle);
+
     $bundle .= "echo 'Bundle executado com sucesso!'\n";
 
     $validPlaceholders = array_column(
@@ -3884,16 +4144,25 @@ function handleUpdateScriptOrder($input) {
 
     Database::beginTransaction();
     try {
+        $oldOrder = Database::fetchAll(
+            "SELECT id, execution_order FROM scripts ORDER BY execution_order ASC, id ASC"
+        );
+        $newOrder = [];
         foreach ($input['scripts'] as $item) {
             $id = (int)($item['id'] ?? 0);
             $order = (int)($item['order'] ?? 0);
             if (!$id) continue;
+            $newOrder[] = ['id' => $id, 'execution_order' => $order];
             Database::execute(
                 "UPDATE scripts SET execution_order = ? WHERE id = ?",
                 [$order, $id]
             );
             log_audit('UPDATE', 'scripts', $id, ['new_execution_order' => $order]);
         }
+        log_audit('script_order_changed', 'scripts', null, [
+            'old_order' => $oldOrder,
+            'new_order' => $newOrder,
+        ]);
         Database::commit();
         jsonSuccess(null, 'Ordem atualizada');
     } catch (Exception $e) {

@@ -32,8 +32,11 @@
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="17-session-gdm3"
+
 echo "============================================================"
-echo "14b - Configurar GDM3 (GNOME)"
+echo "Configurar GDM3 (GNOME)"
 echo "============================================================"
 
 # ============================================================
@@ -95,9 +98,9 @@ if [ -z "$DESKTOP_ENV" ] && [ -f "$CONFIG_FILE" ]; then
 fi
 if [ -z "$DESKTOP_ENV" ]; then
     DESKTOP_ENV="$(detectar_de)"
-    echo ">>> DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV nao informado. Detectado em runtime: $DESKTOP_ENV"
 else
-    echo ">>> DESKTOP_ENV: $DESKTOP_ENV"
+    log_nivel INFO "DESKTOP_ENV: $DESKTOP_ENV"
 fi
 
 # ============================================================
@@ -110,9 +113,9 @@ if [ -z "$DISPLAY_MANAGER" ]; then
     DISPLAY_MANAGER="$(detectar_dm_ativo)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(detectar_dm_instalado)"
     [ -z "$DISPLAY_MANAGER" ] && DISPLAY_MANAGER="$(dm_padrao_para_de "$DESKTOP_ENV")"
-    echo ">>> DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER nao informado. Resolvido automaticamente: $DISPLAY_MANAGER"
 else
-    echo ">>> DISPLAY_MANAGER: $DISPLAY_MANAGER"
+    log_nivel INFO "DISPLAY_MANAGER: $DISPLAY_MANAGER"
 fi
 
 # ============================================================
@@ -132,25 +135,25 @@ sed -i '/^DESKTOP_ENV=/d;/^DISPLAY_MANAGER=/d' "$CONFIG_FILE"
 #    encerra este bloco (nao o bundle) e segue para 14c.
 # ============================================================
 if [ "$DISPLAY_MANAGER" != "gdm3" ]; then
-    echo ">>> DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e gdm3). Pulando."
+    log_nivel INFO "DISPLAY_MANAGER resolvido e '$DISPLAY_MANAGER' (nao e gdm3). Pulando."
     echo "============================================================"
     exit 0
 fi
 
-echo ">>> Display Manager: $DISPLAY_MANAGER"
-echo ">>> Ambiente: $DESKTOP_ENV"
+log_nivel INFO "Display Manager: $DISPLAY_MANAGER"
+log_nivel INFO "Ambiente: $DESKTOP_ENV"
 
 # ============================================================
 # Verificar se GDM3 esta presente.
 # CORRECAO: NAO instalar aqui - este script roda DEPOIS do ingresso
 # no AD, quando o DNS ja foi trocado pro controlador de dominio e
 # nao resolve mais repositorios publicos. A instalacao real acontece
-# no core_packages.sh (etapa 03), enquanto o DNS de internet ainda
+# no core_packages.sh (etapa 04), enquanto o DNS de internet ainda
 # esta ativo.
 # ============================================================
 if ! dpkg -l gdm3 2>/dev/null | grep -q "^ii"; then
-    echo ">>> ERRO: gdm3 nao instalado (deveria ter sido no core_packages.sh)."
-    echo ">>> Pulando configuracao do GDM3."
+    log_nivel ERRO "gdm3 nao instalado (deveria ter sido no core_packages.sh)."
+    log_nivel INFO "Pulando configuracao do GDM3."
     echo "============================================================"
     exit 0
 fi
@@ -162,7 +165,7 @@ echo "/usr/sbin/gdm3" > /etc/X11/default-display-manager
 # ============================================================
 # Configurar GDM3
 # ============================================================
-echo ">>> Configurando GDM3..."
+log_nivel INFO "Configurando GDM3..."
 mkdir -p /etc/gdm3
 
 cat > /etc/gdm3/daemon.conf <<EOF
@@ -179,7 +182,7 @@ DisallowRoot=true
 Session=${DESKTOP_ENV}
 EOF
 
-echo ">>> GDM3 configurado (daemon.conf)"
+log_nivel INFO "GDM3 configurado (daemon.conf)"
 
 # Ubuntu 24.04+: o GDM3 le WaylandEnable de /etc/gdm3/custom.conf,
 # NAO de daemon.conf. Sem isso, o GDM sobe em Wayland e quebra
@@ -195,7 +198,7 @@ TimedLoginEnable=false
 DisallowRoot=true
 EOF
 
-echo ">>> GDM3 configurado (custom.conf)"
+log_nivel INFO "GDM3 configurado (custom.conf)"
 
 # ============================================================
 # Configurar script de logoff via PostSession
@@ -206,7 +209,7 @@ echo ">>> GDM3 configurado (custom.conf)"
 # a rodar via autostart XDG dentro da sessao (ver core_logon.sh).
 # Logoff continua aqui pois so desmonta/mata processo (tolerante a
 # rodar como root).
-echo ">>> Configurando script de logoff no GDM3..."
+log_nivel INFO "Configurando script de logoff no GDM3..."
 
 POSTSESSION_FILE="/etc/gdm3/PostSession/Default"
 mkdir -p /etc/gdm3/PostSession
@@ -222,23 +225,23 @@ exit "${EXIT_STATUS:-0}"
 POSTSESSION
 chmod +x "$POSTSESSION_FILE"
 
-echo ">>> Script de logoff configurado no GDM3"
+log_nivel INFO "Script de logoff configurado no GDM3"
 
 # ============================================================
 # Garantir que os scripts de logon/logoff existam
 # ============================================================
-echo ">>> Verificando scripts de logon/logoff..."
+log_nivel INFO "Verificando scripts de logon/logoff..."
 for SCRIPT in seederlinux-logon seederlinux-logoff; do
     if [ ! -f "/usr/local/bin/${SCRIPT}" ]; then
-        echo ">>> AVISO: /usr/local/bin/${SCRIPT} nao encontrado."
-        echo ">>> Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
+        log_nivel AVISO "/usr/local/bin/${SCRIPT} nao encontrado."
+        log_nivel INFO "Os scripts core_logon.sh e core_logoff.sh devem ser executados antes."
     fi
 done
 
 # ============================================================
 # Desabilitar outros display managers
 # ============================================================
-echo ">>> Desabilitando outros display managers..."
+log_nivel INFO "Desabilitando outros display managers..."
 systemctl disable lightdm 2>/dev/null || true
 systemctl disable sddm 2>/dev/null || true
 
@@ -251,9 +254,9 @@ ln -sf /lib/systemd/system/gdm.service /etc/systemd/system/display-manager.servi
 # $DISPLAY/$SSH_CONNECTION falha quando o bundle roda via cron
 # (agente Python), matando a sessao do usuario logado.
 # ============================================================
-echo ">>> Configuracao de GDM3 sera aplicada no proximo boot."
-echo ">>> (NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
+log_nivel INFO "Configuracao de GDM3 sera aplicada no proximo boot."
+log_nivel INFO "(NAO reiniciamos o DM aqui - ver comentario no topo deste script.)"
 
-echo ">>> [14b] GDM3 configurado!"
+log_nivel OK "GDM3 configurado!"
 echo "============================================================"
 )

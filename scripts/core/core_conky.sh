@@ -12,8 +12,11 @@
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="13-conky"
+
 echo "============================================================"
-echo "09 - Configurar Conky"
+echo "Configurar Conky"
 echo "============================================================"
 
 # ============================================================
@@ -25,8 +28,8 @@ DESKTOP_ENV="{{DESKTOP_ENV}}"
 OM_ACRONYM="{{OM_ACRONYM}}"
 OM_NAME="{{OM_NAME}}"
 
-echo ">>> Perfil Conky: $CONKY_PROFILE"
-echo ">>> Ambiente: $DESKTOP_ENV"
+log_nivel INFO "Perfil Conky: $CONKY_PROFILE"
+log_nivel INFO "Ambiente: $DESKTOP_ENV"
 
 # ============================================================
 # Detectar ambiente grafico se nao definido
@@ -47,8 +50,8 @@ fi
 # Verificar se o Conky foi instalado (no core_packages.sh)
 # ============================================================
 if ! command -v conky &>/dev/null; then
-    echo ">>> AVISO: Conky nao instalado. Pulando configuracao."
-    echo ">>> [09] Conky nao configurado (pacote ausente)."
+    log_nivel AVISO "Conky nao instalado. Pulando configuracao."
+    log_nivel INFO "[09] Conky nao configurado (pacote ausente)."
     echo "============================================================"
     exit 0
 fi
@@ -89,7 +92,7 @@ CFG_NETWORK_IFACE=$(parse_json network_interface "eth0")
 if ! ip link show "$CFG_NETWORK_IFACE" &>/dev/null 2>&1; then
     DETECTED_IFACE="$(ip route 2>/dev/null | awk '/default/ {print $5; exit}')"
     if [ -n "$DETECTED_IFACE" ]; then
-        echo ">>> interface '$CFG_NETWORK_IFACE' nao existe, usando '$DETECTED_IFACE'"
+        log_nivel INFO "interface '$CFG_NETWORK_IFACE' nao existe, usando '$DETECTED_IFACE'"
         CFG_NETWORK_IFACE="$DETECTED_IFACE"
     fi
 fi
@@ -117,7 +120,7 @@ mkdir -p /etc/seederlinux/conky
 # ============================================================
 # Gerar configuracao do Conky (usando CONKY_CONFIG JSON)
 # ============================================================
-echo ">>> Gerando configuracao do Conky (CONKY_CONFIG=${CONKY_CONFIG:-vazio})..."
+log_nivel INFO "Gerando configuracao do Conky (CONKY_CONFIG=${CONKY_CONFIG:-vazio})..."
 
 if [ "$CFG_SHOW_HOSTNAME" = "true" ]; then
     CONKY_TEXT="\${font DejaVu Sans Mono:size=${CFG_HOSTNAME_FONT_SIZE}}\${color ${COLOR_TEXT_LUA}}Host: \${nodename}
@@ -206,7 +209,7 @@ EOF
 # ============================================================
 # Criar script de inicializacao do Conky
 # ============================================================
-echo ">>> Criando script de inicializacao..."
+log_nivel INFO "Criando script de inicializacao..."
 cat > /usr/local/bin/seederlinux-conky <<'SCRIPT'
 #!/bin/bash
 CONKY_CONF="/etc/seederlinux/conky/conky.conf"
@@ -224,7 +227,7 @@ chmod +x /usr/local/bin/seederlinux-conky
 # ============================================================
 # Adicionar Conky ao autostart conforme o DE
 # ============================================================
-echo ">>> Configurando autostart do Conky para: $DESKTOP_ENV"
+log_nivel INFO "Configurando autostart do Conky para: $DESKTOP_ENV"
 
 case "$DESKTOP_ENV" in
     cinnamon|mate|xfce|lxde|lxqt|gnome)
@@ -252,6 +255,6 @@ EOF
         ;;
 esac
 
-echo ">>> [09] Conky configurado!"
+log_nivel OK "Conky configurado!"
 echo "============================================================"
 )

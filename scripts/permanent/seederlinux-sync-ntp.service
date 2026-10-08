@@ -1,0 +1,12 @@
+[Unit]
+Description=SeederLinux - Sincroniza NTP no boot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/seederlinux-sync-ntp
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

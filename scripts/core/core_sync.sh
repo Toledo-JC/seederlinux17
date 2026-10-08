@@ -23,8 +23,11 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="24-sync"
+
 echo "============================================================"
-echo "19 - Instalar seeder-sync (aplicador GPO) + timer systemd"
+echo "Instalar seeder-sync (aplicador GPO) + timer systemd"
 echo "============================================================"
 
 mkdir -p /etc/seederlinux
@@ -33,7 +36,7 @@ mkdir -p /var/log/seederlinux
 # ============================================================
 # 1. Script principal /usr/local/bin/seeder-sync
 # ============================================================
-echo ">>> Criando /usr/local/bin/seeder-sync..."
+log_nivel INFO "Criando /usr/local/bin/seeder-sync..."
 
 cat > /usr/local/bin/seeder-sync <<'SYNCSCRIPT'
 #!/bin/bash
@@ -386,55 +389,8 @@ sync_firefox_policy() {
     echo "--- firefox policy ---"
     command -v firefox-esr &>/dev/null || command -v firefox &>/dev/null || { echo "Firefox nao instalado, pulando"; return 0; }
 
-    local policy="${BROWSER_POLICY:-DIRECT}"
-    local ff_proxy_json=''
-
-    case "$policy" in
-        DIRECT|"")
-            ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
-            ;;
-        SYSTEM)
-            ff_proxy_json='"Proxy": { "Mode": "system", "Locked": true }'
-            ;;
-        PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
-            local nome hostport no_proxy_extra no_proxy_final
-            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
-            hostport="$(_resolver_proxy_hostport "$nome" plain)" || hostport=""
-            if [ -z "$hostport" ]; then
-                ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
-                echo "AVISO: proxy '$nome' nao encontrado - Firefox em DIRECT"
-            else
-                no_proxy_extra="$(_resolver_proxy_no_proxy "$nome")" || no_proxy_extra=""
-                no_proxy_final="$(_build_no_proxy "$no_proxy_extra")"
-                ff_proxy_json="\"Proxy\": {
-      \"Mode\": \"manual\",
-      \"HTTPProxy\": \"${hostport}\",
-      \"SSLProxy\": \"${hostport}\",
-      \"Passthrough\": \"${no_proxy_final}\",
-      \"Locked\": true
-    }"
-            fi
-            ;;
-        PAC)
-            local nome pac
-            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
-            pac="$(_resolver_proxy_pac "$nome")" || pac=""
-            if [ -z "$pac" ]; then
-                ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
-                echo "AVISO: PAC_URL vazio - Firefox em DIRECT"
-            else
-                ff_proxy_json="\"Proxy\": {
-      \"Mode\": \"autoConfig\",
-      \"AutoConfigURL\": \"${pac}\",
-      \"Locked\": true
-    }"
-            fi
-            ;;
-        *)
-            ff_proxy_json='"Proxy": { "Mode": "none", "Locked": true }'
-            ;;
-    esac
-
+    # Modelo B: Firefox não recebe proxy em policies.json.
+    # O proxy por grupo do AD é resolvido via user.js no logon e reaplicado pelo seeder-sync.
     local json
     read -r -d '' json <<EOF || true
 {
@@ -449,14 +405,12 @@ sync_firefox_policy() {
       "Locked": true,
       "StartPage": "homepage"
     },
-    "HomepageURL": "${HOMEPAGE:-}",
     "SearchBar": "unified",
     "SearchEngines": {
       "Add": [
         { "Name": "${OM_ACRONYM:-}", "URL": "${HOMEPAGE:-}", "Method": "GET" }
       ]
     },
-    ${ff_proxy_json},
     "Certificates": { "ImportEnterpriseRoots": true },
     "ExtensionSettings": { "*": { "installation_mode": "allowed" } },
     "DisableSetDesktopBackground": false,
@@ -493,7 +447,7 @@ EOF
         mkdir -p /opt/firefox-moderno/distribution
         echo "$json" > /opt/firefox-moderno/distribution/policies.json
     fi
-    echo "OK: Firefox policy aplicada (modo: $policy)"
+    echo "OK: Firefox policy aplicada (sem Proxy em policies.json - Modelo B)"
 }
 
 # ============================================================
@@ -513,7 +467,7 @@ sync_chrome_policy() {
             ;;
         PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
             local nome authport no_proxy_extra no_proxy_final
-            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
+            nome="${PROXY_DEFAULT_NAME:-}"
             authport="$(_resolver_proxy_hostport "$nome" plain)" || authport=""
             if [ -z "$authport" ]; then
                 proxy_json=", \"ProxyMode\": \"direct\""
@@ -526,7 +480,7 @@ sync_chrome_policy() {
             ;;
         PAC)
             local nome pac
-            nome="$(_proxy_nome_efetivo "${BROWSER_PROXY_NAME:-}")"
+            nome="${PROXY_DEFAULT_NAME:-}"
             pac="$(_resolver_proxy_pac "$nome")" || pac=""
             if [ -z "$pac" ]; then
                 proxy_json=", \"ProxyMode\": \"direct\""
@@ -564,6 +518,87 @@ EOF
         chmod 644 "$DIR/seederlinux.json"
     done
     echo "OK: Chrome/Chromium policy aplicada (modo: $policy)"
+}
+
+# ============================================================
+# MODULO: user.js do Firefox por grupo do AD (Modelo B)
+# ============================================================
+sync_firefox_user_js() {
+    echo "--- firefox user.js ---"
+
+    if [ -f /usr/local/lib/seederlinux/resolve-proxy.sh ]; then
+        # shellcheck disable=SC1091
+        source /usr/local/lib/seederlinux/resolve-proxy.sh
+    else
+        echo "AVISO: resolve-proxy.sh nao encontrado - pulando"
+        return 0
+    fi
+
+    local u
+    for u in $(usuarios_com_sessao_grafica); do
+        local uid gid uhome
+        uid="$(id -u "$u" 2>/dev/null)" || continue
+        gid="$(id -g "$u" 2>/dev/null)" || continue
+        uhome="$(getent passwd "$u" | cut -d: -f6)"
+        [ -z "$uhome" ] && continue
+
+        local fdir="$uhome/.mozilla/firefox"
+        local pdir="$fdir/seederlinux.default"
+        local pini="$fdir/profiles.ini"
+
+        [ -d "$pdir" ] || { echo "  $u: perfil ausente - pulando"; continue; }
+        [ -f "$pini" ] || { echo "  $u: profiles.ini ausente - pulando"; continue; }
+
+        local userjs="$pdir/user.js"
+
+        local idx hostport no_proxy pname
+        idx="$(_resolver_proxy_index_para_usuario "$u")" || idx=""
+
+        if [ -z "$idx" ]; then
+            if [ -f "$userjs" ]; then
+                rm -f "$userjs"
+                echo "  $u: user.js removido (DIRECT)"
+            fi
+            continue
+        fi
+
+        hostport="$(_proxy_hostport_por_index "$idx")"
+        no_proxy="$(_proxy_no_proxy_por_index "$idx")"
+        pname="$(_proxy_name_por_index "$idx")"
+
+        [ -z "$hostport" ] && continue
+
+        local phost pport
+        phost="${hostport%:*}"
+        pport="${hostport##*:}"
+
+        no_proxy="$(echo "$no_proxy" | tr ';' ',' | tr -d ' ')"
+        no_proxy="$(echo "$no_proxy" | sed 's/^\*\././; s/,\*\./,./g')"
+
+        local tmp
+        tmp="$(mktemp /tmp/seeder-userjs.XXXXXX)"
+        cat > "$tmp" <<EOFPREF
+// SeederLinux — proxy por grupo do AD
+// Proxy: ${pname}
+// Gerado em: $(date -Is)
+user_pref("network.proxy.type", 1);
+user_pref("network.proxy.http", "${phost}");
+user_pref("network.proxy.http_port", ${pport});
+user_pref("network.proxy.ssl", "${phost}");
+user_pref("network.proxy.ssl_port", ${pport});
+user_pref("network.proxy.no_proxies_on", "${no_proxy}");
+EOFPREF
+
+        if [ -f "$userjs" ] && cmp -s "$tmp" "$userjs"; then
+            rm -f "$tmp"
+            continue
+        fi
+
+        chown "$uid:$gid" "$tmp" 2>/dev/null || true
+        chmod 644 "$tmp"
+        mv -f "$tmp" "$userjs"
+        echo "  $u: user.js atualizado (proxy: $pname)"
+    done
 }
 
 # ============================================================
@@ -947,7 +982,12 @@ sync_shares() {
         uid="$(id -u "$u" 2>/dev/null)" || continue
         gid="$(id -g "$u" 2>/dev/null)" || continue
         local SHARE
-        for SHARE in $COMPARTILHAMENTOS; do
+        IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+        for SHARE in "${_shares_arr[@]}"; do
+            SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+            SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+            [ -z "$SHARE" ] && continue
+
             local SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
             mkdir -p "$SHARE_MOUNT"
             mountpoint -q "$SHARE_MOUNT" 2>/dev/null && continue
@@ -1004,6 +1044,7 @@ sync_certificates() {
 sync_branding
 sync_firefox_policy
 sync_chrome_policy
+sync_firefox_user_js
 sync_cli_proxy
 sync_printers
 sync_conky
@@ -1033,7 +1074,7 @@ echo "=== seeder-sync concluido: $(date -Is) ==="
 SYNCSCRIPT
 
 chmod 750 /usr/local/bin/seeder-sync
-echo ">>> /usr/local/bin/seeder-sync criado"
+log_nivel INFO "/usr/local/bin/seeder-sync criado"
 
 # ============================================================
 # 2. Units systemd
@@ -1066,5 +1107,5 @@ systemctl daemon-reload
 systemctl enable --now seeder-sync.timer
 systemctl start seeder-sync.service 2>/dev/null || true
 
-echo ">>> [19] seeder-sync instalado e timer ativo (10min)"
+log_nivel INFO "seeder-sync instalado e timer ativo (10min)"
 echo "============================================================"

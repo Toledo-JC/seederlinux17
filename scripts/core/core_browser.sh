@@ -8,13 +8,12 @@
 # política de proxy é 'fixed_servers' e o proxy exige Basic auth.
 # Eles ignoram silenciosamente a credencial e caem em DIRECT.
 #
-# Para resolver, é preciso uma extensão Chrome com
-# chrome.webRequest.onAuthRequired. Firefox suporta popup nativo
-# mas apenas no pacote .deb (o snap ignora policies.json).
+# O bundle nao injeta credenciais nem instala extensoes de
+# autenticacao. Para Chrome, use proxy transparente ou consulte o
+# administrador da OM. Firefox .deb suporta o popup nativo.
 #
 # Recomendação para as OMs: preferir Firefox .deb + Squid
-# transparente, ou aceitar que o usuário precisará de extensão
-# no Chrome.
+# transparente; no Chrome, seguir a orientacao do administrador.
 #
 # Configura políticas corporativas para Firefox ESR, Google Chrome e
 # Chromium, incluindo homepage, proxy, certificados e telemetria.
@@ -67,14 +66,30 @@
 #   BROWSER_PROXY_NAME aponta para um dos proxies nomeados da OM; se
 #   vazio, usa PROXY_DEFAULT_NAME.
 #
+# PROXY DO FIREFOX — NÃO É CONFIGURADO AQUI (Modelo B)
+# ==================================================
+# O Firefox recebe proxy POR GRUPO DO AD via
+# ~/.mozilla/firefox/seederlinux.default/user.js, escrito pelo
+# core_logon.sh (no logon) e reaplicado pelo seeder-sync (a cada
+# 10min via seeder-sync.timer). Para isso funcionar, o policies.json
+# do Firefox NÃO PODE ter a seção "Proxy" com "Locked": true — se
+# tiver, o Firefox ignora o user.js por precedência de policy.
+#
+# O Chrome/Chromium usa SEMPRE PROXY_DEFAULT_NAME (catch-all) via
+# policies.json. Ele não suporta proxy por usuário em máquina
+# multi-usuário sem PAC dinâmico (V2).
+#
 # Os placeholders VARIAVEL são substituídos automaticamente
 # pelo sistema na geração do bundle.
 # ============================================================================
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="09-browser"
+
 echo "============================================================"
-echo "06 - Configurar politicas de navegadores"
+echo "Configurar politicas de navegadores"
 echo "============================================================"
 
 # ============================================================
@@ -96,10 +111,10 @@ PROXY_DEFAULT_NAME="${PROXY_DEFAULT_NAME:-}"
 # Defaults defensivos
 [ -z "$BROWSER_POLICY" ] && BROWSER_POLICY="DIRECT"
 
-echo ">>> Homepage: $HOMEPAGE"
-echo ">>> BROWSER_POLICY: $BROWSER_POLICY"
-echo ">>> BROWSER_PROXY_NAME: ${BROWSER_PROXY_NAME:-<default>}"
-echo ">>> Proxies cadastrados: $PROXY_COUNT"
+log_nivel INFO "Homepage: $HOMEPAGE"
+log_nivel INFO "BROWSER_POLICY: $BROWSER_POLICY"
+log_nivel INFO "BROWSER_PROXY_NAME: ${BROWSER_PROXY_NAME:-<default>}"
+log_nivel INFO "Proxies cadastrados: $PROXY_COUNT"
 
 # ============================================================
 # Helper: resolver proxy por nome -> host:port (SEMPRE sem credencial)
@@ -247,17 +262,9 @@ _resolver_proxy_nome_efetivo() {
 # ============================================================
 # Resolver URL de proxy e NO_PROXY conforme a policy
 # ============================================================
-# Estados possíveis:
-#   FF_PROXY_MODE    / CHROME_PROXY_MODE
-#     none           / direct
-#     manual         / fixed_servers
-#     autoConfig     / pac_script
-#     system         / system
-FF_PROXY_MODE="none"
-FF_PROXY_HTTP=""
-FF_PROXY_SSL=""
-FF_PROXY_PAC=""
-FF_NO_PROXY=""
+# Modelo B: Firefox NÃO recebe proxy em policies.json; o proxy do
+# Firefox é resolvido por AD_GROUP via user.js em core_logon.sh.
+# O Chrome/Chromium continua recebendo fixed_servers/system/direct.
 CHROME_PROXY_MODE="direct"
 CHROME_PROXY_SERVER=""
 CHROME_PROXY_PAC=""
@@ -266,7 +273,6 @@ CHROME_NO_PROXY=""
 case "$BROWSER_POLICY" in
 
     DIRECT|"")
-        FF_PROXY_MODE="none"
         CHROME_PROXY_MODE="direct"
         ;;
 
@@ -275,21 +281,17 @@ case "$BROWSER_POLICY" in
     # "WITH_AUTH" são legados do modelo single-proxy e não têm mais
     # significado distinto para navegadores.
     PROXY|PROXY_NO_AUTH|PROXY_WITH_AUTH)
-        NOME="$(_resolver_proxy_nome_efetivo)"
+        # Chrome SEMPRE usa PROXY_DEFAULT_NAME (catch-all). Modelo B:
+        # Firefox tem proxy por grupo via user.js; Chrome não tem esse
+        # mecanismo em multi-usuário. Ignoramos BROWSER_PROXY_NAME aqui.
+        NOME="${PROXY_DEFAULT_NAME:-}"
         HOSTPORT="$(_resolver_proxy_hostport "$NOME")" || HOSTPORT=""
         if [ -z "$HOSTPORT" ]; then
-            echo ">>> AVISO: BROWSER_POLICY=$BROWSER_POLICY mas proxy '${NOME:-<nenhum>}' nao encontrado."
-            echo ">>>        Aplicando DIRECT para os navegadores."
-            FF_PROXY_MODE="none"
+            log_nivel AVISO "BROWSER_POLICY=$BROWSER_POLICY mas proxy '${NOME:-<nenhum>}' nao encontrado."
+            log_nivel INFO "Aplicando DIRECT para os navegadores."
             CHROME_PROXY_MODE="direct"
         else
-            FF_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
-            CHROME_NO_PROXY="$FF_NO_PROXY"
-
-            # --- Firefox: manual com host:port e passthrough ---
-            FF_PROXY_MODE="manual"
-            FF_PROXY_HTTP="$HOSTPORT"
-            FF_PROXY_SSL="$HOSTPORT"
+            CHROME_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
 
             # --- Chrome: fixed_servers com host:port e bypass list ---
             # Formato OBRIGATÓRIO: "scheme=host:port;scheme=host:port".
@@ -297,73 +299,38 @@ case "$BROWSER_POLICY" in
             CHROME_PROXY_MODE="fixed_servers"
             CHROME_PROXY_SERVER="http=${HOSTPORT};https=${HOSTPORT}"
 
-            echo ">>> Proxy aplicado aos navegadores: $HOSTPORT"
-            echo ">>> Autenticacao de proxy sera feita pelo usuario (popup ou SSO)."
+            log_nivel INFO "Proxy aplicado ao Chrome: $HOSTPORT"
+            log_nivel INFO "Firefox continua por grupo do AD via user.js; autenticacao por usuario (popup ou SSO)."
         fi
         ;;
 
     PAC)
-        NOME="$(_resolver_proxy_nome_efetivo)"
+        NOME="${PROXY_DEFAULT_NAME:-}"
         PAC_URL="$(_resolver_proxy_pac "$NOME")" || PAC_URL=""
         if [ -z "$PAC_URL" ]; then
-            echo ">>> AVISO: BROWSER_POLICY=PAC mas PAC_URL vazio para o proxy '${NOME:-<nenhum>}'."
-            echo ">>>        Aplicando DIRECT para os navegadores."
-            FF_PROXY_MODE="none"
+            log_nivel AVISO "BROWSER_POLICY=PAC mas PAC_URL vazio para o proxy '${NOME:-<nenhum>}'."
+            log_nivel INFO "Aplicando DIRECT para os navegadores."
             CHROME_PROXY_MODE="direct"
         else
-            FF_PROXY_MODE="autoConfig"
-            FF_PROXY_PAC="$PAC_URL"
-            FF_NO_PROXY="$(_build_no_proxy_browser "$(_resolver_proxy_no_proxy "$NOME" || echo "")")"
             CHROME_PROXY_MODE="pac_script"
             CHROME_PROXY_PAC="$PAC_URL"
         fi
         ;;
 
     SYSTEM)
-        FF_PROXY_MODE="system"
         CHROME_PROXY_MODE="system"
         ;;
 
     *)
-        echo ">>> AVISO: BROWSER_POLICY desconhecida '$BROWSER_POLICY'. Aplicando DIRECT."
-        FF_PROXY_MODE="none"
+        log_nivel AVISO "BROWSER_POLICY desconhecida '$BROWSER_POLICY'. Aplicando DIRECT."
         CHROME_PROXY_MODE="direct"
-        ;;
-esac
-
-# ============================================================
-# Montar bloco "Proxy" do policies.json do Firefox
-# ============================================================
-case "$FF_PROXY_MODE" in
-    none)
-        FIREFOX_PROXY_JSON='"Proxy": { "Mode": "none", "Locked": true }'
-        ;;
-    system)
-        FIREFOX_PROXY_JSON='"Proxy": { "Mode": "system", "Locked": true }'
-        ;;
-    manual)
-        FIREFOX_PROXY_JSON="\"Proxy\": {
-            \"Mode\": \"manual\",
-            \"HTTPProxy\": \"${FF_PROXY_HTTP}\",
-            \"SSLProxy\": \"${FF_PROXY_SSL}\",
-            \"Passthrough\": \"${FF_NO_PROXY}\",
-            \"Locked\": true
-        }"
-        ;;
-    autoConfig)
-        FIREFOX_PROXY_JSON="\"Proxy\": {
-            \"Mode\": \"autoConfig\",
-            \"AutoConfigURL\": \"${FF_PROXY_PAC}\",
-            \"Passthrough\": \"${FF_NO_PROXY}\",
-            \"Locked\": true
-        }"
         ;;
 esac
 
 # ============================================================
 # Firefox ESR - policies.json
 # ============================================================
-echo ">>> Configurando policies.json do Firefox..."
+log_nivel INFO "Configurando policies.json do Firefox..."
 mkdir -p /usr/lib/firefox-esr/distribution
 cat > /usr/lib/firefox-esr/distribution/policies.json <<EOF
 {
@@ -378,14 +345,12 @@ cat > /usr/lib/firefox-esr/distribution/policies.json <<EOF
             "Locked": true,
             "StartPage": "homepage"
         },
-        "HomepageURL": "${HOMEPAGE}",
         "SearchBar": "unified",
         "SearchEngines": {
             "Add": [
                 { "Name": "${OM_ACRONYM}", "URL": "${HOMEPAGE}", "Method": "GET" }
             ]
         },
-        ${FIREFOX_PROXY_JSON},
         "Certificates": { "ImportEnterpriseRoots": true },
         "ExtensionSettings": { "*": { "installation_mode": "allowed" } },
         "DisableSetDesktopBackground": false,
@@ -429,12 +394,12 @@ if [ -d /opt/firefox-moderno ]; then
        /opt/firefox-moderno/distribution/policies.json 2>/dev/null || true
 fi
 
-echo ">>> Firefox configurado (policy de proxy: $FF_PROXY_MODE)"
+log_nivel INFO "Firefox configurado (sem Proxy em policies.json; proxy por user.js via AD)"
 
 # ============================================================
 # Chrome / Chromium
 # ============================================================
-echo ">>> Configurando politicas do Chrome/Chromium..."
+log_nivel INFO "Configurando politicas do Chrome/Chromium..."
 
 case "$CHROME_PROXY_MODE" in
     fixed_servers)
@@ -486,7 +451,7 @@ for DIR in /etc/opt/chrome/policies/managed \
     chown root:root "$DIR/seederlinux.json" 2>/dev/null || true
 done
 
-echo ">>> Chrome/Chromium configurado (policy de proxy: $CHROME_PROXY_MODE)"
+log_nivel INFO "Chrome/Chromium configurado (policy de proxy: $CHROME_PROXY_MODE)"
 
 # Diagnostico: verificar onde a policy realmente ficou gravada
 echo ">>> Diagnostico de politicas Chrome/Chromium:"
@@ -523,251 +488,46 @@ if command -v snap >/dev/null 2>&1 && snap list chromium 2>/dev/null | grep -q "
 fi
 
 # ============================================================
-# Extensao Chrome para autenticacao de proxy (Basic auth)
+# AUTENTICACAO DE PROXY NOS NAVEGADORES — NAO E CONFIGURADA AQUI
 # ============================================================
-# Chrome/Chromium NAO exibem popup de auth quando a policy de proxy
-# e 'fixed_servers'. Esta extensao usa chrome.webRequest.onAuthRequired
-# para responder automaticamente com as credenciais do proxy, lidas de
-# /etc/seederlinux/proxy-auth.json (gerado abaixo a partir das vars
-# PROXY_K_USER / PROXY_K_PASS_B64 do proxy selecionado).
+# Firefox e Chrome recebem apenas host:port do proxy. Quando o
+# proxy exige autenticacao (ex: GAPE-BE), o usuario digita suas
+# credenciais no popup nativo do navegador na primeira navegacao.
+# Cada usuario tem a sua — o bundle nao injeta credencial.
 #
-# So e criada quando a policy de proxy e PROXY/PROXY_NO_AUTH/PROXY_WITH_AUTH
-# (ou seja, CHROME_PROXY_MODE=fixed_servers) e ha credenciais disponiveis.
-# ------------------------------------------------------------
-if [ "$CHROME_PROXY_MODE" = "fixed_servers" ]; then
-    NOME_EXT="$(_resolver_proxy_nome_efetivo)"
-
-    # Resolver credenciais do proxy nomeado
-    PROXY_AUTH_USER=""
-    PROXY_AUTH_PASS=""
-    if [ -n "$NOME_EXT" ] && [ "${PROXY_COUNT:-0}" -ge 1 ] 2>/dev/null; then
-        _i=1
-        while [ "$_i" -le "$PROXY_COUNT" ]; do
-            _v_name="PROXY_${_i}_NAME"
-            if [ "${!_v_name}" = "$NOME_EXT" ]; then
-                _v_user="PROXY_${_i}_USER"
-                _v_pass_b64="PROXY_${_i}_PASS_B64"
-                PROXY_AUTH_USER="${!_v_user}"
-                                _v_pass_b64_val="${!_v_pass_b64}"
-                if [[ "$_v_pass_b64_val" == "__"*"__" ]] || [ -z "$_v_pass_b64_val" ]; then
-                    PROXY_AUTH_PASS=""
-                else
-                    PROXY_AUTH_PASS="$(printf '%s' "$_v_pass_b64_val" | base64 -d 2>/dev/null || true)"
-                fi
-                break
-            fi
-            _i=$((_i+1))
-        done
-    fi
-
-    if [ -n "$PROXY_AUTH_USER" ] && [ -n "$PROXY_AUTH_PASS" ]; then
-        echo ">>> Criando extensao Chrome para auth de proxy (onAuthRequired)..."
-
-        EXT_DIR="/opt/seederlinux/extensions/proxy-auth"
-        mkdir -p "$EXT_DIR"
-
-        # manifest.json — MV3 com webRequestAuthProvider
-        cat > "$EXT_DIR/manifest.json" <<MANIFEST
-{
-    "manifest_version": 3,
-    "name": "SeederLinux Proxy Auth",
-    "version": "1.0",
-    "description": "Autenticacao automatica de proxy corporativo",
-    "permissions": ["webRequest", "webRequestAuthProvider"],
-    "host_permissions": ["<all_urls>"],
-    "background": { "service_worker": "background.js" }
-}
-MANIFEST
-
-        # background.js — credenciais injetadas via sed abaixo.
-        # Um UNICO listener onAuthRequired (dois listeners causam
-        # comportamento indefinido em MV3 service workers).
-        cat > "$EXT_DIR/background.js" <<'BGJS'
-// SeederLinux Proxy Auth — responde automaticamente aos desafios
-// de Basic auth do proxy corporativo. As credenciais sao injetadas
-// neste arquivo no momento da geracao do bundle pelo core_browser.sh.
-const PROXY_USER = "__PROXY_AUTH_USER__";
-const PROXY_PASS = "__PROXY_AUTH_PASS__";
-
-chrome.webRequest.onAuthRequired.addListener(
-    (details, callback) => {
-        if (details.isProxy && PROXY_USER && PROXY_PASS) {
-            callback({
-                authCredentials: {
-                    username: PROXY_USER,
-                    password: PROXY_PASS
-                }
-            });
-        } else {
-            // auth de site (nao-proxy) ou credenciais vazias: deixar o browser pedir
-            callback();
-        }
-    },
-    { urls: ["<all_urls>"] },
-    ["asyncBlocking"]
-);
-BGJS
-
-        # Gravar credenciais em arquivo protegido (para auditoria/debug)
-        mkdir -p /etc/seederlinux
-        cat > /etc/seederlinux/proxy-auth.json <<AUTHJSON
-{
-    "username": "${PROXY_AUTH_USER}",
-    "password": "${PROXY_AUTH_PASS}"
-}
-AUTHJSON
-        chmod 600 /etc/seederlinux/proxy-auth.json
-
-        # Injetar credenciais no background.js (substituir placeholders)
-        _ESC_USER="$(printf '%s' "$PROXY_AUTH_USER" | sed 's/[\/&]/\\&/g')"
-        _ESC_PASS="$(printf '%s' "$PROXY_AUTH_PASS" | sed 's/[\/&]/\\&/g')"
-        sed -i "s/__PROXY_AUTH_USER__/${_ESC_USER}/g" "$EXT_DIR/background.js"
-        sed -i "s/__PROXY_AUTH_PASS__/${_ESC_PASS}/g" "$EXT_DIR/background.js"
-
-        # ============================================================
-        # Empacotar como CRX3 + update.xml para ExtensionInstallForcelist
-        # ============================================================
-        # ExtensionInstallForcelist exige um ID de extensao valido (32
-        # chars a-p) e um update_url que sirva um XML de update apontando
-        # para o .crx. Geramos a chave RSA, calculamos o ID, empacotamos
-        # o CRX3 e criamos o update.xml — tudo via openssl + python3.
-        echo ">>> Empacotando extensao como CRX3..."
-
-        # 1. Gerar chave RSA (reutilizavel se ja existir)
-        EXT_KEY="$EXT_DIR/extension.pem"
-        if [ ! -f "$EXT_KEY" ]; then
-            openssl genrsa -out "$EXT_KEY" 2048 2>/dev/null
-        fi
-        chmod 600 "$EXT_KEY"
-
-        # 2. Extrair chave publica em DER
-        openssl rsa -in "$EXT_KEY" -pubout -outform DER -out "$EXT_DIR/pubkey.der" 2>/dev/null
-
-        # 3. Calcular ID da extensao + empacotar CRX3 via Python3
-        CRX_RESULT=$(python3 - "$EXT_DIR" <<'PYCRX'
-import sys, os, struct, hashlib, zipfile, io
-
-ext_dir = sys.argv[1]
-key_path = os.path.join(ext_dir, "extension.pem")
-pubkey_path = os.path.join(ext_dir, "pubkey.der")
-
-# Ler chave publica DER
-with open(pubkey_path, "rb") as f:
-    pub_der = f.read()
-
-# Extension ID = first 16 bytes of SHA256(DER pubkey), hex -> a-p
-digest = hashlib.sha256(pub_der).digest()[:16]
-ext_id = "".join(chr(ord("a") + int(c, 16)) for c in digest.hex())
-print(f"EXT_ID={ext_id}")
-
-# Zip dos arquivos da extensao (manifest.json + background.js)
-zip_buf = io.BytesIO()
-with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-    for fname in ("manifest.json", "background.js"):
-        fpath = os.path.join(ext_dir, fname)
-        if os.path.isfile(fpath):
-            zf.write(fpath, fname)
-zip_data = zip_buf.getvalue()
-
-# Assinar o zip com a chave privada RSA (SHA256 + PKCS#1 v1.5)
-import subprocess
-sig = subprocess.run(
-    ["openssl", "dgst", "-sha256", "-sign", key_path],
-    input=zip_data, capture_output=True
-).stdout
-
-# Construir CRX3 header (protobuf simplificado)
-def varint(n):
-    out = bytearray()
-    while n > 0x7f:
-        out.append(0x80 | (n & 0x7f))
-        n >>= 7
-    out.append(n)
-    return bytes(out)
-
-def field(field_num, data):
-    return varint((field_num << 3) | 2) + varint(len(data)) + data
-
-# AsymmetricKeyProof { bytes public_key=1; bytes signature=2; }
-asym = field(1, pub_der) + field(2, sig)
-# CrxFileHeader { repeated AsymmetricKeyProof sha256_with_rsa=2; }
-crx_header = field(2, asym)
-
-crx = b"Cr24" + struct.pack("<I", 3) + struct.pack("<I", len(crx_header)) + crx_header + zip_data
-crx_path = os.path.join(ext_dir, "proxy-auth.crx")
-with open(crx_path, "wb") as f:
-    f.write(crx)
-print(f"CRX={crx_path}")
-PYCRX
-        )
-        echo ">>> $CRX_RESULT"
-        EXT_ID="$(echo "$CRX_RESULT" | grep '^EXT_ID=' | cut -d= -f2)"
-
-        if [ -n "$EXT_ID" ] && [ -f "$EXT_DIR/proxy-auth.crx" ]; then
-            # 4. Criar update.xml (formato GUpdate)
-            cat > "$EXT_DIR/update.xml" <<UPDXML
-<?xml version="1.0" encoding="UTF-8"?>
-<gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
-  <app appid="${EXT_ID}">
-    <updatecheck codebase="file://${EXT_DIR}/proxy-auth.crx" version="1.0" />
-  </app>
-</gupdate>
-UPDXML
-
-            # 5. Adicionar ExtensionInstallForcelist ao policies.json do Chrome
-            for POLICY_DIR in /etc/opt/chrome/policies/managed \
-                               /etc/chromium/policies/managed; do
-                [ -f "$POLICY_DIR/seederlinux.json" ] || continue
-                python3 -c "
-import json
-path = '$POLICY_DIR/seederlinux.json'
-with open(path) as f:
-    data = json.load(f)
-data['ExtensionInstallForcelist'] = ['${EXT_ID};file://${EXT_DIR}/update.xml']
-data['ExtensionInstallSources'] = ['file:///opt/seederlinux/extensions/*']
-with open(path, 'w') as f:
-    json.dump(data, f, indent=4)
-" 2>/dev/null || true
-            done
-
-            echo ">>> Extensao CRX3 empacotada: ID=$EXT_ID"
-            echo ">>> update.xml em $EXT_DIR/update.xml"
-            echo ">>> ExtensionInstallForcelist adicionado as policies do Chrome"
-        else
-            echo ">>> AVISO: Falha ao empacotar CRX3. Extensao nao sera auto-instalada."
-            echo ">>> Para instalar manualmente: chrome://extensions -> Modo desenvolvedor -> Carregar $EXT_DIR"
-        fi
-
-        echo ">>> Credenciais gravadas em /etc/seederlinux/proxy-auth.json (600)"
-        unset PROXY_AUTH_USER PROXY_AUTH_PASS _ESC_USER _ESC_PASS EXT_ID
-    else
-        echo ">>> AVISO: Proxy exige auth mas sem credenciais (PROXY_*_USER/PASS)."
-        echo ">>> Extensao de auth nao criada. Chrome nao autenticara o proxy."
-    fi
-else
-    echo ">>> Policy de proxy nao e fixed_servers. Extensao de auth nao necessaria."
-fi
+# Isso vale para os dois navegadores. A extensao de autenticacao
+# automatica do Chrome foi removida por decisao de projeto:
+# credencial de usuario nao fica em arquivo global lido por todos.
+#
+# Nota: Chrome/Chromium NAO exibem popup de auth em
+# `fixed_servers` — comportamento conhecido. Usuarios precisam
+# de extensao manual ou proxy transparente. Isso e' documentado
+# no AVISO-PROXY.txt para o usuario final.
+# ============================================================
 
 # ============================================================
 # Aviso ao usuario sobre proxy por grupo do AD
 # ============================================================
-echo ">>> Criando aviso de proxy para o usuario..."
+log_nivel INFO "Criando aviso de proxy para o usuario..."
 mkdir -p /usr/share/doc/seederlinux
 cat > /usr/share/doc/seederlinux/AVISO-PROXY.txt <<'AVISOEOF'
 AVISO — PROXY CORPORATIVO
 
-Este computador usa proxies diferentes conforme o seu grupo no
-Active Directory.
+Este computador usa proxies corporativos com autenticacao.
 
-- O CHROME usa sempre o proxy PADRAO configurado pela OM.
-- O FIREFOX usa o proxy do SEU grupo, se houver um especifico.
-  Senao, usa o padrao.
+- O FIREFOX pede a sua senha do proxy na primeira navegacao
+  (popup nativo do browser). Cada usuario tem a sua.
+- O CHROME/CHROMIUM nao exibe popup com proxy fixo (limitacao
+  conhecida do navegador). Se voce precisar autenticar no
+  Chrome, procure o administrador da OM.
 
-IMPORTANTE:
-- Se o seu grupo mudou, ou se voce foi movido para outro grupo,
-  e necessario fazer LOGOFF e LOGON novamente para que o Firefox
-  receba o novo proxy.
-- O Chrome nao precisa de logoff — sempre usa o padrao.
+O proxy padrao da OM e' o mesmo para todos os usuarios.
+Se voce pertence a um grupo especifico (ex: _SPTF), o FIREFOX
+usa o proxy do seu grupo apos o login. O CHROME sempre usa o
+proxy padrao.
+
+Se voce foi movido de grupo, faca LOGOFF e LOGON novamente
+para que o Firefox receba o novo proxy.
 
 Em caso de duvida, procure o administrador da sua OM.
 AVISOEOF
@@ -783,7 +543,7 @@ Terminal=false
 Categories=System;
 DESKTOPEOF
 
-echo ">>> Aviso de proxy criado."
+log_nivel INFO "Aviso de proxy criado."
 
-echo ">>> [06] Politicas de navegadores configuradas!"
+log_nivel OK "Politicas de navegadores configuradas!"
 echo "============================================================"

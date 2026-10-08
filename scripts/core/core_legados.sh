@@ -36,8 +36,11 @@
 (
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="05-legados"
+
 echo "============================================================"
-echo "05 - Configurar sistemas legados (Java 8, Firefox 52.7)"
+echo "Configurar sistemas legados (Java 8, Firefox 52.7)"
 echo "============================================================"
 
 # ============================================================
@@ -50,16 +53,16 @@ JAVA_EXCEPTIONS="{{JAVA_EXCEPTIONS}}"
 
 BASE_URL="${BASE_URL%/}"
 
-echo ">>> Instalar Java 8: $INSTALL_JAVA8"
-echo ">>> Instalar Firefox 52.7: $INSTALL_FIREFOX52"
-echo ">>> Excecoes Java: ${JAVA_EXCEPTIONS:-nenhuma}"
+log_nivel INFO "Instalar Java 8: $INSTALL_JAVA8"
+log_nivel INFO "Instalar Firefox 52.7: $INSTALL_FIREFOX52"
+log_nivel INFO "Excecoes Java: ${JAVA_EXCEPTIONS:-nenhuma}"
 
 # ============================================================
 # Verificar se pelo menos um toggle esta ativo
 # ============================================================
 if [ "$INSTALL_JAVA8" != "true" ] && [ "$INSTALL_FIREFOX52" != "true" ]; then
-    echo ">>> Sistemas legados desativados. Pulando."
-    echo ">>> [05] Sistemas legados nao instalados (desativado)."
+    log_nivel INFO "Sistemas legados desativados. Pulando."
+    log_nivel INFO "[05] Sistemas legados nao instalados (desativado)."
     echo "============================================================"
     exit 0
 fi
@@ -70,13 +73,13 @@ export DEBIAN_FRONTEND=noninteractive
 # Java 8 (OpenJDK) - apenas se INSTALL_JAVA8=true
 # ============================================================
 if [ "$INSTALL_JAVA8" = "true" ]; then
-    echo ">>> Instalando Java 8 (OpenJDK 8)..."
+    log_nivel INFO "Instalando Java 8 (OpenJDK 8)..."
 
     if command -v java &>/dev/null; then
         JAVA_VERSION=$(java -version 2>&1 | head -1)
-        echo ">>> Java ja instalado: $JAVA_VERSION"
+        log_nivel INFO "Java ja instalado: $JAVA_VERSION"
     else
-        echo ">>> Java 8 nao encontrado. Tentando repositorio Adoptium/Temurin..."
+        log_nivel INFO "Java 8 nao encontrado. Tentando repositorio Adoptium/Temurin..."
 
         # ------------------------------------------------------------------
         # Determinar codename da distro para o repositorio Adoptium.
@@ -90,10 +93,10 @@ if [ "$INSTALL_JAVA8" = "true" ]; then
             ADOPTIUM_CODENAME="$(lsb_release -cs 2>/dev/null)"
         fi
         if [ -z "$ADOPTIUM_CODENAME" ]; then
-            echo ">>> AVISO: nao foi possivel detectar codename. Usando bookworm."
+            log_nivel AVISO "nao foi possivel detectar codename. Usando bookworm."
             ADOPTIUM_CODENAME="bookworm"
         fi
-        echo ">>> Codename Adoptium: $ADOPTIUM_CODENAME"
+        log_nivel INFO "Codename Adoptium: $ADOPTIUM_CODENAME"
 
         # ------------------------------------------------------------------
         # Adicionar chave GPG do Adoptium.
@@ -110,17 +113,17 @@ if [ "$INSTALL_JAVA8" = "true" ]; then
 
             apt-get update -qq
             if apt-get install -y temurin-8-jre; then
-                echo ">>> Temurin 8 instalado via Adoptium"
+                log_nivel INFO "Temurin 8 instalado via Adoptium"
             else
-                echo ">>> AVISO: Falha ao instalar temurin-8-jre."
-                echo ">>>        Verifique se Adoptium tem suite '$ADOPTIUM_CODENAME'."
+                log_nivel AVISO "Falha ao instalar temurin-8-jre."
+                log_nivel INFO "Verifique se Adoptium tem suite '$ADOPTIUM_CODENAME'."
                 # Limpa o repo para nao atrapalhar proximos apt-get update
                 rm -f /etc/apt/sources.list.d/adoptium.list
                 apt-get update -qq 2>/dev/null || true
             fi
         else
-            echo ">>> AVISO: Nao foi possivel baixar a chave GPG do Adoptium."
-            echo ">>>        Java 8 legado nao sera instalado por aqui."
+            log_nivel AVISO "Nao foi possivel baixar a chave GPG do Adoptium."
+            log_nivel INFO "Java 8 legado nao sera instalado por aqui."
         fi
     fi
 
@@ -128,7 +131,7 @@ if [ "$INSTALL_JAVA8" = "true" ]; then
     # Excecoes Java (deployment.properties) - se fornecidas
     # ------------------------------------------------------------------
     if [ -n "$JAVA_EXCEPTIONS" ]; then
-        echo ">>> Configurando excecoes Java..."
+        log_nivel INFO "Configurando excecoes Java..."
         DEPLOY_DIR="/usr/lib/jvm/.deployment"
         mkdir -p "$DEPLOY_DIR"
         DEPLOY_FILE="$DEPLOY_DIR/deployment.properties"
@@ -146,34 +149,34 @@ if [ "$INSTALL_JAVA8" = "true" ]; then
                 IDX=$((IDX+1))
             fi
         done
-        echo ">>> Excecoes Java configuradas ($IDX URLs)"
+        log_nivel INFO "Excecoes Java configuradas ($IDX URLs)"
     fi
 
     if command -v java &>/dev/null; then
-        echo ">>> Java instalado: $(java -version 2>&1 | head -1)"
+        log_nivel INFO "Java instalado: $(java -version 2>&1 | head -1)"
     else
-        echo ">>> AVISO: Java nao instalado."
+        log_nivel AVISO "Java nao instalado."
     fi
 else
-    echo ">>> Java 8 desativado (INSTALL_JAVA8=false). Pulando."
+    log_nivel INFO "Java 8 desativado (INSTALL_JAVA8=false). Pulando."
 fi
 
 # ============================================================
 # Firefox 52.7 ESR - apenas se INSTALL_FIREFOX52=true
 # ============================================================
 if [ "$INSTALL_FIREFOX52" = "true" ]; then
-    echo ">>> Instalando Firefox 52.7 ESR..."
+    log_nivel INFO "Instalando Firefox 52.7 ESR..."
 
     # ------------------------------------------------------------------
     # Pre-requisito: bzip2 para extrair .tar.bz2
     # ------------------------------------------------------------------
     if ! command -v bzip2 &>/dev/null; then
-        echo ">>> bzip2 nao instalado. Tentando instalar..."
+        log_nivel INFO "bzip2 nao instalado. Tentando instalar..."
         apt-get install -y bzip2 2>/dev/null || true
     fi
     if ! command -v bzip2 &>/dev/null; then
-        echo ">>> AVISO: bzip2 indisponivel - impossivel extrair o tarball do Firefox 52.7."
-        echo ">>>        Pulando instalacao do Firefox legado (nao e' critico para o ingresso AD)."
+        log_nivel AVISO "bzip2 indisponivel - impossivel extrair o tarball do Firefox 52.7."
+        log_nivel INFO "Pulando instalacao do Firefox legado (nao e' critico para o ingresso AD)."
         INSTALL_FIREFOX52="false"
     fi
 fi
@@ -192,14 +195,14 @@ if [ "$INSTALL_FIREFOX52" = "true" ]; then
     # ------------------------------------------------------------------
     if wget -q --no-proxy --timeout=30 -O "$FF_LEGADO_TARBALL" "$FF_LEGADO_URL" 2>/dev/null; then
         if [ -s "$FF_LEGADO_TARBALL" ]; then
-            echo ">>> Firefox 52.7 baixado do repositorio interno do Seeder"
+            log_nivel INFO "Firefox 52.7 baixado do repositorio interno do Seeder"
             if tar xjf "$FF_LEGADO_TARBALL" -C /opt/ 2>/dev/null; then
                 mv /opt/firefox "$FF_LEGADO_DIR" 2>/dev/null || true
             else
-                echo ">>> AVISO: falha ao extrair tarball do Seeder."
+                log_nivel AVISO "falha ao extrair tarball do Seeder."
             fi
         else
-            echo ">>> AVISO: tarball do Seeder baixou vazio."
+            log_nivel AVISO "tarball do Seeder baixou vazio."
         fi
         rm -f "$FF_LEGADO_TARBALL"
     else
@@ -207,24 +210,24 @@ if [ "$INSTALL_FIREFOX52" = "true" ]; then
         # Fallback: Mozilla (download publico)
         # Respeita proxy do ambiente se houver.
         # ------------------------------------------------------------------
-        echo ">>> AVISO: Nao foi possivel baixar do repositorio interno."
-        echo ">>>        Tentando Mozilla (ftp.mozilla.org)..."
+        log_nivel AVISO "Nao foi possivel baixar do repositorio interno."
+        log_nivel INFO "Tentando Mozilla (ftp.mozilla.org)..."
 
         FF_MOZILLA_URL="https://ftp.mozilla.org/pub/firefox/releases/52.7.3esr/linux-x86_64/en-US/firefox-52.7.3esr.tar.bz2"
         if wget -q --timeout=60 -O "$FF_LEGADO_TARBALL" "$FF_MOZILLA_URL" 2>/dev/null; then
             if [ -s "$FF_LEGADO_TARBALL" ]; then
-                echo ">>> Firefox 52.7 baixado da Mozilla"
+                log_nivel INFO "Firefox 52.7 baixado da Mozilla"
                 if tar xjf "$FF_LEGADO_TARBALL" -C /opt/ 2>/dev/null; then
                     mv /opt/firefox "$FF_LEGADO_DIR" 2>/dev/null || true
                 else
-                    echo ">>> AVISO: falha ao extrair tarball da Mozilla."
+                    log_nivel AVISO "falha ao extrair tarball da Mozilla."
                 fi
             else
-                echo ">>> AVISO: tarball da Mozilla baixou vazio."
+                log_nivel AVISO "tarball da Mozilla baixou vazio."
             fi
             rm -f "$FF_LEGADO_TARBALL"
         else
-            echo ">>> AVISO: Nao foi possivel baixar Firefox 52.7 de nenhuma fonte."
+            log_nivel AVISO "Nao foi possivel baixar Firefox 52.7 de nenhuma fonte."
         fi
     fi
 
@@ -233,7 +236,7 @@ if [ "$INSTALL_FIREFOX52" = "true" ]; then
     # ------------------------------------------------------------------
     if [ -d "$FF_LEGADO_DIR" ]; then
         ln -sf "${FF_LEGADO_DIR}/firefox" /usr/local/bin/firefox-legado
-        echo ">>> Firefox 52.7 ESR instalado em: $FF_LEGADO_DIR"
+        log_nivel INFO "Firefox 52.7 ESR instalado em: $FF_LEGADO_DIR"
 
         mkdir -p /usr/share/applications
         cat > /usr/share/applications/firefox-legado.desktop <<EOF
@@ -248,27 +251,27 @@ Type=Application
 Categories=Network;WebBrowser;
 EOF
         chmod 644 /usr/share/applications/firefox-legado.desktop
-        echo ">>> Entrada de desktop criada"
+        log_nivel INFO "Entrada de desktop criada"
 
         # Plugin Java (para applets)
         if command -v java &>/dev/null; then
-            echo ">>> Configurando plugin Java para Firefox legado..."
+            log_nivel INFO "Configurando plugin Java para Firefox legado..."
             JAVA_HOME_DIR="$(dirname "$(dirname "$(readlink -f "$(which java)")")")"
             PLUGIN_DIR="${FF_LEGADO_DIR}/browser/plugins"
             mkdir -p "$PLUGIN_DIR"
             if find "$JAVA_HOME_DIR" -name "libnpjp2.so" -exec ln -sf {} "$PLUGIN_DIR/libnpjp2.so" \; 2>/dev/null; then
-                echo ">>> Plugin Java configurado"
+                log_nivel INFO "Plugin Java configurado"
             else
-                echo ">>> AVISO: Plugin Java (libnpjp2.so) nao encontrado."
+                log_nivel AVISO "Plugin Java (libnpjp2.so) nao encontrado."
             fi
         fi
     else
-        echo ">>> AVISO: Firefox 52.7 ESR nao instalado (nenhuma fonte funcionou)."
+        log_nivel AVISO "Firefox 52.7 ESR nao instalado (nenhuma fonte funcionou)."
     fi
 else
-    echo ">>> Firefox 52.7 desativado (INSTALL_FIREFOX52=false). Pulando."
+    log_nivel INFO "Firefox 52.7 desativado (INSTALL_FIREFOX52=false). Pulando."
 fi
 
-echo ">>> [05] Sistemas legados configurados!"
+log_nivel OK "Sistemas legados configurados!"
 echo "============================================================"
 )

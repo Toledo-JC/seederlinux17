@@ -30,8 +30,11 @@
 
 set -e
 
+source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
+SCRIPT_ID="21-logoff"
+
 echo "============================================================"
-echo "16 - Logoff minimalista"
+echo "Logoff minimalista"
 echo "============================================================"
 
 # ============================================================
@@ -45,7 +48,7 @@ MOUNT_BASE="{{MOUNT_BASE}}"
 # ============================================================
 # 1. Criar o script PERMANENTE em /usr/local/bin/seederlinux-logoff
 # ============================================================
-echo ">>> Criando script permanente: /usr/local/bin/seederlinux-logoff"
+log_nivel INFO "Criando script permanente: /usr/local/bin/seederlinux-logoff"
 
 cat > /usr/local/bin/seederlinux-logoff <<'PERMSCRIPT'
 #!/bin/bash
@@ -90,7 +93,12 @@ echo "=== Logoff (minimo): $(date) - Usuario: $USERNAME ==="
 # ============================================================
 if [ -n "$COMPARTILHAMENTOS" ]; then
     MOUNT_DIR="${MOUNT_BASE:-/mnt/servidor}"
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
+
         SHARE_MOUNT="${MOUNT_DIR}/${SHARE}"
         if mountpoint -q "$SHARE_MOUNT" 2>/dev/null; then
             umount "$SHARE_MOUNT" 2>/dev/null || umount -l "$SHARE_MOUNT" 2>/dev/null || {
@@ -124,7 +132,11 @@ find /tmp -user "$USERNAME" -type f -mmin +60 -delete 2>/dev/null || true
 # mapeamento mudar antes do proximo login)
 # ============================================================
 if [ -n "$COMPARTILHAMENTOS" ]; then
-    for SHARE in $COMPARTILHAMENTOS; do
+    IFS=',' read -ra _shares_arr <<< "$COMPARTILHAMENTOS"
+    for SHARE in "${_shares_arr[@]}"; do
+        SHARE="${SHARE#"${SHARE%%[![:space:]]*}"}"
+        SHARE="${SHARE%"${SHARE##*[![:space:]]}"}"
+        [ -z "$SHARE" ] && continue
         rm -f "$USER_HOME/Desktop/${SHARE}.desktop" 2>/dev/null || true
     done
 fi
@@ -146,6 +158,6 @@ exit 0
 PERMSCRIPT
 
 chmod 755 /usr/local/bin/seederlinux-logoff
-echo ">>> Script permanente criado: /usr/local/bin/seederlinux-logoff"
-echo ">>> [16] Logoff minimalista instalado!"
+log_nivel INFO "Script permanente criado: /usr/local/bin/seederlinux-logoff"
+log_nivel OK "Logoff minimalista instalado!"
 echo "============================================================"
