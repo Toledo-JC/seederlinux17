@@ -608,6 +608,7 @@ td {
     color: var(--text);
     font-size: 0.72rem;
     line-height: 1.4;
+    white-space: pre-line;
     box-shadow: 0 12px 20px rgba(2, 6, 23, 0.5);
     opacity: 0;
     visibility: hidden;

@@ -1425,26 +1425,34 @@ function handleDeleteOrganization($id) {
 function normalizeSshGroups($value) {
     $groups = str_getcsv((string)$value, ',', '"', '');
     $normalized = [];
-
     foreach ($groups as $group) {
         $group = trim((string)$group);
-        while (strlen($group) >= 2 && $group[0] === '"' && substr($group, -1) === '"') {
-            $group = substr($group, 1, -1);
-        }
-        $group = str_replace('""', '"', trim($group));
+        $group = trim($group, '"');
         $group = function_exists('mb_strtolower')
             ? mb_strtolower($group, 'UTF-8')
             : strtolower($group);
+        $group = preg_replace('/\s+/', '+', $group);
         if ($group === '') continue;
-
-        if (preg_match('/[\s,"]/', $group)) {
-            $normalized[] = '"' . str_replace('"', '""', $group) . '"';
-        } else {
-            $normalized[] = $group;
-        }
+        $normalized[] = $group;
     }
-
     return implode(',', $normalized);
+}
+
+/**
+ * Normaliza NTP_SERVER: remove http:// ou https:// e barra final.
+ * Scripts core (core_ntp.sh, core_config.sh) esperam host ou IP apenas.
+ *
+ * @param string|null $valor
+ * @return string
+ */
+function normalizeNtpServer($valor) {
+    if ($valor === null || $valor === '') {
+        return '';
+    }
+    $valor = trim($valor);
+    $valor = preg_replace('#^https?://#i', '', $valor);
+    $valor = rtrim($valor, '/');
+    return $valor;
 }
 
 function handleGetVariables($orgId) {
@@ -1582,6 +1590,9 @@ function handleUpdateVariables($input) {
             }
             if ($varName === 'SSH_GROUPS') {
                 $value = normalizeSshGroups($value);
+            }
+            if ($varName === 'NTP_SERVER') {
+                $value = normalizeNtpServer($value);
             }
             if (in_array($varName, $repositoryBooleanNames, true)) {
                 $normalized = mirrorInputBoolean(['value' => $value], 'value');
@@ -2606,6 +2617,17 @@ function handleGenerateBundle($input) {
     $selectedScripts = $input['scripts'] ?? [];
     $description = sanitizeInput($input['description'] ?? '');
 
+    $reinstallModeRaw = strtolower(trim((string)($input['reinstall_mode'] ?? 'auto')));
+    if ($reinstallModeRaw === 'never') {
+        $reinstallModeRaw = 'diagnostic';
+    }
+    $reinstallModeValidos = ['auto', 'force', 'repair', 'diagnostic'];
+    if (!in_array($reinstallModeRaw, $reinstallModeValidos, true)) {
+        error_log("SeederLinux: reinstall_mode invalido recebido: '$reinstallModeRaw' - forcando 'auto'");
+        $reinstallModeRaw = 'auto';
+    }
+    $REINSTALL_MODE = $reinstallModeRaw;
+
     if (!$orgId) jsonError('Organization ID required');
 
     // Verificar escopo: operador_om não pode acessar dados de outra OM
@@ -2913,11 +2935,6 @@ BUNDLE_HEADER;
             }
         }
 
-        // NTP_SERVER: remover protocolo
-        if ($name === 'NTP_SERVER') {
-            $v['value'] = preg_replace('#^https?://#', '', $val);
-        }
-
         // DC_IP_LIST: montar automaticamente a partir de DC_IP e DC_SECUNDARIO_IP
         if ($name === 'DC_IP_LIST') {
             $legacyValue = preg_replace('/\s+/', '', strtolower(trim((string)$val)));
@@ -2946,6 +2963,9 @@ BUNDLE_HEADER;
 
         if ($name === 'SSH_GROUPS') {
             $v['value'] = normalizeSshGroups($val);
+        }
+        if ($name === 'NTP_SERVER') {
+            $v['value'] = normalizeNtpServer($val);
         }
 
         // HOMEPAGE: remover espacos nas extremidades e normalizar espacos internos (sem forcar protocolo)
@@ -2990,6 +3010,7 @@ BUNDLE_HEADER;
     }
     $bundle .= "# ============================================\n\n";
     $bundle .= "export NON_INTERACTIVE=true\n";
+    $bundle .= "export REINSTALL_MODE='" . str_replace("'", "'\\''", $REINSTALL_MODE) . "'\n";
     foreach ($vars as $v) {
         if (in_array($v['type'], $skipExportTypes, true)) continue;
         if (in_array($v['name'], $skipExportNames, true)) continue;
@@ -3418,6 +3439,16 @@ function handleStationCheckin($input) {
     $configSerial = (int)($input['serial_applied'] ?? $input['serial_aplicado'] ?? 0);
     $orgAcronym = strtoupper(sanitizeInput($input['organization_acronym'] ?? ''));
     $stationToken = sanitizeInput($input['station_token'] ?? '');
+
+    // Fallback: accept the token from Authorization: Bearer <token>.
+    if (empty($stationToken)) {
+        $authHeader = $_SERVER['HTTP_AUTHORIZATION']
+                   ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
+                   ?? '';
+        if (preg_match('/^Bearer\s+(\S+)$/i', trim($authHeader), $m)) {
+            $stationToken = sanitizeInput($m[1]);
+        }
+    }
 
     if (empty($hostname)) {
         jsonError('Hostname obrigatorio');
@@ -4186,6 +4217,7 @@ function getScriptContent($scriptId, $organizationId) {
             [$organizationId, $scriptId]
         );
         if ($local && !empty($local['content'])) {
+            error_log("[SeederLinux] getScriptContent: source=om_override script_id={$scriptId} organization_id={$organizationId}");
             return $local['content'];
         }
     }
@@ -4197,7 +4229,10 @@ function getScriptContent($scriptId, $organizationId) {
          ORDER BY version_number DESC LIMIT 1",
         [$scriptId]
     );
-    if ($gap && !empty($gap['content'])) return $gap['content'];
+    if ($gap && !empty($gap['content'])) {
+        error_log("[SeederLinux] getScriptContent: source=gap_default script_id={$scriptId}");
+        return $gap['content'];
+    }
 
     // 3. Tenta factory
     $factory = Database::fetchOne(
@@ -4206,15 +4241,24 @@ function getScriptContent($scriptId, $organizationId) {
          ORDER BY version_number DESC LIMIT 1",
         [$scriptId]
     );
-    if ($factory && !empty($factory['content'])) return $factory['content'];
+    if ($factory && !empty($factory['content'])) {
+        error_log("[SeederLinux] getScriptContent: source=factory script_id={$scriptId}");
+        return $factory['content'];
+    }
 
     // 4. Fallback: scripts.content
     $script = Database::fetchOne("SELECT content FROM scripts WHERE id = ?", [$scriptId]);
-    if ($script && !empty($script['content'])) return $script['content'];
+    if ($script && !empty($script['content'])) {
+        error_log("[SeederLinux] getScriptContent: source=scripts.content script_id={$scriptId}");
+        return $script['content'];
+    }
 
     // 5. Último recurso: cria factory se não existir
     $fallbackFactory = ensureFactoryVersionForScript($scriptId);
-    if ($fallbackFactory && !empty($fallbackFactory['content'])) return $fallbackFactory['content'];
+    if ($fallbackFactory && !empty($fallbackFactory['content'])) {
+        error_log("[SeederLinux] getScriptContent: source=fallback_factory script_id={$scriptId}");
+        return $fallbackFactory['content'];
+    }
 
     return '';
 }

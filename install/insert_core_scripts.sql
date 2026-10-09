@@ -206,8 +206,7 @@ if [ "${REPOSITORY_MODE:-PUBLIC}" = "PUBLIC" ]; then
 fi
 
 log_nivel OK "DNS e resolucao de nomes configurados!"
-echo "============================================================"
-$SeederScript$,
+echo "============================================================"$SeederScript$,
     TRUE,
     TRUE,
     1,
@@ -249,19 +248,15 @@ VALUES (
 #   4. ntp (ISC)           (Debian classico)
 #   5. ntpdate + cron      (step one-shot, paliativo)
 #
-# Cada tentativa tem timeout de 20s. Só avanca se nao sincronizar.
+# Lista de servidores (prioridade):
+#   1. DC_IP (primario)
+#   2. Cada DC em DC_IP_LIST
+#   3. NTP_SERVER (fallback externo do painel)
 #
-# DEPENDE DE ESTAR NA FASE 1 (DNS de internet ativo): se o cliente
-# default falhar, esta script instala outro cliente via apt, o que
-# exige internet. Por isso roda ANTES do core_domain.sh.
+# FAST PATH: se ntp-state.env tem NTP_CLIENT funcional, reaproveita
+# sem reinstalar/desinstalar pacotes.
 #
-# PERSISTE ESTADO em /etc/seederlinux/ntp-state.env:
-#   NTP_CLIENT=<cliente vencedor>
-#   NTP_SERVER=<servidor>
-#   NTP_LAST_OK=<epoch>
-#
-# Os placeholders VARIAVEL sao substituidos automaticamente
-# pelo sistema na geracao do bundle.
+# PERSISTE ESTADO v2 em /etc/seederlinux/ntp-state.env
 # ============================================================================
 
 set -e
@@ -279,351 +274,418 @@ echo "============================================================"
 NTP_SERVER="{{NTP_SERVER}}"
 DNS_INTERNET="{{DNS_INTERNET}}"
 DOMINIO="{{DOMINIO}}"
+# Preferir valores do header do bundle; placeholders substituídos na geração
+DC_IP="${DC_IP:-}"
+DC_IP_LIST="${DC_IP_LIST:-}"
+# Se o header não exportou, usar placeholders (substituídos pelo gerador)
+[ -z "$DC_IP" ] && DC_IP="{{DC_IP}}"
+[ -z "$DC_IP_LIST" ] && DC_IP_LIST="{{DC_IP_LIST}}"
 
-# Remover protocolo indevido do NTP_SERVER (a OM pode ter cadastrado
-# "http://host" em vez de "host"; normalizamos aqui para nao quebrar
-# o chrony/ntp, que esperam apenas hostname/IP).
+# Remover protocolo indevido do NTP_SERVER
 NTP_SERVER="${NTP_SERVER#http://}"
 NTP_SERVER="${NTP_SERVER#https://}"
+
+# Fallback: se DC_IP_LIST vazio, usar DC_IP
+[ -z "$DC_IP_LIST" ] && DC_IP_LIST="$DC_IP"
 
 NTP_STATE_DIR="/etc/seederlinux"
 NTP_STATE_FILE="${NTP_STATE_DIR}/ntp-state.env"
 mkdir -p "$NTP_STATE_DIR"
-# ============================================================
-# Exibir informacoes
-# ============================================================
-log_nivel INFO "Servidor NTP: $NTP_SERVER"
-log_nivel INFO "Fallback:     $DNS_INTERNET"
-
-if [ -z "$NTP_SERVER" ] || [ "$NTP_SERVER" = "" ]; then
-    log_nivel AVISO "NTP_SERVER vazio. Pulando configuracao NTP."
-    log_nivel ACAO  "Defina NTP_SERVER no painel (IP ou FQDN do servidor NTP/DC)."
-    exit 0
-fi
-
-# ============================================================
-# Pre-flight: L3 (informativo apenas - ICMP bloqueado nao impede NTP)
-# ============================================================
-log_nivel TESTE "Pre-flight: testando alcance do servidor NTP $NTP_SERVER"
-
-if command -v ping >/dev/null 2>&1; then
-    if ping -c 2 -W 2 "$NTP_SERVER" >/dev/null 2>&1; then
-        log_nivel OK    "L3 (ICMP): $NTP_SERVER responde"
-    else
-        log_nivel AVISO "L3 (ICMP): $NTP_SERVER NAO responde a ping"
-        log_nivel DIAG  "Isso NAO impede NTP - muitos servidores bloqueiam ICMP"
-        log_nivel DIAG  "Prosseguindo para o teste NTP real"
-    fi
-fi
 
 # ============================================================
 # Funções auxiliares
 # ============================================================
 
-# Verifica se o relogio esta sincronizado (por QUALQUER cliente)
-_ntp_sincronizado() {
-    # systemd-timesyncd
-    if [ "$(timedatectl show --property=NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
-        return 0
+_construir_lista_ntp_servers() {
+    local lista=""
+    if [ -n "${DC_IP:-}" ] && [ "$DC_IP" != "" ]; then
+        lista="$DC_IP"
     fi
-    # chrony
+    if [ -n "${DC_IP_LIST:-}" ] && [ "$DC_IP_LIST" != "" ]; then
+        local dc
+        for dc in $(echo "$DC_IP_LIST" | tr ',' ' '); do
+            dc="$(echo "$dc" | xargs)"
+            [ -z "$dc" ] && continue
+            case ",$lista," in
+                *",$dc,"*) ;;
+                *) [ -z "$lista" ] && lista="$dc" || lista="$lista,$dc" ;;
+            esac
+        done
+    fi
+    if [ -n "${NTP_SERVER:-}" ] && [ "$NTP_SERVER" != "" ]; then
+        case ",$lista," in
+            *",$NTP_SERVER,"*) ;;
+            *) [ -z "$lista" ] && lista="$NTP_SERVER" || lista="$lista,$NTP_SERVER" ;;
+        esac
+    fi
+    echo "$lista"
+}
+
+_ntp_sincronizado() {
+    if command -v timedatectl >/dev/null 2>&1; then
+        if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
+            return 0
+        fi
+    fi
     if command -v chronyc >/dev/null 2>&1; then
         if chronyc tracking 2>/dev/null | grep -q "Leap status.*Normal"; then
             return 0
         fi
     fi
-    # ntpsec / isc ntp
     if command -v ntpq >/dev/null 2>&1; then
         if ntpq -p 2>/dev/null | grep -qE "^\*"; then
             return 0
         fi
     fi
+    if [ -f /var/lib/seederlinux/ntpdate-last-ok ]; then
+        local age
+        age=$(( $(date +%s) - $(stat -c %Y /var/lib/seederlinux/ntpdate-last-ok 2>/dev/null || echo 0) ))
+        [ "$age" -lt 900 ] && return 0
+    fi
     return 1
 }
 
-# Para todos os daemons NTP conhecidos (garante exclusividade mutua)
 _parar_todos_ntp() {
     for _svc in systemd-timesyncd chrony ntpsec ntp; do
         systemctl stop "$_svc" 2>/dev/null || true
-        systemctl disable "$_svc" 2>/dev/null || true
     done
 }
 
+_iniciar_cliente() {
+    case "$1" in
+        systemd-timesyncd) systemctl restart systemd-timesyncd 2>/dev/null || true ;;
+        chrony)            systemctl restart chrony 2>/dev/null || true ;;
+        ntpsec)            systemctl restart ntpsec 2>/dev/null || true ;;
+        ntp-isc)           systemctl restart ntp 2>/dev/null || true ;;
+        ntpdate+cron)      : ;;
+    esac
+}
+
+_reconfigurar_cliente() {
+    local cliente="$1"
+    local servers="$2"
+    local s
+    case "$cliente" in
+        systemd-timesyncd)
+            {
+                echo "[Time]"
+                echo "NTP=$(echo "$servers" | tr ',' ' ')"
+                echo "FallbackNTP=$DNS_INTERNET"
+            } > /etc/systemd/timesyncd.conf
+            ;;
+        chrony)
+            {
+                echo "# SeederLinux - chrony"
+                for s in $(echo "$servers" | tr ',' ' '); do
+                    echo "server $s iburst"
+                done
+                echo "driftfile /var/lib/chrony/chrony.drift"
+                echo "makestep 1.0 3"
+                echo "rtcsync"
+            } > /etc/chrony/chrony.conf
+            ;;
+        ntpsec|ntp-isc)
+            local conf="/etc/ntpsec/ntp.conf"
+            [ "$cliente" = "ntp-isc" ] && conf="/etc/ntp.conf"
+            {
+                echo "# SeederLinux - $cliente"
+                for s in $(echo "$servers" | tr ',' ' '); do
+                    echo "server $s iburst"
+                done
+                echo "restrict -4 default kod notrap nomodify nopeer noquery limited"
+                echo "restrict 127.0.0.1"
+            } > "$conf"
+            ;;
+        ntpdate+cron)
+            local primeiro
+            primeiro="$(echo "$servers" | cut -d, -f1)"
+            {
+                echo "# SeederLinux - ntpdate (fallback)"
+                echo "SHELL=/bin/bash"
+                echo "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                echo "*/5 * * * * root /usr/sbin/ntpdate -u $primeiro >/dev/null 2>&1 && touch /var/lib/seederlinux/ntpdate-last-ok"
+            } > /etc/cron.d/seederlinux-ntpdate
+            chmod 644 /etc/cron.d/seederlinux-ntpdate
+            ;;
+    esac
+}
+
+_persistir_estado_ok() {
+    local servers_list
+    servers_list="${NTP_SERVERS_CACHE:-$(_construir_lista_ntp_servers)}"
+    local primary
+    primary="$(echo "$servers_list" | cut -d, -f1)"
+    local dc_list
+    dc_list="$(echo "$servers_list" | tr ',' '\n' | grep -vxF "$NTP_SERVER" | paste -sd, -)"
+    cat > "$NTP_STATE_FILE" <<EOF
+# SeederLinux - Estado do NTP
+# Gerado por core_ntp.sh em $(date -Is)
+NTP_VERSION="2"
+NTP_CLIENT="$NTP_CLIENT"
+NTP_SERVERS="$servers_list"
+NTP_SERVER_PRIMARY="$primary"
+NTP_DC_LIST="$dc_list"
+NTP_EXTERNAL_SERVER="$NTP_SERVER"
+NTP_LAST_OK="$(date +%s)"
+NTP_LAST_CHECK="$(date +%s)"
+EOF
+    chmod 644 "$NTP_STATE_FILE"
+}
+
+_persistir_estado_falha() {
+    cat > "$NTP_STATE_FILE" <<EOF
+# SeederLinux - Estado do NTP (NAO SINCRONIZADO)
+# Gerado por core_ntp.sh em $(date -Is)
+NTP_VERSION="2"
+NTP_CLIENT=""
+NTP_SERVERS="$(_construir_lista_ntp_servers)"
+NTP_DC_LIST="$DC_IP_LIST"
+NTP_EXTERNAL_SERVER="$NTP_SERVER"
+NTP_LAST_OK="0"
+NTP_LAST_CHECK="$(date +%s)"
+NTP_LAST_FAIL="$(date +%s)"
+EOF
+    chmod 644 "$NTP_STATE_FILE"
+}
+
 # ============================================================
-# Garantir ntpdate para o probe abaixo
+# Lista de servidores e validação
 # ============================================================
-# O probe usa `ntpdate -q` (consulta, não ajusta). Se o comando
-# não existir, tenta instalar via apt (Fase 1 — DNS de internet
-# ainda ativo neste ponto). Se falhar, o probe roda sem essa
-# ferramenta e cai no fallback "probe cego" (informa no log).
+SERVERS_LIST="$(_construir_lista_ntp_servers)"
+log_nivel INFO "Lista NTP: $SERVERS_LIST"
+log_nivel INFO "Fallback DNS: $DNS_INTERNET"
+
+if [ -z "$SERVERS_LIST" ]; then
+    log_nivel AVISO "Nenhum servidor NTP disponivel (DC_IP, DC_IP_LIST e NTP_SERVER vazios)."
+    log_nivel ACAO  "Defina DC_IP ou NTP_SERVER no painel."
+    exit 0
+fi
+
+# ============================================================
+# FAST PATH: reaproveitar cliente vencedor do bundle anterior
+# ============================================================
+NTP_FAST_PATH=false
+NTP_RESULT=""
+NTP_CLIENT=""
+NTP_SERVERS_CACHE=""
+
+if [ -f "$NTP_STATE_FILE" ] && [ "${SEEDER_NTP_FORCE_CASCADE:-false}" != "true" ]; then
+    # shellcheck disable=SC1090
+    . "$NTP_STATE_FILE"
+    if [ -n "${NTP_CLIENT:-}" ]; then
+        log_nivel INFO "Cliente NTP em cache: $NTP_CLIENT"
+        servers_atual="$(_construir_lista_ntp_servers)"
+        if [ "$servers_atual" != "${NTP_SERVERS:-}" ]; then
+            log_nivel INFO "Lista NTP mudou: '${NTP_SERVERS:-}' -> '$servers_atual'"
+            _parar_todos_ntp
+            _reconfigurar_cliente "$NTP_CLIENT" "$servers_atual"
+        else
+            _parar_todos_ntp
+            _iniciar_cliente "$NTP_CLIENT"
+        fi
+        log_nivel TESTE "Verificando se $NTP_CLIENT ainda funciona (10s)..."
+        for i in 1 2 3 4 5; do
+            sleep 2
+            if _ntp_sincronizado; then
+                log_nivel OK "$NTP_CLIENT ainda funcional - pulando cascata"
+                log_nivel INFO "Lista: $servers_atual"
+                NTP_FAST_PATH=true
+                NTP_RESULT=OK
+                NTP_SERVERS_CACHE="$servers_atual"
+                break
+            fi
+        done
+        if [ "$NTP_FAST_PATH" != "true" ]; then
+            log_nivel AVISO "$NTP_CLIENT parou de funcionar - rodando cascata completa"
+            NTP_CLIENT=""
+            NTP_RESULT=""
+        fi
+    fi
+fi
+
+if [ "$NTP_FAST_PATH" = "true" ]; then
+    _persistir_estado_ok
+    log_nivel OK "NTP configurado (fast path)!"
+    echo "============================================================"
+    exit 0
+fi
+
+PRIMARY="$(echo "$SERVERS_LIST" | cut -d, -f1)"
+log_nivel TESTE "Pre-flight: testando alcance de $PRIMARY"
+
+if command -v ping >/dev/null 2>&1; then
+    if ping -c 2 -W 2 "$PRIMARY" >/dev/null 2>&1; then
+        log_nivel OK    "L3 (ICMP): $PRIMARY responde"
+    else
+        log_nivel AVISO "L3 (ICMP): $PRIMARY NAO responde a ping"
+        log_nivel DIAG  "Isso NAO impede NTP - muitos servidores bloqueiam ICMP"
+    fi
+fi
+
 if ! command -v ntpdate >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get install -y ntpdate 2>/dev/null || true
 fi
 
-# ============================================================
-# PROBE DO SERVIDOR NTP
-#
-# Antes de tentar a cascata de clientes, faz um probe rapido
-# para descobrir qual cliente consegue conversar com o servidor.
-# Motivo: DCs Windows (w32time) respondem de forma estranha ao
-# systemd-timesyncd ("Server has too large root distance"), que
-# pode "sincronizar por 1s" e cair. Probar antes evita perder
-# 20s por cliente tentando o errado.
-#
-# Metodos, do mais simples ao mais robusto:
-#   1. ntpdate -q (consulta, nao ajusta) — prova conversacao SNTP
-#   2. ntpdig / ntpq — variantes
-#   3. Se nenhum comando estiver disponivel, aceita "probe cego"
-#      (tenta todos os clientes na ordem)
-# ============================================================
-log_nivel TESTE "Probe: testando comunicacao com $NTP_SERVER"
+log_nivel TESTE "Probe: testando comunicacao com $PRIMARY"
 
 NTP_PROBE_OK=false
 NTP_PROBE_METHOD=""
 
 if command -v ntpdate >/dev/null 2>&1; then
-    if ntpdate -q "$NTP_SERVER" 2>&1 | grep -qE 'server|offset|stratum'; then
+    if ntpdate -q "$PRIMARY" 2>&1 | grep -qE 'server|offset|stratum'; then
         NTP_PROBE_OK=true
         NTP_PROBE_METHOD="ntpdate -q"
     fi
 fi
 
 if [ "$NTP_PROBE_OK" != "true" ] && command -v ntpdig >/dev/null 2>&1; then
-    if ntpdig -t 5 "$NTP_SERVER" 2>&1 | grep -qE 'reply|offset|stratum'; then
+    if ntpdig -t 5 "$PRIMARY" 2>&1 | grep -qE 'reply|offset|stratum'; then
         NTP_PROBE_OK=true
         NTP_PROBE_METHOD="ntpdig"
     fi
 fi
 
 if [ "$NTP_PROBE_OK" = "true" ]; then
-    log_nivel OK "Probe OK via $NTP_PROBE_METHOD — servidor responde SNTP"
-    log_nivel DIAG "Para DC Windows (w32time), NTPsec costuma ser o cliente vencedor"
+    log_nivel OK "Probe OK via $NTP_PROBE_METHOD"
 else
     log_nivel AVISO "Probe nao conseguiu confirmar conversacao SNTP"
-    log_nivel DIAG  "Vou testar todos os clientes na ordem — pode ser firewall UDP/123"
 fi
 
-# ============================================================
-# Tentativa 1: systemd-timesyncd
-# ============================================================
 _try_systemd_timesyncd() {
-    log_nivel TENT  "Tentativa 1/5: systemd-timesyncd (default Ubuntu)"
-
+    log_nivel TENT  "Tentativa 1/5: systemd-timesyncd"
     if ! systemctl list-unit-files systemd-timesyncd.service >/dev/null 2>&1; then
-        log_nivel DIAG  "systemd-timesyncd nao disponivel nesta distro"
         return 1
     fi
-
     _parar_todos_ntp
-
-    if [ -f /etc/systemd/timesyncd.conf ]; then
+    if [ -f /etc/systemd/timesyncd.conf ] || [ -d /etc/systemd ]; then
         cp /etc/systemd/timesyncd.conf /etc/systemd/timesyncd.conf.bak.$(date +%s) 2>/dev/null || true
-        cat > /etc/systemd/timesyncd.conf <<EOF
-[Time]
-NTP=$NTP_SERVER
-FallbackNTP=$DNS_INTERNET
-EOF
-        log_nivel DIAG  "Config: /etc/systemd/timesyncd.conf -> NTP=$NTP_SERVER"
+        {
+            echo "[Time]"
+            echo "NTP=$(echo "$SERVERS_LIST" | tr ',' ' ')"
+            echo "FallbackNTP=$DNS_INTERNET"
+        } > /etc/systemd/timesyncd.conf
     fi
-
     systemctl enable systemd-timesyncd 2>/dev/null || true
     systemctl restart systemd-timesyncd 2>/dev/null || true
-
-    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         if _ntp_sincronizado; then
-            log_nivel OK    "Sincronizado em $((i*2))s via systemd-timesyncd"
+            log_nivel OK "Sincronizado em $((i*2))s via systemd-timesyncd"
             return 0
         fi
     done
-    log_nivel AVISO "systemd-timesyncd nao sincronizou em 20s"
-    log_nivel DIAG  "Provavel causa: DC Windows (w32time) incompativel com systemd-timesyncd"
     return 1
 }
 
-# ============================================================
-# Tentativa 2: chrony
-# ============================================================
 _try_chrony() {
     log_nivel TENT  "Tentativa 2/5: chrony"
-
     if ! command -v chronyd >/dev/null 2>&1; then
-        log_nivel DIAG  "chrony nao instalado - instalando..."
-        DEBIAN_FRONTEND=noninteractive apt-get install -y chrony 2>/dev/null || {
-            log_nivel AVISO "Falha ao instalar chrony. Pulando."
-            return 1
-        }
+        DEBIAN_FRONTEND=noninteractive apt-get install -y chrony 2>/dev/null || return 1
     fi
-
     _parar_todos_ntp
-
-    cat > /etc/chrony/chrony.conf <<EOF
-server $NTP_SERVER iburst trust
-driftfile /var/lib/chrony/chrony.drift
-makestep 1.0 3
-rtcsync
-EOF
-    log_nivel DIAG  "Config: /etc/chrony/chrony.conf -> server $NTP_SERVER iburst trust"
-
+    {
+        echo "# SeederLinux - chrony"
+        for s in $(echo "$SERVERS_LIST" | tr ',' ' '); do
+            echo "server $s iburst trust"
+        done
+        echo "driftfile /var/lib/chrony/chrony.drift"
+        echo "makestep 1.0 3"
+        echo "rtcsync"
+    } > /etc/chrony/chrony.conf
     systemctl enable chrony 2>/dev/null || true
     systemctl restart chrony 2>/dev/null || true
-
-    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         chronyc makestep 2>/dev/null || true
         if _ntp_sincronizado; then
-            log_nivel OK    "Sincronizado em $((i*2))s via chrony"
+            log_nivel OK "Sincronizado em $((i*2))s via chrony"
             return 0
         fi
     done
-    log_nivel AVISO "chrony nao sincronizou em 20s"
-    log_nivel DIAG  "chronyc sources abaixo (para o tecnico ver o motivo):"
-    chronyc sources -v 2>/dev/null | sed 's/^/    /' || true
-    log_nivel DIAG  "Causa tipica: DC Windows se declara stratum 1 sem refid valido"
-    log_nivel DIAG  "chrony rejeita por padrao. NTPsec aceita. Avancando."
     return 1
 }
 
-# ============================================================
-# Tentativa 3: ntpsec
-# ============================================================
 _try_ntpsec() {
     log_nivel TENT  "Tentativa 3/5: ntpsec"
-
     if ! dpkg -l ntpsec 2>/dev/null | grep -q "^ii"; then
-        log_nivel DIAG  "ntpsec nao instalado - instalando..."
-        DEBIAN_FRONTEND=noninteractive apt-get install -y ntpsec 2>/dev/null || {
-            log_nivel AVISO "Falha ao instalar ntpsec. Pulando."
-            return 1
-        }
+        DEBIAN_FRONTEND=noninteractive apt-get install -y ntpsec 2>/dev/null || return 1
     fi
-
     _parar_todos_ntp
-
-    cat > /etc/ntpsec/ntp.conf <<EOF
-# SeederLinux - NTPsec
-server $NTP_SERVER iburst
-driftfile /var/lib/ntpsec/ntp.drift
-restrict -4 default kod notrap nomodify nopeer noquery limited
-restrict -6 default kod notrap nomodify nopeer noquery limited
-restrict 127.0.0.1
-EOF
-    log_nivel DIAG  "Config: /etc/ntpsec/ntp.conf -> server $NTP_SERVER iburst"
-
+    {
+        echo "# SeederLinux - NTPsec"
+        for s in $(echo "$SERVERS_LIST" | tr ',' ' '); do
+            echo "server $s iburst"
+        done
+        echo "driftfile /var/lib/ntpsec/ntp.drift"
+        echo "restrict -4 default kod notrap nomodify nopeer noquery limited"
+        echo "restrict 127.0.0.1"
+    } > /etc/ntpsec/ntp.conf
     systemctl enable ntpsec 2>/dev/null || true
     systemctl restart ntpsec 2>/dev/null || true
-
-    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         if _ntp_sincronizado; then
-            log_nivel OK    "Sincronizado em $((i*2))s via ntpsec"
+            log_nivel OK "Sincronizado em $((i*2))s via ntpsec"
             return 0
         fi
     done
-    log_nivel AVISO "ntpsec nao sincronizou em 20s"
-    log_nivel DIAG  "ntpq -p abaixo:"
-    ntpq -p 2>/dev/null | sed 's/^/    /' || true
     return 1
 }
 
-# ============================================================
-# Tentativa 4: ntp (ISC classico)
-# ============================================================
 _try_ntp_isc() {
-    log_nivel TENT  "Tentativa 4/5: ntp (ISC classico)"
-
-    # Se ntpsec esta instalado, ele ja fornece /usr/sbin/ntpd.
-    # Removemos ntpsec antes de instalar o ntp ISC para evitar conflito.
+    log_nivel TENT  "Tentativa 4/5: ntp ISC"
     if dpkg -l ntpsec 2>/dev/null | grep -q "^ii"; then
-        log_nivel DIAG  "Removendo ntpsec para instalar ntp ISC..."
         DEBIAN_FRONTEND=noninteractive apt-get remove -y ntpsec 2>/dev/null || true
     fi
-
     if ! dpkg -l ntp 2>/dev/null | grep -q "^ii"; then
-        log_nivel DIAG  "ntp ISC nao instalado - instalando..."
-        DEBIAN_FRONTEND=noninteractive apt-get install -y ntp 2>/dev/null || {
-            log_nivel AVISO "Falha ao instalar ntp ISC. Pulando."
-            return 1
-        }
+        DEBIAN_FRONTEND=noninteractive apt-get install -y ntp 2>/dev/null || return 1
     fi
-
     _parar_todos_ntp
-
-    cat > /etc/ntp.conf <<EOF
-server $NTP_SERVER iburst
-driftfile /var/lib/ntp/ntp.drift
-restrict default kod nomodify notrap nopeer noquery
-restrict 127.0.0.1
-EOF
-    log_nivel DIAG  "Config: /etc/ntp.conf -> server $NTP_SERVER iburst"
-
+    {
+        echo "# SeederLinux - ntp ISC"
+        for s in $(echo "$SERVERS_LIST" | tr ',' ' '); do
+            echo "server $s iburst"
+        done
+        echo "driftfile /var/lib/ntp/ntp.drift"
+        echo "restrict default kod nomodify notrap nopeer noquery"
+        echo "restrict 127.0.0.1"
+    } > /etc/ntp.conf
     systemctl enable ntp 2>/dev/null || true
     systemctl restart ntp 2>/dev/null || true
-
-    log_nivel TESTE "Aguardando 20s por sincronizacao..."
     for i in $(seq 1 10); do
         sleep 2
         if _ntp_sincronizado; then
-            log_nivel OK    "Sincronizado em $((i*2))s via ntp ISC"
+            log_nivel OK "Sincronizado em $((i*2))s via ntp ISC"
             return 0
         fi
     done
-    log_nivel AVISO "ntp ISC nao sincronizou em 20s"
     return 1
 }
 
-# ============================================================
-# Tentativa 5: ntpdate + cron (ultimo recurso)
-# ============================================================
 _try_ntpdate_cron() {
-    log_nivel TENT  "Tentativa 5/5: ntpdate + cron (step one-shot)"
-
+    log_nivel TENT  "Tentativa 5/5: ntpdate + cron"
     if ! command -v ntpdate >/dev/null 2>&1; then
-        DEBIAN_FRONTEND=noninteractive apt-get install -y ntpdate 2>/dev/null || {
-            log_nivel AVISO "Falha ao instalar ntpdate. Desistindo."
-            return 1
-        }
+        DEBIAN_FRONTEND=noninteractive apt-get install -y ntpdate 2>/dev/null || return 1
     fi
-
     _parar_todos_ntp
-
-    log_nivel TESTE "Executando ntpdate -u $NTP_SERVER (step unico)..."
+    local primeiro
+    primeiro="$(echo "$SERVERS_LIST" | cut -d, -f1)"
     local _out
-    _out="$(ntpdate -u "$NTP_SERVER" 2>&1 || true)"
-    echo "$_out" | sed 's/^/    /'
-
+    _out="$(ntpdate -u "$primeiro" 2>&1 || true)"
     if echo "$_out" | grep -qiE "step|adjust"; then
-        log_nivel OK    "Relogio ajustado via ntpdate"
-        log_nivel DIAG  "ntpdate e' one-shot; sera reagendado via cron a cada 5min"
-        log_nivel DIAG  "Isso NAO substitui um daemon NTP - e' paliativo"
-        log_nivel ACAO  "Corrigir o NTP do servidor ($NTP_SERVER) para o daemon funcionar"
-
         mkdir -p /var/lib/seederlinux
         touch /var/lib/seederlinux/ntpdate-last-ok
-
         cat > /etc/cron.d/seederlinux-ntpdate <<EOF
 # SeederLinux - paliativo ntpdate
-# Reagenda step a cada 5min porque nenhum daemon NTP funcionou.
-# Remova quando o servidor NTP estiver respondendo corretamente.
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-*/5 * * * * root /usr/sbin/ntpdate -u $NTP_SERVER >/dev/null 2>&1 && touch /var/lib/seederlinux/ntpdate-last-ok
+*/5 * * * * root /usr/sbin/ntpdate -u $primeiro >/dev/null 2>&1 && touch /var/lib/seederlinux/ntpdate-last-ok
 EOF
         chmod 644 /etc/cron.d/seederlinux-ntpdate
         return 0
     fi
-    log_nivel AVISO "ntpdate falhou"
     return 1
 }
-
-# ============================================================
-# Executa a cascata
-# ============================================================
-NTP_RESULT=""
-NTP_CLIENT=""
 
 if _try_systemd_timesyncd; then
     NTP_RESULT=OK; NTP_CLIENT="systemd-timesyncd"
@@ -637,80 +699,27 @@ elif _try_ntpdate_cron; then
     NTP_RESULT=OK; NTP_CLIENT="ntpdate+cron"
 fi
 
-# ============================================================
-# Validacao final
-#
-# A cascata pode ter "aceito" um cliente que sincronizou por 1s
-# e caiu depois (bug observado: systemd-timesyncd com w32time).
-# Aqui confirmamos o estado atual com 3 leituras em 3s.
-# Se as 3 confirmarem, aceita. Senao, marca como falha.
-# ============================================================
 echo ""
-log_nivel TESTE "Validacao final: confirmando sincronizacao em 3 leituras..."
-
+log_nivel TESTE "Validacao final: 3 leituras..."
 _confirmacoes=0
 for _i in 1 2 3; do
     sleep 1
-    if [ "$(timedatectl show --property=NTPSynchronized --value 2>/dev/null)" = "yes" ]; then
-        _confirmacoes=$((_confirmacoes + 1))
-    elif command -v chronyc >/dev/null 2>&1 && chronyc tracking 2>/dev/null | grep -q "Leap status.*Normal"; then
-        _confirmacoes=$((_confirmacoes + 1))
-    elif command -v ntpq >/dev/null 2>&1 && ntpq -p 2>/dev/null | grep -qE "^\*"; then
+    if _ntp_sincronizado; then
         _confirmacoes=$((_confirmacoes + 1))
     fi
 done
-
 log_nivel INFO "Confirmacoes: $_confirmacoes/3"
 
 if [ "$NTP_RESULT" = "OK" ] && [ "$_confirmacoes" -ge 2 ]; then
-    log_nivel OK    "NTP validado: $NTP_CLIENT"
-    log_nivel DIAG  "Horario local: $(date -Is)"
-
-    cat > "$NTP_STATE_FILE" <<EOF
-# SeederLinux - Estado do NTP
-# Gerado por core_ntp.sh em $(date -Is)
-NTP_CLIENT="$NTP_CLIENT"
-NTP_SERVER="$NTP_SERVER"
-NTP_LAST_OK="$(date +%s)"
-EOF
-    chmod 644 "$NTP_STATE_FILE"
+    log_nivel OK "NTP validado: $NTP_CLIENT"
+    NTP_SERVERS_CACHE="$SERVERS_LIST"
+    _persistir_estado_ok
 elif [ "$NTP_RESULT" = "OK" ]; then
-    log_nivel AVISO "cliente '$NTP_CLIENT' reportou OK mas validacao falhou"
-    log_nivel DIAG  "Isso e' o sintoma de w32time respondendo de forma intermitente"
-    log_nivel DIAG  "Persistindo como NAO-SINCRONIZADO para forcar nova tentativa no proximo logon"
-    NTP_RESULT="FALHOU_VALIDACAO"
-
-    cat > "$NTP_STATE_FILE" <<EOF
-# SeederLinux - Estado do NTP (VALIDACAO FALHOU)
-# Gerado por core_ntp.sh em $(date -Is)
-NTP_CLIENT=""
-NTP_SERVER="$NTP_SERVER"
-NTP_LAST_OK="0"
-NTP_LAST_FAIL="$(date +%s)"
-NTP_LAST_CLIENT_ATTEMPTED="$NTP_CLIENT"
-EOF
-    chmod 644 "$NTP_STATE_FILE"
+    log_nivel AVISO "validacao falhou"
+    _persistir_estado_falha
 else
-    log_nivel ERRO  "NTP NAO sincronizou com nenhum dos 5 clientes"
-    log_nivel DIAG  "Causas mais provaveis:"
-    log_nivel DIAG  "  1. Firewall do servidor bloqueando UDP/123 inbound"
-    log_nivel DIAG  "  2. w32time (Windows) desconfigurado no servidor"
-    log_nivel DIAG  "  3. Servidor NTP incorreto no painel"
-    log_nivel DIAG  "  4. Rede L3 indisponivel entre estacao e servidor"
-    log_nivel ACAO  "No servidor (Windows, como admin): w32tm /query /status"
-    log_nivel ACAO  "Abrir firewall UDP 123 inbound no servidor"
-    log_nivel ACAO  "Na estacao: ntpdate -q $NTP_SERVER"
-    log_nivel DIAG  "O bundle continua, mas Kerberos pode falhar com 'Clock skew too great'"
-
-    cat > "$NTP_STATE_FILE" <<EOF
-# SeederLinux - Estado do NTP (NAO SINCRONIZADO)
-# Gerado por core_ntp.sh em $(date -Is)
-NTP_CLIENT=""
-NTP_SERVER="$NTP_SERVER"
-NTP_LAST_OK="0"
-NTP_LAST_FAIL="$(date +%s)"
-EOF
-    chmod 644 "$NTP_STATE_FILE"
+    log_nivel ERRO "NTP NAO sincronizou"
+    _persistir_estado_falha
 fi
 
 log_nivel OK "NTP configurado!"
@@ -2070,29 +2079,29 @@ if [ "$INSTALL_ONLYOFFICE" = "true" ]; then
 deb [signed-by=/usr/share/keyrings/onlyoffice-keyring.gpg] https://download.onlyoffice.com/repo/debian squeeze main
 EOF
 
-        apt-get update
-        apt-get install -y onlyoffice-desktopeditors || {
-            log_nivel AVISO "Falha ao instalar OnlyOffice via repositorio."
-            log_nivel INFO "Tentando download direto..."
+            apt-get update
+            apt-get install -y onlyoffice-desktopeditors || {
+                log_nivel AVISO "Falha ao instalar OnlyOffice via repositorio."
+                log_nivel INFO "Tentando download direto..."
 
-            # Metodo 2: Download direto do .deb
-            ONLYOFFICE_DEB="/tmp/onlyoffice-desktopeditors.deb"
-            if wget -q -O "$ONLYOFFICE_DEB" "https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors_amd64.deb"; then
-                dpkg -i "$ONLYOFFICE_DEB" || apt-get install -y -f
-                rm -f "$ONLYOFFICE_DEB"
-            else
-                log_nivel AVISO "Nao foi possivel baixar OnlyOffice."
-            fi
-        }
-        rm -f "$ONLYOFFICE_KEY"
-    else
-        log_nivel AVISO "Nao foi possivel obter chave do OnlyOffice."
-        log_nivel INFO "Tentando instalar via repositorio Debian..."
+                # Metodo 2: Download direto do .deb
+                ONLYOFFICE_DEB="/tmp/onlyoffice-desktopeditors.deb"
+                if wget -q -O "$ONLYOFFICE_DEB" "https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors_amd64.deb"; then
+                    dpkg -i "$ONLYOFFICE_DEB" || apt-get install -y -f
+                    rm -f "$ONLYOFFICE_DEB"
+                else
+                    log_nivel AVISO "Nao foi possivel baixar OnlyOffice."
+                fi
+            }
+            rm -f "$ONLYOFFICE_KEY"
+        else
+            log_nivel AVISO "Nao foi possivel obter chave do OnlyOffice."
+            log_nivel INFO "Tentando instalar via repositorio Debian..."
 
-        apt-get install -y onlyoffice-desktopeditors 2>/dev/null || {
-            log_nivel AVISO "OnlyOffice nao disponivel. Instalacao ignorada."
-        }
-    fi
+            apt-get install -y onlyoffice-desktopeditors 2>/dev/null || {
+                log_nivel AVISO "OnlyOffice nao disponivel. Instalacao ignorada."
+            }
+        fi
     fi
 else
     log_nivel INFO "OnlyOffice desativado (INSTALL_ONLYOFFICE=false). Pulando."
@@ -2166,8 +2175,7 @@ fi
 
 log_nivel OK "Aplicativos instalados!"
 echo "============================================================"
-)
-$SeederScript$,
+)$SeederScript$,
     TRUE,
     TRUE,
     6,
@@ -3235,8 +3243,7 @@ fi
 
 echo ""
 log_nivel INFO "Gerenciamento de AD concluído! Método: ${JOIN_METHOD:-$ESTADO}"
-echo "============================================================="
-$SeederScript$,
+echo "============================================================="$SeederScript$,
     TRUE,
     TRUE,
     7,
@@ -3279,7 +3286,9 @@ echo "Configurar SSH"
 echo "============================================================"
 
 SSH_PORT="{{SSH_PORT}}"
-SSH_GROUPS="{{SSH_GROUPS}}"
+# Herdar do header do bundle (fonte de verdade).
+# Formato canônico do painel: 'domain+admins' representa 'domain admins'.
+SSH_GROUPS="${SSH_GROUPS:-root,_dasti}"
 
 log_nivel INFO "Porta SSH: ${SSH_PORT:-22}"
 log_nivel INFO "Grupos SSH: ${SSH_GROUPS:-nenhum}"
@@ -3301,6 +3310,10 @@ fi
 # é um array Bash — NUNCA concatenar em string com espaço,
 # senão nomes com espaço (ex: "Domain Admins") são quebrados
 # em dois tokens no loop seguinte.
+#
+# Formato canônico do painel usa '+' no lugar de espaço
+# (ex: domain+admins). Aqui revertimos + → espaço antes de
+# validar o grupo.
 #
 # sshd AllowGroups NÃO tem sintaxe para grupos com espaço. Grupos
 # com espaço são IGNORADOS no AllowGroups com aviso claro. Para
@@ -3334,6 +3347,9 @@ PY
 
         for GRP in "${GRP_ARRAY[@]}"; do
             [ -z "$GRP" ] && continue
+
+            # Reverter + para espaço (formato canônico do painel)
+            GRP="$(printf '%s' "$GRP" | tr '+' ' ')"
 
             # sshd AllowGroups não tem sintaxe para grupo com espaço
             if echo "$GRP" | grep -q ' '; then
@@ -3964,8 +3980,7 @@ DESKTOPEOF
 log_nivel INFO "Aviso de proxy criado."
 
 log_nivel OK "Politicas de navegadores configuradas!"
-echo "============================================================"
-$SeederScript$,
+echo "============================================================"$SeederScript$,
     TRUE,
     TRUE,
     9,
@@ -4919,6 +4934,14 @@ NTP_SERVER="${NTP_SERVER#http://}"
 NTP_SERVER="${NTP_SERVER#https://}"
 
 # ============================================================
+# Controladores de dominio
+# ============================================================
+DC_IP="{{DC_IP}}"
+DC_IP_LIST="{{DC_IP_LIST}}"
+# DC_IP_LIST vazio cai para DC_IP (fallback)
+[ -z "$DC_IP_LIST" ] && DC_IP_LIST="$DC_IP"
+
+# ============================================================
 # Politicas de proxy (multi-proxy)
 # ============================================================
 APT_POLICY="{{APT_POLICY}}"
@@ -4965,8 +4988,8 @@ cat > "$CONFIG_FILE" <<EOF
 # Dominio e Autenticacao
 DOMINIO="{{DOMINIO}}"
 DOMINIO_NETBIOS="{{DOMINIO_NETBIOS}}"
-DC_IP="{{DC_IP}}"
-DC_IP_LIST="{{DC_IP_LIST}}"
+DC_IP="${DC_IP}"
+DC_IP_LIST="${DC_IP_LIST}"
 DC_SECUNDARIO_IP="{{DC_SECUNDARIO_IP}}"
 DNS_PRIMARIO="{{DNS_PRIMARIO}}"
 DNS_SECUNDARIO="{{DNS_SECUNDARIO}}"

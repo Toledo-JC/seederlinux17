@@ -32,6 +32,7 @@ echo "============================================================"
 # ============================================================
 # Diretorio base
 # ============================================================
+REINSTALL_MODE="${REINSTALL_MODE:-auto}"
 mkdir -p /etc/seederlinux
 
 CONFIG_FILE="/etc/seederlinux/config.env"
@@ -68,6 +69,14 @@ done
 NTP_SERVER="{{NTP_SERVER}}"
 NTP_SERVER="${NTP_SERVER#http://}"
 NTP_SERVER="${NTP_SERVER#https://}"
+
+# ============================================================
+# Controladores de dominio
+# ============================================================
+DC_IP="{{DC_IP}}"
+DC_IP_LIST="{{DC_IP_LIST}}"
+# DC_IP_LIST vazio cai para DC_IP (fallback)
+[ -z "$DC_IP_LIST" ] && DC_IP_LIST="$DC_IP"
 
 # ============================================================
 # Politicas de proxy (multi-proxy)
@@ -116,8 +125,8 @@ cat > "$CONFIG_FILE" <<EOF
 # Dominio e Autenticacao
 DOMINIO="{{DOMINIO}}"
 DOMINIO_NETBIOS="{{DOMINIO_NETBIOS}}"
-DC_IP="{{DC_IP}}"
-DC_IP_LIST="{{DC_IP_LIST}}"
+DC_IP="${DC_IP}"
+DC_IP_LIST="${DC_IP_LIST}"
 DC_SECUNDARIO_IP="{{DC_SECUNDARIO_IP}}"
 DNS_PRIMARIO="{{DNS_PRIMARIO}}"
 DNS_SECUNDARIO="{{DNS_SECUNDARIO}}"
@@ -162,6 +171,7 @@ GREETER_URL="${GREETER_URL}"
 THEME="{{THEME}}"
 
 # Ambiente Grafico
+REINSTALL_MODE="${REINSTALL_MODE}"
 DESKTOP_ENV="{{DESKTOP_ENV}}"
 DISPLAY_MANAGER="{{DISPLAY_MANAGER}}"
 

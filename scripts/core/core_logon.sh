@@ -325,15 +325,6 @@ EOF
 fi
 
 # ============================================================
-# Disparar seeder-sync em background, so se o timer ainda nao
-# estiver ativo (ex: bundle rodado antes do core_sync.sh, ou timer
-# desabilitado manualmente) - nao bloqueia o login esperando.
-# ============================================================
-if ! systemctl is-active --quiet seeder-sync.timer 2>/dev/null; then
-    ( sudo -n /usr/local/bin/seeder-sync >/dev/null 2>&1 & ) 2>/dev/null || true
-fi
-
-# ============================================================
 # Sincronizar NTP (rapido: timeout 3s, nao bloqueia login).
 #
 # Motivo: se a estacao ficou desligada por dias, o relogio pode
@@ -431,6 +422,22 @@ EOFPREF
             echo "Firefox: user.js removido (DIRECT)"
         fi
     fi
+fi
+
+# ============================================================
+# Disparar seeder-sync em background, DEPOIS de o ambiente do
+# usuario estar pronto.
+#
+# INVARIANTE: quando seeder-sync roda pela primeira vez, o perfil
+# do Firefox ja existe e o user.js ja foi aplicado. Isso elimina a
+# corrida entre "sync le perfil ausente -> pula user.js" e "logon
+# cria perfil -> aplica user.js".
+#
+# Posicao importa: este bloco PRECISA vir depois do bloco
+# "Resolver e aplicar proxy do Firefox" acima. Nao mover.
+# ============================================================
+if ! systemctl is-active --quiet seeder-sync.timer 2>/dev/null; then
+    ( sudo -n /usr/local/bin/seeder-sync >/dev/null 2>&1 & ) 2>/dev/null || true
 fi
 
 echo "=== Logon concluido: $(date) ==="

@@ -1160,11 +1160,34 @@ function matchesVariableSearch(variable, searchText) {
 }
 
 const variableHelpText = {
-    NTP_SERVER: 'Apenas IP ou hostname, sem http://. Ex: pool.ntp.org',
+    NTP_SERVER: [
+        'Servidor NTP adicional (opcional):',
+        '',
+        'Os DCs (DC_IP e DC_IP_LIST) já são usados automaticamente como servidores NTP na estação. Este campo é apenas para um servidor NTP externo de fallback, usado se todos os DCs falharem ou se a estação estiver fora da rede do domínio.',
+        '',
+        'Se sua OM tem um servidor NTP dedicado (ex: ntp.comara.intraer), informe aqui. Se deixar em branco ou se os DCs já são NTP suficiente, o sistema funciona só com os DCs.',
+        '',
+        'Ordem de prioridade aplicada pelo bundle:',
+        '1. DC_IP (primário)',
+        '2. Cada DC em DC_IP_LIST',
+        '3. Este campo NTP_SERVER',
+        '',
+        'Não coloque um DC aqui — ele já é adicionado automaticamente.'
+    ].join('\n'),
     HOMEPAGE: 'Inclua http:// ou https://. Ex: http://www.intraer',
     PRINTERS: 'Nomes separados por vírgula. Ex: printer1,printer2',
     COMPARTILHAMENTOS: 'Nomes separados por vírgula. Ex: publico,usuarios,setores',
-    SSH_GROUPS: 'Grupos separados por vírgula; nomes com espaços podem ser informados entre aspas duplas. O valor é normalizado para minúsculas ao salvar. Grupos com espaços são aceitos no sudoers via GID, mas não no AllowGroups do SSH.'
+    SSH_GROUPS: [
+        'Grupos SSH (separados por vírgula):',
+        'Use + no lugar de espaço em nomes compostos. Tudo é convertido para minúsculas automaticamente.',
+        '',
+        'Exemplos:',
+        '- root,_dasti',
+        '- root,_dasti,domain+admins',
+        '- root,linux-admins,domain+admins,admins.+do+domínio',
+        '',
+        'Não use aspas nem espaços — use +.'
+    ].join('\n')
 };
 
 function getVariableTooltip(variable) {
@@ -1715,8 +1738,8 @@ function renderTypedInput(v) {
         let note = '';
         if (v.name === 'JAVA_EXCEPTIONS') ph = 'Uma URL por linha';
         if (v.name === 'SSH_GROUPS') {
-            ph = 'Grupos separados por vírgula. Ex: linux-admins,_DASTI,"Domain Admins"';
-            note = '<span class="text-xs text-slate-400 mt-1 block">Nomes com espaços devem ser colocados entre aspas. O texto será normalizado para minúsculas; grupos com espaços são ignorados no AllowGroups do SSH, mas podem ser usados nas regras sudo.</span>';
+            ph = 'Grupos separados por vírgula. Ex: root,linux-admins,domain+admins';
+            note = '<span class="text-xs text-slate-400 mt-1 block">Use <strong>+</strong> no lugar de espaço em nomes compostos (ex: <code>domain+admins</code>). O texto é normalizado para minúsculas ao salvar. Não use aspas nem espaços.</span>';
         }
         return `<textarea data-var-id="${varId}" rows="2" class="var-textarea" placeholder="${ph}">${Utils.escapeHtml(val)}</textarea>${note}`;
     }
@@ -2086,40 +2109,14 @@ function filterByCategory(c) {
 window.filterByCategory = filterByCategory;
 
 function normalizeSshGroupsCsv(value) {
-    const fields = [];
-    let field = '';
-    let inQuotes = false;
-
-    for (let i = 0; i < String(value || '').length; i++) {
-        const char = String(value || '')[i];
-        if (char === '"') {
-            field += char;
-            if (inQuotes && String(value || '')[i + 1] === '"') {
-                field += '"';
-                i++;
-            } else {
-                inQuotes = !inQuotes;
-            }
-        } else if (char === ',' && !inQuotes) {
-            fields.push(field);
-            field = '';
-        } else {
-            field += char;
-        }
-    }
-    fields.push(field);
-
-    return fields.map((item) => {
-        let token = item.trim();
-        while (token.length >= 2 && token.startsWith('"') && token.endsWith('"')) {
-            token = token.slice(1, -1);
-        }
-        token = token.replace(/""/g, '"').trim().toLowerCase();
-        if (!token) return '';
-        return /[\s,"]/.test(token)
-            ? `"${token.replace(/"/g, '""')}"`
-            : token;
-    }).filter(Boolean).join(',');
+    if (!value || typeof value !== 'string') return '';
+    const tokens = value
+        .split(',')
+        .map(t => t.trim().replace(/^"+|"+$/g, '').trim())
+        .map(t => t.toLowerCase())
+        .map(t => t.replace(/\s+/g, '+'))
+        .filter(t => t !== '');
+    return tokens.join(',');
 }
 
 async function saveVariables() {
@@ -3191,6 +3188,7 @@ async function generateBundle() {
     if (description === null) return;
 
     const forceNotify = document.getElementById('force-notify')?.checked ?? false;
+    const reinstallMode = document.getElementById('reinstall-mode')?.value || 'auto';
 
     Toast.info('Gerando bundle...');
 
@@ -3199,7 +3197,8 @@ async function generateBundle() {
             organization_id: currentOrgId,
             scripts: selected,
             description: description.trim(),
-            force_notify: forceNotify
+            force_notify: forceNotify,
+            reinstall_mode: reinstallMode
         });
         if (res.success) {
             Toast.success('Bundle gerado com sucesso');

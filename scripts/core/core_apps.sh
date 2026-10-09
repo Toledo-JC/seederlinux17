@@ -44,6 +44,7 @@ echo "============================================================"
 # ============================================================
 # Variáveis
 # ============================================================
+REINSTALL_MODE="${REINSTALL_MODE:-auto}"
 INSTALL_ONLYOFFICE="{{INSTALL_ONLYOFFICE}}"
 INSTALL_CHROME="{{INSTALL_CHROME}}"
 INSTALL_CHROMIUM="{{INSTALL_CHROMIUM}}"
@@ -52,9 +53,22 @@ PROXY_MODE="{{PROXY_MODE}}"
 PROXY_HTTP="{{PROXY_HTTP}}"
 PROXY_PORTA="{{PROXY_PORTA}}"
 
+case "$REINSTALL_MODE" in
+    repair|diagnostic)
+        log_nivel AVISO "REINSTALL_MODE=$REINSTALL_MODE ainda nao implementado - usando 'auto'"
+        REINSTALL_MODE="auto"
+        ;;
+    auto|force) ;;
+    *)
+        log_nivel AVISO "REINSTALL_MODE desconhecido '$REINSTALL_MODE' - usando 'auto'"
+        REINSTALL_MODE="auto"
+        ;;
+esac
+
 log_nivel INFO "Instalar OnlyOffice: $INSTALL_ONLYOFFICE"
 log_nivel INFO "Instalar Chrome: $INSTALL_CHROME"
 log_nivel INFO "Instalar Chromium: $INSTALL_CHROMIUM"
+log_nivel INFO "REINSTALL_MODE: $REINSTALL_MODE"
 
 # ============================================================
 # Verificar se pelo menos um toggle esta ativo

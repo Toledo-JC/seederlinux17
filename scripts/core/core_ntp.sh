@@ -25,6 +25,7 @@
 # PERSISTE ESTADO v2 em /etc/seederlinux/ntp-state.env
 # ============================================================================
 
+(
 set -e
 
 source /usr/local/lib/seederlinux/diag.sh 2>/dev/null || true
@@ -490,3 +491,4 @@ fi
 
 log_nivel OK "NTP configurado!"
 echo "============================================================"
+)
