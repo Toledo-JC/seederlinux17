@@ -245,6 +245,10 @@ try {
             if ($method !== 'POST') jsonError('Method not allowed', 405);
             handleGenerateBundle($input);
             break;
+        case 'download-bundle':
+            if (!in_array($method, ['GET', 'POST'], true)) jsonError('Method not allowed', 405);
+            handleDownloadBundle($_GET + $_POST);
+            break;
         case 'bundle-by-id':
             handleDownloadBundle($id);
             break;
@@ -2715,7 +2719,10 @@ function handleGenerateBundle($input) {
     }
 
     // Atualizar o serial somente depois de validar a ordem e as dependencias.
-    $newSerial = bumpOrgSerial($orgId);
+    $forceNotify = filter_var($input['force_notify'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    $newSerial = $forceNotify
+        ? bumpOrgSerial($orgId)
+        : (int)$org['serial_config'];
     $org['serial_config'] = $newSerial;
 
     // Todos os 24 scripts Core são incluídos no bundle.
@@ -3219,31 +3226,65 @@ BUNDLE_FOOTER;
     }
 }
 
-function handleDownloadBundle($id) {
-    $stationAuth = requireStationAuth();
-    if ($stationAuth) {
-        $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$id]);
-        if (!$bundle) jsonError('Bundle nao encontrado', 404);
+function handleDownloadBundle($inputOrId) {
+    $input = is_array($inputOrId) ? $inputOrId : [];
+    $bundleId = (int)($input['bundle_id'] ?? 0);
+    if ($bundleId <= 0) {
+        $bundleId = (int)($input['id'] ?? 0);
+    }
+    if ($bundleId <= 0) {
+        $bundleId = (int)$inputOrId;
+    }
+    if ($bundleId <= 0) {
+        jsonError('bundle_id obrigatorio', 400);
+    }
 
+    $mode = strtolower(trim((string)($input['mode'] ?? $_GET['mode'] ?? $_POST['mode'] ?? 'auto')));
+    if ($mode === 'never') {
+        $mode = 'diagnostic';
+    }
+    $validModes = ['auto', 'force', 'repair', 'diagnostic'];
+    if (!in_array($mode, $validModes, true)) {
+        $mode = 'auto';
+    }
+
+    $stationAuth = requireStationAuth();
+    if (!$stationAuth) {
+        requireAuth();
+    }
+
+    $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$bundleId]);
+    if (!$bundle) {
+        jsonError('Bundle nao encontrado', 404);
+    }
+
+    if ($stationAuth) {
         $stationOrgId = (int)($_REQUEST['station_org_id'] ?? 0);
-        if ($stationOrgId > 0 && (int)$bundle['organization_id'] !== $stationOrgId) {
+        if ((int)$bundle['organization_id'] !== $stationOrgId) {
             jsonError('Sem permissao', 403);
         }
     } else {
-        requireAuth();
-        $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$id]);
-        if (!$bundle) jsonError('Bundle nao encontrado', 404);
-
         $userOrgId = getUserOrgId();
         if ($userOrgId !== null && !isAdminGap() && (int)$bundle['organization_id'] !== $userOrgId) {
             jsonError('Sem permissao', 403);
         }
     }
 
-    header('Content-Type: application/octet-stream');
-    header('Content-Disposition: attachment; filename="' . $bundle['filename'] . '"');
-    header('Content-Length: ' . strlen($bundle['content']));
-    echo $bundle['content'];
+    $content = $bundle['content'];
+    if (preg_match('/^export REINSTALL_MODE=.*$/m', $content)) {
+        $content = preg_replace('/^export REINSTALL_MODE=.*$/m', "export REINSTALL_MODE='" . $mode . "'", $content);
+    } else {
+        $content = preg_replace('/^#!\/bin\/bash\s*$/m', "export REINSTALL_MODE='" . $mode . "'", $content, 1);
+        if ($content === $bundle['content']) {
+            $content = "export REINSTALL_MODE='" . $mode . "'\n" . $content;
+        }
+    }
+
+    header('Content-Type: application/x-shellscript; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . ($bundle['filename'] ?? 'bundle.sh') . '"');
+    header('Content-Length: ' . strlen($content));
+    header('X-Seeder-Bundle-Mode: ' . $mode);
+    echo $content;
     exit;
 }
 

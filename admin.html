@@ -390,29 +390,48 @@
                         <!-- Bundle Tab -->
                         <div id="tab-bundle" class="tab-content hidden">
                             <div class="card mb-6">
-                                <div class="card-header"><h3 class="card-title">Gerar Bundle</h3></div>
+                                <div class="card-header">
+                                    <h3 class="card-title">Bundle da OM</h3>
+                                    <p class="card-subtitle">Pacote oficial de provisionamento</p>
+                                </div>
                                 <div class="card-body">
-                                    <p class="text-slate-400 mb-4">Selecione os scripts e gere o bundle para deploy.</p>
-                                    <div class="form-group mb-4">
-                                        <label for="reinstall-mode" class="form-label">Modo de instalação</label>
-                                        <select id="reinstall-mode" class="form-input">
-                                            <option value="auto" selected>Automático (recomendado)</option>
-                                            <option value="force">Reinstalar tudo</option>
-                                            <option value="repair">Reparar / reconciliar (em breve)</option>
-                                            <option value="diagnostic">Somente diagnóstico (em breve)</option>
-                                        </select>
-                                        <small class="form-text text-slate-400">
-                                            Automático: pula o que já está instalado e aplica só o que falta. Reinstalar tudo: ignora o estado e reaplica tudo.
-                                        </small>
+                                    <p class="text-slate-400 mb-4">O que você deseja fazer?</p>
+
+                                    <div class="space-y-3">
+                                        <button type="button" class="bundle-action btn btn-primary btn-lg w-full text-left" data-mode="auto">
+                                            <span class="block font-semibold">Instalar ou atualizar estação</span>
+                                            <small class="block text-xs mt-1 opacity-80">Recomendado. Aplica a configuração pendente e pula etapas já concluídas.</small>
+                                        </button>
+
+                                        <button type="button" class="bundle-action btn btn-secondary btn-lg w-full text-left" data-mode="force">
+                                            <span class="block font-semibold">Reinstalar estação</span>
+                                            <small class="block text-xs mt-1 opacity-80">Executa novamente todas as etapas, inclusive as já concluídas.</small>
+                                        </button>
+
+                                        <button type="button" class="bundle-action btn btn-secondary btn-lg w-full text-left" data-mode="repair" disabled>
+                                            <span class="block font-semibold">Reparar configuração</span>
+                                            <small class="block text-xs mt-1 opacity-80">Corrige divergências na estação. (em breve)</small>
+                                        </button>
+
+                                        <button type="button" class="bundle-action btn btn-secondary btn-lg w-full text-left" data-mode="diagnostic" disabled>
+                                            <span class="block font-semibold">Verificar estação</span>
+                                            <small class="block text-xs mt-1 opacity-80">Executa verificações sem alterar a estação. (em breve)</small>
+                                        </button>
                                     </div>
-                                    <div class="form-group mb-4">
+
+                                    <hr class="my-5 border-slate-700">
+
+                                    <p class="text-slate-400 mb-2">Execução via SSH</p>
+                                    <button id="btn-copy-command" type="button" class="btn btn-outline btn-lg w-full sm:w-auto">Copiar comando de instalação</button>
+                                    <small class="block text-slate-400 mt-2">Cole no terminal da estação. O comando usa o token local para autenticar o download.</small>
+
+                                    <div class="form-group mt-5 mb-0">
                                         <label class="flex items-center gap-2 cursor-pointer">
                                             <input type="checkbox" id="force-notify" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-600 focus:ring-blue-500">
                                             <span class="text-slate-300 font-medium">Forçar atualização das estações</span>
                                         </label>
                                         <p class="text-sm text-slate-500 mt-1 ml-6">Incrementa o serial de configuração e notifica as estações.</p>
                                     </div>
-                                    <button id="btn-generate-bundle" class="btn btn-success btn-lg">Gerar Bundle</button>
                                 </div>
                             </div>
                             <div class="card">

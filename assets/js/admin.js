@@ -3177,18 +3177,16 @@ window.updateScript = updateScript;
 
 // ============ BUNDLE ============
 
-async function generateBundle() {
+async function generateBundle(mode = null) {
     if (!currentOrgId) { Toast.error('Selecione uma organizacao'); return; }
 
     const selected = [...document.querySelectorAll('.script-checkbox:checked')].map(el => parseInt(el.value));
 
-    // Solicitar descricao opcional do bundle
     const description = prompt('Descricao do bundle (opcional):', '');
-    // Se o usuario cancelar (prompt retorna null), aborta a geracao
     if (description === null) return;
 
     const forceNotify = document.getElementById('force-notify')?.checked ?? false;
-    const reinstallMode = document.getElementById('reinstall-mode')?.value || 'auto';
+    const reinstallMode = mode || document.getElementById('reinstall-mode')?.value || 'auto';
 
     Toast.info('Gerando bundle...');
 
@@ -3211,6 +3209,79 @@ async function generateBundle() {
     }
 }
 window.generateBundle = generateBundle;
+
+async function gerarEbaixarBundle(mode) {
+    if (!currentOrgId) {
+        Toast.error('Selecione uma OM primeiro');
+        return;
+    }
+
+    const forceNotify = document.getElementById('force-notify')?.checked ?? false;
+    const selected = [...document.querySelectorAll('.script-checkbox:checked')].map(el => parseInt(el.value));
+
+    Toast.info('Gerando bundle...');
+
+    try {
+        const res = await API.post('generate-bundle', {
+            organization_id: currentOrgId,
+            scripts: selected,
+            description: '',
+            force_notify: forceNotify,
+            reinstall_mode: mode
+        });
+
+        if (!res.success) {
+            Toast.error(res.error || 'Erro ao gerar bundle');
+            return;
+        }
+
+        const bundleId = res.data?.bundle_id ?? res.bundle_id;
+        if (!bundleId) {
+            Toast.error('Resposta do bundle invalida');
+            return;
+        }
+
+        window.location.href = `/api/?action=download-bundle&bundle_id=${bundleId}&mode=${encodeURIComponent(mode)}`;
+    } catch (error) {
+        Toast.error('Nao foi possivel gerar o bundle');
+    }
+}
+window.gerarEbaixarBundle = gerarEbaixarBundle;
+
+async function copyBundleCommand() {
+    if (!currentOrgId) {
+        Toast.warning('Selecione uma OM primeiro');
+        return;
+    }
+
+    try {
+        const res = await API.get('bundles', { org_id: currentOrgId, limit: 1 });
+        const bundleList = Array.isArray(res.data) ? res.data : (res.data && Array.isArray(res.data.bundles) ? res.data.bundles : []);
+        const bundle = bundleList[0];
+
+        if (!bundle) {
+            Toast.warning('Nenhum bundle gerado ainda. Clique em "Instalação automática" primeiro.');
+            return;
+        }
+
+        const url = `${window.location.origin}/api/?action=download-bundle&bundle_id=${encodeURIComponent(bundle.id)}&mode=auto`;
+        const cmd = [
+            `sudo sh -c 'wget --header="Authorization: Bearer $(cat /etc/seeder/station_token)" -O /tmp/bundle.sh "$1"' sh '${url}' &&`,
+            '    sudo bash /tmp/bundle.sh'
+        ].join(` ${String.fromCharCode(92)}\n`);
+
+
+        try {
+            await navigator.clipboard.writeText(cmd);
+            Toast.success('Comando copiado! Cole no terminal da estação.');
+        } catch (err) {
+            window.prompt('Copie manualmente:', cmd);
+        }
+    } catch (error) {
+        Toast.error('Nao foi possivel preparar o comando de download');
+    }
+}
+window.copyBundleCommand = copyBundleCommand;
 
 // ============ BUNDLES GALLERY ============
 
@@ -3260,8 +3331,8 @@ async function loadBundles(orgId) {
 }
 window.loadBundles = loadBundles;
 
-function downloadBundle(bundleId) {
-    window.location.href = `/api/?action=bundle-by-id&id=${bundleId}`;
+function downloadBundle(bundleId, mode = 'auto') {
+    window.location.href = `/api/?action=download-bundle&bundle_id=${bundleId}&mode=${encodeURIComponent(mode)}`;
 }
 window.downloadBundle = downloadBundle;
 
@@ -3724,7 +3795,17 @@ function setupEventListeners() {
         });
     });
     document.getElementById('btn-save-vars')?.addEventListener('click', saveVariables);
-    document.getElementById('btn-generate-bundle')?.addEventListener('click', generateBundle);
+    document.getElementById('btn-generate-bundle')?.addEventListener('click', () => gerarEbaixarBundle(document.getElementById('reinstall-mode')?.value || 'auto'));
+    document.getElementById('btn-copy-command')?.addEventListener('click', copyBundleCommand);
+    document.querySelectorAll('.bundle-action').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
+            event.preventDefault();
+            if (btn.disabled) return;
+            const mode = btn.dataset.mode;
+            if (!mode) return;
+            gerarEbaixarBundle(mode);
+        });
+    });
 
     document.getElementById('btn-new-user')?.addEventListener('click', () => {
         document.getElementById('user-form')?.reset();
