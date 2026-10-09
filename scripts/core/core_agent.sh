@@ -126,6 +126,17 @@ chmod 644 /etc/cron.d/seeder-agent
 log_nivel INFO "Cron configurado: /etc/cron.d/seeder-agent"
 
 # ============================================================
+# Gravar acronimo da OM para auto-recuperacao de token
+# ============================================================
+# O agente usa esse arquivo para saber qual --org passar se o
+# token local for invalido/expirado (HTTP 401 do servidor).
+# Sem isso, o tecnico teria que apagar o token manualmente.
+mkdir -p /etc/seeder
+echo "$OM_ACRONYM" > /etc/seeder/org.txt
+chmod 644 /etc/seeder/org.txt
+log_nivel INFO "Acronimo da OM gravado em /etc/seeder/org.txt"
+
+# ============================================================
 # Primeiro check-in (em background, sem bloquear o bundle)
 # ============================================================
 log_nivel INFO "Executando primeiro check-in em background..."
