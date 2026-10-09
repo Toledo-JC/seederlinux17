@@ -3261,31 +3261,39 @@ function renderBundleRow(bundle, isLatest) {
     const badge = isLatest
         ? '<span class="badge badge-primary ml-2">Atual</span>'
         : '<span class="badge badge-secondary ml-2">Anterior</span>';
-    const modeButtons = [
-        ['auto', 'Auto', 'Detecta o que já está instalado e aplica apenas o que falta.'],
+    const radioOptions = [
+        ['auto', 'Auto', 'Aplica as etapas pendentes e pula as já concluídas.'],
         ['force', 'Forçar', 'Executa novamente todas as etapas, inclusive as já concluídas.'],
-        ['repair', 'Reparar', 'Valida as configurações e corrige divergências.'],
+        ['repair', 'Reparar', 'Valida a configuração e corrige divergências.'],
         ['diagnostic', 'Verificar', 'Verifica o estado da estação sem aplicar alterações.']
-    ].map(([mode, label, help]) => {
-        const available = supportedModes.includes(mode);
-        const title = available ? help : 'Esta versão do bundle não suporta esse modo.';
-        return `<button type="button" class="btn btn-sm bundle-mode" data-mode="${mode}" title="${title}" aria-label="${label}: ${title}" ${available ? '' : 'disabled'}>${label} ⓘ</button>`;
-    }).join('');
+    ];
+    const modeRadios = radioOptions
+        .filter(([mode]) => supportedModes.includes(mode))
+        .map(([mode, label, help]) => `
+            <label class="inline-flex items-center gap-1 mr-3" title="${help}">
+                <input type="radio" name="bundle-mode-${bundleId}" value="${mode}">
+                <span>${label}</span>
+            </label>`)
+        .join('');
 
     return `
         <div class="bundle-row border-b border-slate-700/50 py-4" data-bundle-id="${bundleId}">
-            <div class="flex items-start justify-between gap-4 flex-wrap">
-                <div>
+            <div class="flex items-center justify-between gap-4 flex-wrap">
+                <div class="flex-1 min-w-60">
                     <strong>${Utils.escapeHtml(bundle.filename || `Bundle ${bundleId}`)}</strong>${badge}
                     <div class="text-sm text-slate-400 mt-1">
                         ${dateText} · Scripts: ${Number(bundle.scripts_count) || 0} · Tamanho: ${sizeKb} KB · Serial: ${serial}
                     </div>
                     ${description}
                 </div>
-                <div class="flex gap-2 flex-wrap">
-                    ${modeButtons}
-                    <button type="button" class="btn btn-sm btn-outline bundle-ssh" title="Copia o comando autenticado para baixar e executar na estação." aria-label="Copiar comando SSH">SSH ⓘ</button>
-                    <button type="button" class="btn btn-sm btn-secondary bundle-download-raw" title="Baixar este bundle no modo automático.">Baixar (Auto)</button>
+                <div class="flex items-center gap-2 flex-wrap">
+                    <fieldset class="bundle-modes flex items-center flex-wrap">
+                        <legend class="sr-only">Modo de instalação</legend>
+                        <span class="text-sm text-slate-400 mr-2">Modo:</span>
+                        ${modeRadios}
+                    </fieldset>
+                    <button type="button" class="btn btn-sm btn-primary bundle-download">Download</button>
+                    <button type="button" class="btn btn-sm btn-outline bundle-copy" title="Copiar comando autenticado para o terminal" aria-label="Copiar comando para terminal">📋</button>
                     <button type="button" class="btn btn-sm btn-secondary bundle-toggle" title="${isActive ? 'Desativar este bundle' : 'Ativar este bundle'}">${isActive ? 'Desativar' : 'Ativar'}</button>
                     <button type="button" class="btn btn-sm btn-secondary bundle-edit">Editar</button>
                     <button type="button" class="btn btn-sm btn-danger bundle-delete">Excluir</button>
@@ -3297,26 +3305,37 @@ function renderBundleRow(bundle, isLatest) {
 function bindBundleActions(container) {
     container.querySelectorAll('.bundle-row').forEach((row) => {
         const bundleId = Number.parseInt(row.dataset.bundleId, 10);
-        row.querySelectorAll('.bundle-mode').forEach((button) => {
-            button.addEventListener('click', () => {
-                if (!button.disabled) downloadBundle(bundleId, button.dataset.mode);
-            });
+        const getSelectedMode = () => row.querySelector(`input[name="bundle-mode-${bundleId}"]:checked`)?.value || null;
+
+        row.querySelector('.bundle-download')?.addEventListener('click', () => {
+            const mode = getSelectedMode();
+            if (!mode) {
+                Toast.warning('Selecione um modo antes de baixar.');
+                return;
+            }
+            downloadBundle(bundleId, mode);
         });
-        row.querySelector('.bundle-ssh')?.addEventListener('click', () => copySshCommand(bundleId));
-        row.querySelector('.bundle-download-raw')?.addEventListener('click', () => downloadBundle(bundleId));
+        row.querySelector('.bundle-copy')?.addEventListener('click', () => {
+            const mode = getSelectedMode();
+            if (!mode) {
+                Toast.warning('Selecione um modo antes de copiar o comando.');
+                return;
+            }
+            copySshCommand(bundleId, mode);
+        });
         row.querySelector('.bundle-toggle')?.addEventListener('click', () => toggleBundleActive(bundleId));
         row.querySelector('.bundle-edit')?.addEventListener('click', () => editBundleDesc(bundleId));
         row.querySelector('.bundle-delete')?.addEventListener('click', () => deleteBundle(bundleId));
     });
 }
 
-function downloadBundle(bundleId, mode = 'auto') {
+function downloadBundle(bundleId, mode) {
     window.location.href = `/api/?action=download-bundle&bundle_id=${bundleId}&mode=${encodeURIComponent(mode)}`;
 }
 window.downloadBundle = downloadBundle;
 
-async function copySshCommand(bundleId) {
-    const url = `${window.location.origin}/api/?action=download-bundle&bundle_id=${encodeURIComponent(bundleId)}&mode=auto`;
+async function copySshCommand(bundleId, mode) {
+    const url = `${window.location.origin}/api/?action=download-bundle&bundle_id=${encodeURIComponent(bundleId)}&mode=${encodeURIComponent(mode)}`;
     const cmd = [
         `sudo sh -c 'wget --header="Authorization: Bearer $(cat /etc/seeder/station_token)" -O /tmp/bundle.sh "$1"' sh '${url}' &&`,
         '    sudo bash /tmp/bundle.sh'
