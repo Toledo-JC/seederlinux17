@@ -392,64 +392,31 @@
                             <div class="card mb-6">
                                 <div class="card-header">
                                     <h3 class="card-title">Bundle da OM</h3>
-                                    <p class="card-subtitle">Pacote oficial de provisionamento</p>
+                                    <p class="card-subtitle">Gerar um novo pacote de provisionamento</p>
                                 </div>
                                 <div class="card-body">
-                                    <p class="text-slate-400 mb-4">O que você deseja fazer?</p>
-
-                                    <div class="space-y-3">
-                                        <button type="button" class="bundle-action btn btn-primary btn-lg w-full text-left" data-mode="auto">
-                                            <span class="block font-semibold">Instalar ou atualizar estação</span>
-                                            <small class="block text-xs mt-1 opacity-80">Recomendado. Aplica a configuração pendente e pula etapas já concluídas.</small>
+                                    <p class="text-slate-400 mb-4">Escolha como gerar o novo bundle:</p>
+                                    <div class="flex gap-2 flex-wrap">
+                                        <button type="button" class="btn btn-secondary" id="btn-generate-bundle">
+                                            Gerar bundle (sem notificar)
                                         </button>
-
-                                        <button type="button" class="bundle-action btn btn-secondary btn-lg w-full text-left" data-mode="force">
-                                            <span class="block font-semibold">Reinstalar estação</span>
-                                            <small class="block text-xs mt-1 opacity-80">Executa novamente todas as etapas, inclusive as já concluídas.</small>
-                                        </button>
-
-                                        <button type="button" class="bundle-action btn btn-secondary btn-lg w-full text-left" data-mode="repair" disabled>
-                                            <span class="block font-semibold">Reparar configuração</span>
-                                            <small class="block text-xs mt-1 opacity-80">Corrige divergências na estação. (em breve)</small>
-                                        </button>
-
-                                        <button type="button" class="bundle-action btn btn-secondary btn-lg w-full text-left" data-mode="diagnostic" disabled>
-                                            <span class="block font-semibold">Verificar estação</span>
-                                            <small class="block text-xs mt-1 opacity-80">Executa verificações sem alterar a estação. (em breve)</small>
+                                        <button type="button" class="btn btn-primary" id="btn-generate-bundle-notify">
+                                            Gerar bundle e notificar estações
                                         </button>
                                     </div>
-
-                                    <hr class="my-5 border-slate-700">
-
-                                    <p class="text-slate-400 mb-2">Execução via SSH</p>
-                                    <button id="btn-copy-command" type="button" class="btn btn-outline btn-lg w-full sm:w-auto">Copiar comando de instalação</button>
-                                    <small class="block text-slate-400 mt-2">Cole no terminal da estação. O comando usa o token local para autenticar o download.</small>
-
-                                    <div class="form-group mt-5 mb-0">
-                                        <label class="flex items-center gap-2 cursor-pointer">
-                                            <input type="checkbox" id="force-notify" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-600 focus:ring-blue-500">
-                                            <span class="text-slate-300 font-medium">Forçar atualização das estações</span>
-                                        </label>
-                                        <p class="text-sm text-slate-500 mt-1 ml-6">Incrementa o serial de configuração e notifica as estações.</p>
-                                    </div>
+                                    <p class="text-sm text-slate-500 mt-3">
+                                        <strong>Sem notificar:</strong> gera o pacote sem avançar o serial da OM.
+                                        As estações continuam usando a configuração atual.
+                                        <br>
+                                        <strong>Notificar:</strong> gera o pacote e avança o serial. Na próxima verificação,
+                                        as estações poderão baixar a nova configuração.
+                                    </p>
                                 </div>
                             </div>
                             <div class="card">
                                 <div class="card-header"><h3 class="card-title">Bundles Gerados</h3></div>
-                                <div class="card-body table-wrapper">
-                                    <table>
-                                        <thead><tr>
-                                            <th>Data</th>
-                                            <th>Descricao</th>
-                                            <th>Scripts</th>
-                                            <th>Tamanho</th>
-                                            <th>Status</th>
-                                            <th class="text-right">Acoes</th>
-                                        </tr></thead>
-                                        <tbody id="bundles-tbody">
-                                            <tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Selecione uma OM</td></tr>
-                                        </tbody>
-                                    </table>
+                                <div class="card-body" id="bundles-list">
+                                    <p class="text-slate-400">Selecione uma OM</p>
                                 </div>
                             </div>
                         </div>

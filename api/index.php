@@ -3018,6 +3018,7 @@ BUNDLE_HEADER;
     $bundle .= "# ============================================\n\n";
     $bundle .= "export NON_INTERACTIVE=true\n";
     $bundle .= "export REINSTALL_MODE='" . str_replace("'", "'\\''", $REINSTALL_MODE) . "'\n";
+    $bundle .= "export SUPPORTED_MODES='auto,force'\n";
     foreach ($vars as $v) {
         if (in_array($v['type'], $skipExportTypes, true)) continue;
         if (in_array($v['name'], $skipExportNames, true)) continue;
@@ -3270,6 +3271,14 @@ function handleDownloadBundle($inputOrId) {
         }
     }
 
+    $supportedModes = getBundleSupportedModes($bundle['content']);
+    if (!in_array($mode, $supportedModes, true)) {
+        jsonError(
+            "Modo '$mode' nao suportado por esta versao do bundle. Modos suportados: " . implode(', ', $supportedModes),
+            400
+        );
+    }
+
     $content = $bundle['content'];
     if (preg_match('/^export REINSTALL_MODE=.*$/m', $content)) {
         $content = preg_replace('/^export REINSTALL_MODE=.*$/m', "export REINSTALL_MODE='" . $mode . "'", $content);
@@ -3286,6 +3295,19 @@ function handleDownloadBundle($inputOrId) {
     header('X-Seeder-Bundle-Mode: ' . $mode);
     echo $content;
     exit;
+}
+
+function getBundleSupportedModes($content) {
+    $supportedModes = ['auto', 'force'];
+    if (preg_match("/^export SUPPORTED_MODES='([^']*)'$/m", $content, $matches)) {
+        $declaredModes = array_map('trim', explode(',', strtolower($matches[1])));
+        $supportedModes = array_values(array_intersect(
+            ['auto', 'force', 'repair', 'diagnostic'],
+            $declaredModes
+        ));
+    }
+
+    return $supportedModes ?: ['auto', 'force'];
 }
 
 // USERS
@@ -4144,13 +4166,23 @@ function handleListBundles($orgId) {
         $total = $countResult['total'] ?? 0;
 
         $bundles = Database::fetchAll(
-            "SELECT id, filename, description, scripts_count, generated_at, is_active, octet_length(content) as content_size
+            "SELECT id, filename, description, scripts_count, generated_at, is_active,
+                    octet_length(content) as content_size, content
              FROM deploy_bundles
              WHERE organization_id = ?
              ORDER BY generated_at DESC
              LIMIT ? OFFSET ?",
             [$orgId, $limit, $offset]
         );
+
+        foreach ($bundles as &$bundle) {
+            $bundle['supported_modes'] = getBundleSupportedModes($bundle['content']);
+            $bundle['serial'] = preg_match('/^# Serial: (.+)$/m', $bundle['content'], $matches)
+                ? trim($matches[1])
+                : null;
+            unset($bundle['content']);
+        }
+        unset($bundle);
         
         $metadata = [
             'total' => $total,

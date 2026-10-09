@@ -3177,164 +3177,158 @@ window.updateScript = updateScript;
 
 // ============ BUNDLE ============
 
-async function generateBundle(mode = null) {
-    if (!currentOrgId) { Toast.error('Selecione uma organizacao'); return; }
-
-    const selected = [...document.querySelectorAll('.script-checkbox:checked')].map(el => parseInt(el.value));
-
-    const description = prompt('Descricao do bundle (opcional):', '');
-    if (description === null) return;
-
-    const forceNotify = document.getElementById('force-notify')?.checked ?? false;
-    const reinstallMode = mode || document.getElementById('reinstall-mode')?.value || 'auto';
-
-    Toast.info('Gerando bundle...');
-
-    try {
-        const res = await API.post('generate-bundle', {
-            organization_id: currentOrgId,
-            scripts: selected,
-            description: description.trim(),
-            force_notify: forceNotify,
-            reinstall_mode: reinstallMode
-        });
-        if (res.success) {
-            Toast.success('Bundle gerado com sucesso');
-            loadBundles(currentOrgId);
-        } else {
-            Toast.error(res.error || 'Erro ao gerar bundle');
-        }
-    } catch (error) {
-        Toast.error('Nao foi possivel gerar o bundle');
-    }
-}
-window.generateBundle = generateBundle;
-
-async function gerarEbaixarBundle(mode) {
+async function generateBundle(notify) {
     if (!currentOrgId) {
-        Toast.error('Selecione uma OM primeiro');
+        Toast.warning('Selecione uma OM primeiro');
         return;
     }
 
-    const forceNotify = document.getElementById('force-notify')?.checked ?? false;
-    const selected = [...document.querySelectorAll('.script-checkbox:checked')].map(el => parseInt(el.value));
-
-    Toast.info('Gerando bundle...');
+    const selected = [...document.querySelectorAll('.script-checkbox:checked')]
+        .map((element) => Number.parseInt(element.value, 10))
+        .filter(Number.isFinite);
 
     try {
         const res = await API.post('generate-bundle', {
             organization_id: currentOrgId,
             scripts: selected,
             description: '',
-            force_notify: forceNotify,
-            reinstall_mode: mode
+            force_notify: notify,
+            reinstall_mode: 'auto'
         });
-
         if (!res.success) {
             Toast.error(res.error || 'Erro ao gerar bundle');
             return;
         }
 
-        const bundleId = res.data?.bundle_id ?? res.bundle_id;
-        if (!bundleId) {
-            Toast.error('Resposta do bundle invalida');
-            return;
-        }
-
-        window.location.href = `/api/?action=download-bundle&bundle_id=${bundleId}&mode=${encodeURIComponent(mode)}`;
+        Toast.success(notify
+            ? 'Bundle gerado e estações serão notificadas.'
+            : 'Bundle gerado sem notificar as estações.');
+        await loadBundles(currentOrgId);
     } catch (error) {
-        Toast.error('Nao foi possivel gerar o bundle');
+        Toast.error(error.message || 'Nao foi possivel gerar o bundle');
     }
 }
-window.gerarEbaixarBundle = gerarEbaixarBundle;
-
-async function copyBundleCommand() {
-    if (!currentOrgId) {
-        Toast.warning('Selecione uma OM primeiro');
-        return;
-    }
-
-    try {
-        const res = await API.get('bundles', { org_id: currentOrgId, limit: 1 });
-        const bundleList = Array.isArray(res.data) ? res.data : (res.data && Array.isArray(res.data.bundles) ? res.data.bundles : []);
-        const bundle = bundleList[0];
-
-        if (!bundle) {
-            Toast.warning('Nenhum bundle gerado ainda. Clique em "Instalação automática" primeiro.');
-            return;
-        }
-
-        const url = `${window.location.origin}/api/?action=download-bundle&bundle_id=${encodeURIComponent(bundle.id)}&mode=auto`;
-        const cmd = [
-            `sudo sh -c 'wget --header="Authorization: Bearer $(cat /etc/seeder/station_token)" -O /tmp/bundle.sh "$1"' sh '${url}' &&`,
-            '    sudo bash /tmp/bundle.sh'
-        ].join(` ${String.fromCharCode(92)}\n`);
-
-
-        try {
-            await navigator.clipboard.writeText(cmd);
-            Toast.success('Comando copiado! Cole no terminal da estação.');
-        } catch (err) {
-            window.prompt('Copie manualmente:', cmd);
-        }
-    } catch (error) {
-        Toast.error('Nao foi possivel preparar o comando de download');
-    }
-}
-window.copyBundleCommand = copyBundleCommand;
+window.generateBundle = generateBundle;
 
 // ============ BUNDLES GALLERY ============
 
-async function loadBundles(orgId) {
+async function loadBundles(orgId = currentOrgId) {
     if (!orgId) return;
-    const el = document.getElementById('bundles-tbody');
-    if (!el) return;
+    const container = document.getElementById('bundles-list');
+    if (!container) return;
 
-    el.innerHTML = '<tr><td colspan="6" class="px-4 py-8"><div class="skeleton-table-row"><span class="skeleton-block short"></span><span class="skeleton-block"></span><span class="skeleton-block"></span><span class="skeleton-block"></span><span class="skeleton-block short"></span></div></td></tr>';
+    container.innerHTML = '<p class="text-slate-400">Carregando bundles...</p>';
+    try {
+        const res = await API.get('bundles', { org_id: orgId, limit: 20 });
+        if (!res.success) {
+            container.innerHTML = '<p class="text-rose-400">Erro ao carregar bundles.</p>';
+            return;
+        }
 
-    const res = await API.get('bundles', { org_id: orgId });
-    if (!res.success) { el.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-rose-400">Erro ao carregar</td></tr>'; return; }
+        const bundles = res.data?.bundles || [];
+        if (!bundles.length) {
+            container.innerHTML = '<p class="text-slate-400">Nenhum bundle gerado ainda.</p>';
+            return;
+        }
 
-    const bundleList = Array.isArray(res.data) ? res.data : (res.data && Array.isArray(res.data.bundles) ? res.data.bundles : []);
-
-    if (!bundleList || bundleList.length === 0) {
-        el.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-slate-400">Nenhum bundle gerado ainda</td></tr>';
-        return;
+        container.innerHTML = bundles.map((bundle, index) => renderBundleRow(bundle, index === 0)).join('');
+        bindBundleActions(container);
+    } catch (error) {
+        container.innerHTML = '<p class="text-rose-400">Erro ao carregar bundles.</p>';
+        Toast.error(error.message || 'Nao foi possivel carregar os bundles');
     }
-
-    el.innerHTML = bundleList.map(b => {
-        const date = new Date(b.generated_at);
-        const dateStr = date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' }) +
-            ' ' + date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-        const sizeKb = b.content_size ? Math.round(b.content_size / 1024) : '-';
-        const activeBadge = b.is_active
-            ? '<span class="badge badge-success">Ativo</span>'
-            : '<span class="badge badge-secondary">Inativo</span>';
-        const descText = b.description
-            ? `<span title="${Utils.escapeHtml(b.description)}">${Utils.escapeHtml(b.description.length > 40 ? b.description.substring(0, 40) + '...' : b.description)}</span>`
-            : '<span class="text-slate-500 italic">—</span>';
-        return `
-            <tr class="border-b border-slate-700/50" data-testid="bundle-row-${b.id}">
-                <td class="px-4 py-3 text-sm text-slate-300">${dateStr}</td>
-                <td class="px-4 py-3 text-sm text-slate-300">${descText}</td>
-                <td class="px-4 py-3 text-sm text-slate-400">${b.scripts_count || 0}</td>
-                <td class="px-4 py-3 text-sm text-slate-400">${sizeKb} KB</td>
-                <td class="px-4 py-3">${activeBadge}</td>
-                <td class="px-4 py-3 text-right">
-                    <button data-testid="bundle-download-${b.id}" onclick="downloadBundle(${b.id})" class="text-blue-400 hover:text-blue-300 text-sm mr-2">Download</button>
-                    <button data-testid="bundle-toggle-${b.id}" onclick="toggleBundleActive(${b.id})" class="text-amber-400 hover:text-amber-300 text-sm">${b.is_active ? 'Desativar' : 'Ativar'}</button>
-                    <button data-testid="bundle-edit-${b.id}" onclick="editBundleDesc(${b.id})" class="text-blue-400 hover:text-blue-300 text-sm ml-2">Editar</button>
-<button data-testid="bundle-delete-${b.id}" onclick="deleteBundle(${b.id})" class="text-red-400 hover:text-red-300 text-sm ml-2">Excluir</button>
-                </td>
-            </tr>`;
-    }).join('');
 }
 window.loadBundles = loadBundles;
+
+function renderBundleRow(bundle, isLatest) {
+    const bundleId = Number.parseInt(bundle.id, 10);
+    const date = new Date(bundle.generated_at);
+    const dateText = Number.isNaN(date.getTime())
+        ? 'Data indisponível'
+        : date.toLocaleString('pt-BR', {
+            day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+        });
+    const sizeKb = Math.round((Number(bundle.content_size) || 0) / 1024);
+    const serial = bundle.serial ? Utils.escapeHtml(String(bundle.serial)) : '—';
+    const description = bundle.description
+        ? `<div class="text-sm text-slate-400 mt-1">${Utils.escapeHtml(bundle.description)}</div>`
+        : '';
+    const supportedModes = Array.isArray(bundle.supported_modes)
+        ? bundle.supported_modes
+        : ['auto', 'force'];
+    const isActive = bundle.is_active === true || bundle.is_active === 't' || bundle.is_active === 'true';
+    const badge = isLatest
+        ? '<span class="badge badge-primary ml-2">Atual</span>'
+        : '<span class="badge badge-secondary ml-2">Anterior</span>';
+    const modeButtons = [
+        ['auto', 'Auto', 'Detecta o que já está instalado e aplica apenas o que falta.'],
+        ['force', 'Forçar', 'Executa novamente todas as etapas, inclusive as já concluídas.'],
+        ['repair', 'Reparar', 'Valida as configurações e corrige divergências.'],
+        ['diagnostic', 'Verificar', 'Verifica o estado da estação sem aplicar alterações.']
+    ].map(([mode, label, help]) => {
+        const available = supportedModes.includes(mode);
+        const title = available ? help : 'Esta versão do bundle não suporta esse modo.';
+        return `<button type="button" class="btn btn-sm bundle-mode" data-mode="${mode}" title="${title}" aria-label="${label}: ${title}" ${available ? '' : 'disabled'}>${label} ⓘ</button>`;
+    }).join('');
+
+    return `
+        <div class="bundle-row border-b border-slate-700/50 py-4" data-bundle-id="${bundleId}">
+            <div class="flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                    <strong>${Utils.escapeHtml(bundle.filename || `Bundle ${bundleId}`)}</strong>${badge}
+                    <div class="text-sm text-slate-400 mt-1">
+                        ${dateText} · Scripts: ${Number(bundle.scripts_count) || 0} · Tamanho: ${sizeKb} KB · Serial: ${serial}
+                    </div>
+                    ${description}
+                </div>
+                <div class="flex gap-2 flex-wrap">
+                    ${modeButtons}
+                    <button type="button" class="btn btn-sm btn-outline bundle-ssh" title="Copia o comando autenticado para baixar e executar na estação." aria-label="Copiar comando SSH">SSH ⓘ</button>
+                    <button type="button" class="btn btn-sm btn-secondary bundle-download-raw" title="Baixar este bundle no modo automático.">Baixar (Auto)</button>
+                    <button type="button" class="btn btn-sm btn-secondary bundle-toggle" title="${isActive ? 'Desativar este bundle' : 'Ativar este bundle'}">${isActive ? 'Desativar' : 'Ativar'}</button>
+                    <button type="button" class="btn btn-sm btn-secondary bundle-edit">Editar</button>
+                    <button type="button" class="btn btn-sm btn-danger bundle-delete">Excluir</button>
+                </div>
+            </div>
+        </div>`;
+}
+
+function bindBundleActions(container) {
+    container.querySelectorAll('.bundle-row').forEach((row) => {
+        const bundleId = Number.parseInt(row.dataset.bundleId, 10);
+        row.querySelectorAll('.bundle-mode').forEach((button) => {
+            button.addEventListener('click', () => {
+                if (!button.disabled) downloadBundle(bundleId, button.dataset.mode);
+            });
+        });
+        row.querySelector('.bundle-ssh')?.addEventListener('click', () => copySshCommand(bundleId));
+        row.querySelector('.bundle-download-raw')?.addEventListener('click', () => downloadBundle(bundleId));
+        row.querySelector('.bundle-toggle')?.addEventListener('click', () => toggleBundleActive(bundleId));
+        row.querySelector('.bundle-edit')?.addEventListener('click', () => editBundleDesc(bundleId));
+        row.querySelector('.bundle-delete')?.addEventListener('click', () => deleteBundle(bundleId));
+    });
+}
 
 function downloadBundle(bundleId, mode = 'auto') {
     window.location.href = `/api/?action=download-bundle&bundle_id=${bundleId}&mode=${encodeURIComponent(mode)}`;
 }
 window.downloadBundle = downloadBundle;
+
+async function copySshCommand(bundleId) {
+    const url = `${window.location.origin}/api/?action=download-bundle&bundle_id=${encodeURIComponent(bundleId)}&mode=auto`;
+    const cmd = [
+        `sudo sh -c 'wget --header="Authorization: Bearer $(cat /etc/seeder/station_token)" -O /tmp/bundle.sh "$1"' sh '${url}' &&`,
+        '    sudo bash /tmp/bundle.sh'
+    ].join(` ${String.fromCharCode(92)}\n`);
+
+    try {
+        await navigator.clipboard.writeText(cmd);
+        Toast.success('Comando copiado! Cole no terminal da estação.');
+    } catch (error) {
+        window.prompt('Copie manualmente:', cmd);
+    }
+}
 
 async function toggleBundleActive(bundleId) {
     const res = await API.post('bundle-toggle', { bundle_id: bundleId });
@@ -3795,17 +3789,8 @@ function setupEventListeners() {
         });
     });
     document.getElementById('btn-save-vars')?.addEventListener('click', saveVariables);
-    document.getElementById('btn-generate-bundle')?.addEventListener('click', () => gerarEbaixarBundle(document.getElementById('reinstall-mode')?.value || 'auto'));
-    document.getElementById('btn-copy-command')?.addEventListener('click', copyBundleCommand);
-    document.querySelectorAll('.bundle-action').forEach((btn) => {
-        btn.addEventListener('click', (event) => {
-            event.preventDefault();
-            if (btn.disabled) return;
-            const mode = btn.dataset.mode;
-            if (!mode) return;
-            gerarEbaixarBundle(mode);
-        });
-    });
+    document.getElementById('btn-generate-bundle')?.addEventListener('click', () => generateBundle(false));
+    document.getElementById('btn-generate-bundle-notify')?.addEventListener('click', () => generateBundle(true));
 
     document.getElementById('btn-new-user')?.addEventListener('click', () => {
         document.getElementById('user-form')?.reset();
