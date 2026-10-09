@@ -322,18 +322,27 @@ check_keytab() {
 }
 
 check_machine_account() {
-    if net ads testjoin > /dev/null 2>&1; then
-        echo "Conta AD........ OK (verificada)"
-        return 0
-    else
-        if adcli testjoin --domain="$DOMINIO" > /dev/null 2>&1; then
-            echo "Conta AD........ OK (adcli)"
+    if systemctl is-active --quiet winbind 2>/dev/null; then
+        if net ads testjoin > /dev/null 2>&1; then
+            echo "Conta AD........ OK (net ads testjoin / winbind)"
             return 0
-        else
-            echo "Conta AD........ NÃO (não verificada)"
-            return 1
         fi
     fi
+
+    if systemctl is-active --quiet sssd 2>/dev/null; then
+        if realm list 2>/dev/null | grep -q "$DOMINIO" && klist -s 2>/dev/null; then
+            echo "Conta AD........ OK (sssd + realm + klist)"
+            return 0
+        fi
+    fi
+
+    if adcli testjoin --domain="$DOMINIO" > /dev/null 2>&1; then
+        echo "Conta AD........ OK (adcli)"
+        return 0
+    fi
+
+    echo "Conta AD........ NÃO (não verificada)"
+    return 1
 }
 
 check_time_sync() {
