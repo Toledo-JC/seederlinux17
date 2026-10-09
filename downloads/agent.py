@@ -69,6 +69,7 @@ from urllib.error import URLError, HTTPError
 CONFIG_DIR = "/etc/seeder"
 CONFIG_FILE = os.path.join(CONFIG_DIR, "agent.conf")
 TOKEN_FILE = os.path.join(CONFIG_DIR, "station_token")
+ORG_FILE = os.path.join(CONFIG_DIR, "org.txt")
 LOG_FILE = "/var/log/seeder/agent.log"
 BUNDLE_CACHE_DIR = "/var/cache/seeder"
 BUNDLE_FILE = os.path.join(BUNDLE_CACHE_DIR, "bundle.sh")
@@ -204,6 +205,20 @@ def save_token(token):
         log("Token da estação salvo com sucesso")
     except (IOError, PermissionError) as e:
         log(f"Erro ao salvar token: {e}", "ERROR")
+
+
+def read_org_hint():
+    """Le o acronimo da OM salvo pelo core_agent.sh no primeiro check-in.
+
+    Usado quando o token local e' invalido (servidor responde 401):
+    o agente apaga o token e o proximo ciclo do cron faz o primeiro
+    check-in novamente usando esse --org.
+    """
+    try:
+        with open(ORG_FILE) as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return None
 
 
 def load_current_serial():
@@ -503,6 +518,15 @@ def checkin(server_url, payload, no_check_cert=False):
             body = response.read().decode("utf-8")
             return json.loads(body)
     except HTTPError as e:
+        if e.code == 401:
+            log("Token local invalido/expirado (HTTP 401). "
+                "Apagando token — proximo ciclo re-registra.", "WARNING")
+            try:
+                os.remove(TOKEN_FILE)
+                log(f"Token local removido: {TOKEN_FILE}")
+            except FileNotFoundError:
+                pass
+            return None
         log(f"Erro HTTP {e.code}: {e.reason}", "ERROR")
         try:
             error_body = e.read().decode("utf-8")
@@ -666,9 +690,14 @@ def run_agent(args):
     is_first_run = station_token is None
 
     if is_first_run and not args.org:
-        log("ERRO: Primeiro check-in requer --org <ACRONIMO>", "ERROR")
-        log("Exemplo: sudo seeder-agent --org COMARA", "ERROR")
-        return 1
+        org_hint = read_org_hint()
+        if org_hint:
+            log(f"Sem --org mas /etc/seeder/org.txt encontrado: {org_hint}")
+            args.org = org_hint
+        else:
+            log("ERRO: Primeiro check-in requer --org <ACRONIMO>", "ERROR")
+            log("Exemplo: sudo seeder-agent --org COMARA", "ERROR")
+            return 1
 
     current_serial = load_current_serial()
     log(f"Serial aplicado localmente: {current_serial}")

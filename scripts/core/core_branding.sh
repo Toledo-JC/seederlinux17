@@ -65,11 +65,18 @@ LAST_WALLPAPER_URL=""
 LAST_WALLPAPER_LOGIN_URL=""
 LAST_LOGO_URL=""
 LAST_GREETER_URL=""
+LAST_SERIAL=""
 
 if [ "$REINSTALL_MODE" = "auto" ] && [ -f "$STATE_ASSETS" ]; then
     # shellcheck disable=SC1090
     . "$STATE_ASSETS"
 fi
+
+if [ -z "${SERIAL_APLICADO:-}" ] && [ -f /etc/seederlinux/config.env ]; then
+    # shellcheck disable=SC1090
+    . /etc/seederlinux/config.env
+fi
+SERIAL_ATUAL="${SERIAL_APLICADO:-0}"
 
 # ============================================================
 # Prefixar URLs de assets com SEEDER_SERVER quando relativas
@@ -218,9 +225,10 @@ _baixar_ativo() {
 log_nivel INFO "Baixando wallpaper..."
 if [ -n "$WALLPAPER_URL" ] && [ "$WALLPAPER_URL" != "" ]; then
     if [ "$REINSTALL_MODE" = "auto" ] \
+       && [ "$SERIAL_ATUAL" = "$LAST_SERIAL" ] \
        && [ "$WALLPAPER_URL" = "$LAST_WALLPAPER_URL" ] \
        && [ -s /usr/share/backgrounds/seederlinux/wallpaper.jpg ]; then
-        log_nivel INFO "wallpaper inalterado - pulando download (auto)"
+        log_nivel INFO "wallpaper inalterado (serial $SERIAL_ATUAL) - pulando (auto)"
     else
         _baixar_ativo "$WALLPAPER_URL" /usr/share/backgrounds/seederlinux/wallpaper.jpg
     fi
@@ -234,9 +242,10 @@ fi
 log_nivel INFO "Baixando wallpaper de login..."
 if [ -n "$WALLPAPER_LOGIN_URL" ] && [ "$WALLPAPER_LOGIN_URL" != "" ]; then
     if [ "$REINSTALL_MODE" = "auto" ] \
+       && [ "$SERIAL_ATUAL" = "$LAST_SERIAL" ] \
        && [ "$WALLPAPER_LOGIN_URL" = "$LAST_WALLPAPER_LOGIN_URL" ] \
        && [ -s /usr/share/backgrounds/seederlinux/wallpaper-login.jpg ]; then
-        log_nivel INFO "wallpaper de login inalterado - pulando download (auto)"
+        log_nivel INFO "wallpaper de login inalterado (serial $SERIAL_ATUAL) - pulando (auto)"
     else
         _baixar_ativo "$WALLPAPER_LOGIN_URL" /usr/share/backgrounds/seederlinux/wallpaper-login.jpg
     fi
@@ -250,9 +259,10 @@ fi
 log_nivel INFO "Baixando logo..."
 if [ -n "$LOGO_URL" ] && [ "$LOGO_URL" != "" ]; then
     if [ "$REINSTALL_MODE" = "auto" ] \
+       && [ "$SERIAL_ATUAL" = "$LAST_SERIAL" ] \
        && [ "$LOGO_URL" = "$LAST_LOGO_URL" ] \
        && [ -s /usr/share/pixmaps/seederlinux-logo.png ]; then
-        log_nivel INFO "logo inalterado - pulando download (auto)"
+        log_nivel INFO "logo inalterado (serial $SERIAL_ATUAL) - pulando (auto)"
     else
         _baixar_ativo "$LOGO_URL" /usr/share/pixmaps/seederlinux-logo.png
     fi
@@ -275,6 +285,12 @@ fi
 # ============================================================
 log_nivel INFO "Baixando greeter..."
 if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
+    if [ "$REINSTALL_MODE" = "auto" ] \
+       && [ "$SERIAL_ATUAL" = "$LAST_SERIAL" ] \
+       && [ "$GREETER_URL" = "$LAST_GREETER_URL" ] \
+       && ls /usr/share/backgrounds/seederlinux/greeter.* >/dev/null 2>&1; then
+        log_nivel INFO "greeter inalterado (serial $SERIAL_ATUAL) - pulando (auto)"
+    else
     GREETER_TARBALL="/tmp/seederlinux-greeter.bin"
     if wget -q --no-check-certificate --no-proxy --timeout=20 -O "$GREETER_TARBALL" "$GREETER_URL" && [ -s "$GREETER_TARBALL" ]; then
         GREETER_MIME="$(file -b --mime-type "$GREETER_TARBALL" 2>/dev/null)"
@@ -359,6 +375,7 @@ if [ -n "$GREETER_URL" ] && [ "$GREETER_URL" != "" ]; then
     else
         log_nivel AVISO "greeter baixado vazio ou com falha - pulando"
         rm -f "$GREETER_TARBALL"
+    fi
     fi
 fi
 
@@ -642,6 +659,7 @@ ls -la /usr/share/pixmaps/seederlinux-logo.png 2>/dev/null | sed 's/^/    /'
     echo "LAST_WALLPAPER_LOGIN_URL=\"${WALLPAPER_LOGIN_URL}\""
     echo "LAST_LOGO_URL=\"${LOGO_URL}\""
     echo "LAST_GREETER_URL=\"${GREETER_URL}\""
+    echo "LAST_SERIAL=\"${SERIAL_ATUAL}\""
 } > "$STATE_ASSETS"
 chmod 644 "$STATE_ASSETS"
 

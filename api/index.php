@@ -3441,12 +3441,36 @@ function handleStationCheckin($input) {
     $stationToken = sanitizeInput($input['station_token'] ?? '');
 
     // Fallback: accept the token from Authorization: Bearer <token>.
+    // O agente manda o token no header em check-ins subsequentes.
     if (empty($stationToken)) {
         $authHeader = $_SERVER['HTTP_AUTHORIZATION']
                    ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION']
                    ?? '';
         if (preg_match('/^Bearer\s+(\S+)$/i', trim($authHeader), $m)) {
             $stationToken = sanitizeInput($m[1]);
+        }
+    }
+
+    // Diferencia "sem token" de "token invalido".
+    //
+    // Se o agente MANDOU um token mas ele nao existe no banco, o
+    // correto e' responder 401 (token invalido/expirado), nao 400.
+    // O agente usa esse codigo para detectar token orfao, apagar o
+    // arquivo local e refazer o primeiro check-in com --org.
+    //
+    // Sem isso, o servidor devolve 400 "Informe o acronimo" e o
+    // agente acha que so falta o --org (mas ele nao tem como saber
+    // qual passar, porque o token local existe).
+    if (!empty($stationToken)) {
+        $existingByToken = Database::fetchOne(
+            "SELECT id, organization_id FROM stations WHERE token = ?",
+            [$stationToken]
+        );
+        if (!$existingByToken) {
+            jsonError(
+                'Token de estacao invalido ou expirado. Refaca o primeiro check-in com --org.',
+                401
+            );
         }
     }
 

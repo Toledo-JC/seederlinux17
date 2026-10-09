@@ -131,8 +131,8 @@ mkdir -p /var/lib/seederlinux
 _apt_recente=false
 if [ "$REINSTALL_MODE" = "auto" ] && [ -f "$APT_STATE" ]; then
     _age=$(( $(date +%s) - $(stat -c %Y "$APT_STATE" 2>/dev/null || echo 0) ))
-    if [ "$_age" -lt 3600 ]; then
-        log_nivel INFO "apt-get update executado ha ${_age}s (<1h) - pulando (auto)"
+    if [ "$_age" -lt 86400 ]; then
+        log_nivel INFO "apt-get update executado ha ${_age}s (<24h) - pulando (auto)"
         _apt_recente=true
     fi
 fi
