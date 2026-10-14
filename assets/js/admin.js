@@ -3887,36 +3887,6 @@ function setupEventListeners() {
     document.getElementById('btn-generate-bundle')?.addEventListener('click', () => generateBundle(false));
     document.getElementById('btn-generate-bundle-notify')?.addEventListener('click', () => generateBundle(true));
 
-    document.getElementById('btn-copy-command')?.addEventListener('click', async () => {
-        if (!currentOrgId) {
-            Toast.error('Selecione uma OM primeiro');
-            return;
-        }
-
-        const res = await API.get('bundles', { org_id: currentOrgId });
-        const bundleList = Array.isArray(res.data) ? res.data : (res.data && Array.isArray(res.data.bundles) ? res.data.bundles : []);
-        if (!res.success || !bundleList || !bundleList.length) {
-            Toast.warning('Nenhum bundle gerado ainda. Clique em "Instalação automática" primeiro.');
-            return;
-        }
-
-        const bundle = bundleList[0];
-        const baseUrl = window.location.origin;
-        const url = `${baseUrl}/api/?action=download-bundle&bundle_id=${bundle.id}&mode=auto`;
-
-        const cmd =
-            `sudo wget --no-check-certificate --header="Authorization: Bearer $(sudo cat /etc/seeder/station_token)" \\\n` +
-            `    -O /tmp/bundle.sh "${url}" && \\\n` +
-            `sudo bash /tmp/bundle.sh`;
-
-        try {
-            await navigator.clipboard.writeText(cmd);
-            Toast.success('Comando copiado! Cole no terminal da estação.');
-        } catch (err) {
-            window.prompt('Copie manualmente:', cmd);
-        }
-    });
-
     document.getElementById('btn-new-user')?.addEventListener('click', () => {
         document.getElementById('user-form')?.reset();
         document.getElementById('user-edit-id').value = '';
