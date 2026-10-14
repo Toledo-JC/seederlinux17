@@ -59,24 +59,35 @@ print_error()  { echo -e "${RED}[✗]${NC} $1"; }
 
 
 # ============================================================
-# _psql_file: aplica um arquivo SQL e preserva o exit code real
-# do psql. ON_ERROR_STOP faz o psql retornar erro ao falhar.
-# O log completo fica disponível para diagnóstico; o filtro serve
-# apenas para reduzir ruído na saída do terminal.
+# _psql_file: aplica um arquivo SQL como superusuário 'postgres'.
+#
+# Por que 'postgres' e não 'seeder':
+#   O schema.sql contém comandos ALTER ... OWNER TO e GRANT que
+#   só podem ser executados pelo owner atual dos objetos ou por
+#   um superusuário. Rodando como 'seeder', esses comandos falham
+#   quando o objeto foi criado por outro usuário (ex.: em execuções
+#   anteriores do install rodando como postgres).
+#
+#   O teste de conexão no final do setup_database continua
+#   rodando como 'seeder' — é ele que prova que a aplicação
+#   consegue acessar.
 # ============================================================
 _psql_file() {
     local file="$1"
     local log="$2"
     local rc=0
 
-    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" \
+    if sudo -u postgres psql -d "${DB_NAME}" \
             -v ON_ERROR_STOP=1 -f "$file" >"$log" 2>&1; then
         rc=0
     else
         rc=$?
     fi
 
-    grep -vE 'already exists|já existe' "$log" | sed 's/^/    /' || true
+    # Filtra avisos cosméticos (idempotência esperada). Erros reais
+    # continuam visíveis no log e no terminal.
+    grep -vE 'already exists|já existe|não existe, ignorando|já existe, ignorada|não existe' \
+        "$log" | sed 's/^/    /' || true
 
     if [ "$rc" -ne 0 ]; then
         return "$rc"
@@ -585,113 +596,4 @@ EOF
 show_summary() {
     print_header "INSTALAÇÃO CONCLUÍDA"
 
-    echo -e "${GREEN}"
-    echo "╔══════════════════════════════════════════════════════════════════╗"
-    echo "║           SEEDERLINUX LITE - INSTALAÇÃO COMPLETA               ║"
-    echo "╚══════════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
-
-    echo -e "\n${BOLD}Acesso Web:${NC}"
-    echo -e "  URL:   https://${SERVER_NAME}/"
-    echo -e "  Login: https://${SERVER_NAME}/login.html"
-    echo -e "  Admin: https://${SERVER_NAME}/admin.html"
-
-    echo -e "\n${BOLD}Credenciais Padrão:${NC}"
-    echo -e "  Usuário: ${YELLOW}admin${NC}"
-    echo -e "  Senha:   ${YELLOW}admin123${NC}"
-    echo -e "  ${RED}⚠ ALTERE A SENHA APÓS O PRIMEIRO LOGIN!${NC}"
-
-    echo -e "\n${BOLD}Banco de Dados:${NC}"
-    echo -e "  Database: ${DB_NAME}"
-    echo -e "  User:     ${DB_USER}"
-    echo -e "  Host:     localhost:5432"
-    echo -e "  Env file: ${ENV_FILE}"
-
-    echo -e "\n${YELLOW}${BOLD}"
-    echo "╔══════════════════════════════════════════════════════════════════╗"
-    echo "║                    CREDENCIAIS DO BANCO                        ║"
-    echo "╠══════════════════════════════════════════════════════════════════╣"
-    printf "║  Database: %-52s║\n" "${DB_NAME}"
-    printf "║  Usuario:  %-52s║\n" "${DB_USER}"
-    echo "║  Senha: armazenada no arquivo .env (não exibida aqui)          ║"
-    echo "╠══════════════════════════════════════════════════════════════════╣"
-    echo "║  Para consultar em sessão administrativa:                      ║"
-    echo "║    sudo grep '^DB_PASS=' ${ENV_FILE}                            ║"
-    echo "║  Evite compartilhar saídas de terminal com credenciais.         ║"
-    echo "╚══════════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}"
-
-    echo -e "\n${BOLD}Arquivos:${NC}"
-    echo -e "  Diretório: ${INSTALL_DIR}"
-    echo -e "  Schema:    ${INSTALL_DIR}/install/schema.sql"
-    echo -e "  Config:    ${ENV_FILE}"
-
-    echo -e "\n${BOLD}Logs:${NC}"
-    echo -e "  Apache:  /var/log/apache2/${PROJECT_NAME}_error.log"
-    echo -e "  Sistema: ${INSTALL_DIR}/storage/logs/"
-
-    echo -e "\n${GREEN}Instalação concluída com sucesso!${NC}\n"
-}
-
-main() {
-    clear 2>/dev/null || true
-    echo -e "${CYAN}${BOLD}"
-    echo "╔══════════════════════════════════════════════════════════════════╗"
-    echo "║       SEEDERLINUX LITE - INSTALADOR v1.0.0 (Debian 13)        ║"
-    echo "╚══════════════════════════════════════════════════════════════════╝"
-    echo -e "${NC}\n"
-
-    check_root
-
-    echo -e "${YELLOW}Este script irá:${NC}"
-    echo "  • Configurar repositórios (Debian 13)"
-    echo "  • Instalar Apache2, PHP, PostgreSQL"
-    echo "  • Criar/atualizar banco (sem perder dados se ja existir)"
-    echo "  • Aplicar schema idempotente + scripts core"
-    echo "  • Criar versao factory inicial em script_versions"
-    echo "  • Configurar VirtualHost com SSL"
-    echo "  • Copiar arquivos para ${INSTALL_DIR}"
-    echo ""
-    echo "  Flag --auto: atualiza banco existente sem perguntas interativas"
-    echo ""
-    AUTO_MODE=false
-    for arg in "$@"; do
-        [ "$arg" = "--auto" ] && AUTO_MODE=true
-    done
-    if [ "$AUTO_MODE" != "true" ]; then
-        read -p "Deseja continuar? (s/N): " -n 1 -r
-        echo
-        if [[ ! ${REPLY:-} =~ ^[Ss]$ ]]; then
-            echo "Instalação cancelada."
-            exit 0
-        fi
-    fi
-
-    configure_sources
-    install_system_packages
-
-    # Gerar o SQL a partir das fontes Core ANTES de carregar o banco,
-    # para que scripts.content e as versões factory nasçam sincronizados.
-    if [ -f "${SCRIPT_DIR}/gen_insert_core.py" ]; then
-        print_header "REGENERANDO SCRIPTS CORE A PARTIR DA FONTE"
-        print_step "Executando gen_insert_core.py..."
-        if python3 "${SCRIPT_DIR}/gen_insert_core.py"; then
-            print_success "insert_core_scripts.sql regenerado"
-        else
-            print_error "Falha ao executar gen_insert_core.py"
-            exit 1
-        fi
-    else
-        print_error "gen_insert_core.py nao encontrado em ${SCRIPT_DIR}"
-        exit 1
-    fi
-
-    setup_database "$@"
-
-    setup_project_files
-    setup_permissions
-    configure_apache
-    show_summary
-}
-
-main "$@"
+    echo -e
