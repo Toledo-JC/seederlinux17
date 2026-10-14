@@ -3133,8 +3133,19 @@ BUNDLE_HEADER;
             $scriptContent = str_replace("__PROXY_{$pi}_PASS_B64__", $p['password_enc'] ?? '', $scriptContent);
             $pi++;
         }
-        // Clean up any remaining __*__ placeholders that weren't resolved
-        $scriptContent = preg_replace('/__[A-Z_0-9]+__/', '', $scriptContent);
+        // NAO REMOVER. Placeholders __VAR__ sao RESERVADOS para os scripts core
+        // resolverem em RUNTIME (via `sed` no proprio script). O valor real
+        // depende da estacao (IP, Xauthority, display) e o PHP nao tem como
+        // saber no momento da geracao.
+        //
+        // Se o PHP apagar esses placeholders, o script core fica sem valor
+        // para substituir e falha silenciosamente. Exemplo real: `core_vnc.sh`
+        // recebia PASSFILE="" e o supervisor do VNC entrava em loop em
+        // AGUARDANDO_REDE.
+        //
+        // Placeholders de senha explicitos (__ADMIN_PASSWORD_B64__,
+        // __VNC_PASSWORD_B64__, __PROXY_N_PASS_B64__) JA foram substituidos
+        // nas linhas anteriores e nao dependem desta limpeza.
         $bundle .= "# --- {$s['name']} ({$s['filename']}) ---\n";
         $bundle .= $scriptContent . "\n\n";
         $scriptIds[] = $s['id'];
