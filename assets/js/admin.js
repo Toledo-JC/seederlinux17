@@ -113,7 +113,7 @@ const superCategorySections = {
         { title: 'Impressoras', vars: ['DEFAULT_PRINTER', 'PRINTERS'] },
         { title: 'Arquivos', vars: ['SERVIDOR_ARQUIVOS', 'MOUNT_BASE', 'COMPARTILHAMENTOS'] },
         { title: 'Inventário', vars: ['INVENTORY_ENABLED', 'GLPI_SERVER', 'OCS_SERVER', 'OCS_TAG'] },
-        { title: 'Acesso Remoto', vars: ['REMOTE_METHOD', 'SSH_PORT', 'VNC_ENABLED', 'VNC_PASSWORD_B64'] },
+        { title: 'Acesso Remoto', vars: ['REMOTE_METHOD', 'SSH_PORT', 'VNC_ENABLED', 'VNC_PASSWORD_B64', 'VNC_PORT', 'VNC_LISTEN_ADDRESS'] },
         { title: 'Monitoramento', vars: ['CONKY_PROFILE', 'CONKY_CONFIG'] }
     ]
 };
@@ -1160,6 +1160,8 @@ function matchesVariableSearch(variable, searchText) {
 }
 
 const variableHelpText = {
+    VNC_PORT: 'Porta TCP do x11vnc. Default 5900 se vazio. Range 1024-65535.',
+    VNC_LISTEN_ADDRESS: 'IPv4 interno onde o VNC escuta. Vazio = detecta pela rota até o DC (recomendado para DHCP).',
     NTP_SERVER: [
         'Servidor NTP adicional (opcional):',
         '',
@@ -1190,7 +1192,17 @@ const variableHelpText = {
     ].join('\n')
 };
 
+const variableLabelOverrides = {
+    VNC_PORT: 'Porta do VNC',
+    VNC_LISTEN_ADDRESS: 'Endereço de escuta do VNC'
+};
+
 function getVariableTooltip(variable) {
+    const variableName = String(variable?.name || '').toUpperCase();
+    return variableHelpText[variableName] || variable?.description || '';
+}
+
+function getVariableDescription(variable) {
     const variableName = String(variable?.name || '').toUpperCase();
     return variableHelpText[variableName] || variable?.description || '';
 }
@@ -1565,10 +1577,10 @@ function renderVarRow(v, searchTerm = '') {
     return `
         <div class="var-row" ${hiddenStyle}>
             <label class="block text-sm font-medium text-slate-300 mb-1">
-                ${getFieldLabelMarkup(v, v.name)}${v.is_required ? '<span class="text-red-400">*</span>' : ''}
+                ${getFieldLabelMarkup(v, variableLabelOverrides[v.name] || v.name)}${v.is_required ? '<span class="text-red-400">*</span>' : ''}
             </label>
             ${input}
-            ${v.description ? `<p class="text-slate-500 text-xs mt-1">${Utils.escapeHtml(v.description)}</p>` : ''}
+            ${getVariableDescription(v) ? `<p class="text-slate-500 text-xs mt-1">${Utils.escapeHtml(getVariableDescription(v))}</p>` : ''}
         </div>`;
 }
 
@@ -1687,6 +1699,14 @@ function renderTypedInput(v) {
     const val = v.current_value || '';
     const varId = v.id;
     const opts = variableOptions[v.name];
+
+    if (v.name === 'VNC_PORT') {
+        return `<input type="text" inputmode="numeric" data-var-id="${varId}" value="${Utils.escapeHtml(val)}" class="var-input" placeholder="5900">`;
+    }
+
+    if (v.name === 'VNC_LISTEN_ADDRESS') {
+        return `<input type="text" data-var-id="${varId}" value="${Utils.escapeHtml(val)}" class="var-input" placeholder="10.108.64.0 (vazio = automático)">`;
+    }
 
     if (opts === 'boolean' || v.type === 'boolean') {
         const checked = val === 'true' || val === '1' || val === true;
@@ -2119,6 +2139,59 @@ function normalizeSshGroupsCsv(value) {
     return tokens.join(',');
 }
 
+function getVncValidationError(variableName, value) {
+    const normalized = String(value ?? '').trim();
+    if (!normalized) return '';
+
+    if (variableName === 'VNC_PORT') {
+        if (!/^\d+$/.test(normalized)) return 'Informe uma porta numérica entre 1024 e 65535.';
+        const port = Number(normalized);
+        if (port < 1024 || port > 65535) return 'A porta deve estar entre 1024 e 65535.';
+    }
+
+    if (variableName === 'VNC_LISTEN_ADDRESS') {
+        if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(normalized) || normalized.split('.').some(octet => Number(octet) > 255)) {
+            return 'Informe um endereço IPv4 válido.';
+        }
+    }
+
+    return '';
+}
+
+function validateVncVariables(collected) {
+    let isValid = true;
+
+    ['VNC_PORT', 'VNC_LISTEN_ADDRESS'].forEach(variableName => {
+        const variable = allVariables.find(item => item.name === variableName);
+        if (!variable) return;
+
+        const varId = String(variable.id);
+        const input = Array.from(document.querySelectorAll('input[data-var-id]'))
+            .find(item => String(item.dataset.varId) === varId);
+        if (!input || !(varId in collected)) return;
+
+        const error = getVncValidationError(variableName, collected[varId]);
+        const row = input.closest('.var-row');
+        let errorElement = row?.querySelector('.var-validation-error');
+        if (error) {
+            if (!errorElement) {
+                errorElement = document.createElement('p');
+                errorElement.className = 'var-validation-error text-red-400 text-xs mt-1';
+                errorElement.setAttribute('role', 'alert');
+                input.insertAdjacentElement('afterend', errorElement);
+            }
+            errorElement.textContent = error;
+            input.setAttribute('aria-invalid', 'true');
+            isValid = false;
+        } else {
+            errorElement?.remove();
+            input.removeAttribute('aria-invalid');
+        }
+    });
+
+    return isValid;
+}
+
 async function saveVariables() {
     if (!currentOrgId) { Toast.error('Selecione uma organizacao antes de salvar'); return; }
 
@@ -2175,6 +2248,8 @@ async function saveVariables() {
             }
         }
     }
+
+    if (!validateVncVariables(collected)) return;
 
     Object.assign(updates, collected);
 
