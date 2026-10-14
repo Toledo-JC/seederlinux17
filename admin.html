@@ -390,29 +390,38 @@
                         <!-- Bundle Tab -->
                         <div id="tab-bundle" class="tab-content hidden">
                             <div class="card mb-6">
-                                <div class="card-header"><h3 class="card-title">Gerar Bundle</h3></div>
+                                <div class="card-header"><h3 class="card-title">Bundle da OM</h3></div>
                                 <div class="card-body">
-                                    <p class="text-slate-400 mb-4">Selecione os scripts e gere o bundle para deploy.</p>
-                                    <div class="form-group mb-4">
-                                        <label for="reinstall-mode" class="form-label">Modo de instalação</label>
-                                        <select id="reinstall-mode" class="form-input">
-                                            <option value="auto" selected>Automático (recomendado)</option>
-                                            <option value="force">Reinstalar tudo</option>
-                                            <option value="repair">Reparar / reconciliar (em breve)</option>
-                                            <option value="diagnostic">Somente diagnóstico (em breve)</option>
-                                        </select>
-                                        <small class="form-text text-slate-400">
-                                            Automático: pula o que já está instalado e aplica só o que falta. Reinstalar tudo: ignora o estado e reaplica tudo.
-                                        </small>
+                                    <p class="text-slate-400 mb-4">O que você deseja fazer?</p>
+                                    <div class="bundle-actions" style="display: grid; gap: 10px;">
+                                        <button class="btn btn-primary bundle-action" data-mode="auto">
+                                            <strong>Instalação automática</strong>
+                                            <small style="display: block; opacity: 0.85;">Recomendado. Instala o que falta e evita tarefas desnecessárias.</small>
+                                        </button>
+                                        <button class="btn btn-secondary bundle-action" data-mode="force">
+                                            <strong>Reinstalar tudo</strong>
+                                            <small style="display: block; opacity: 0.85;">Reaplica todas as etapas, mesmo as já instaladas.</small>
+                                        </button>
+                                        <button class="btn btn-secondary bundle-action" data-mode="repair" disabled>
+                                            <strong>Corrigir problemas</strong>
+                                            <small style="display: block; opacity: 0.85;">Corrige o que estiver incorreto. (em breve)</small>
+                                        </button>
+                                        <button class="btn btn-secondary bundle-action" data-mode="diagnostic" disabled>
+                                            <strong>Somente verificar</strong>
+                                            <small style="display: block; opacity: 0.85;">Gera diagnóstico sem alterar a estação. (em breve)</small>
+                                        </button>
                                     </div>
-                                    <div class="form-group mb-4">
+                                    <hr style="margin: 20px 0; border-color: rgb(51 65 85);">
+                                    <p class="text-slate-400" style="margin-bottom: 8px;">Acesso via SSH</p>
+                                    <button class="btn btn-outline" id="btn-copy-command" type="button">📋 Copiar comando para terminal</button>
+                                    <small class="text-slate-500" style="display: block; margin-top: 6px;">Cole no terminal da estação (usa o token local da estação).</small>
+                                    <div class="form-group mb-4" style="margin-top: 20px;">
                                         <label class="flex items-center gap-2 cursor-pointer">
                                             <input type="checkbox" id="force-notify" class="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-600 focus:ring-blue-500">
                                             <span class="text-slate-300 font-medium">Forçar atualização das estações</span>
                                         </label>
                                         <p class="text-sm text-slate-500 mt-1 ml-6">Incrementa o serial de configuração e notifica as estações.</p>
                                     </div>
-                                    <button id="btn-generate-bundle" class="btn btn-success btn-lg">Gerar Bundle</button>
                                 </div>
                             </div>
                             <div class="card">

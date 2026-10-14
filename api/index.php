@@ -248,6 +248,12 @@ try {
         case 'bundle-by-id':
             handleDownloadBundle($id);
             break;
+        case 'download-bundle':
+            handleDownloadBundleWithMode($input);
+            break;
+        case 'download-bundle':
+            handleDownloadBundleWithMode($input);
+            break;
         case 'bundles':
             requireAuth();
             handleListBundles($orgId);
@@ -3244,6 +3250,124 @@ function handleDownloadBundle($id) {
     header('Content-Disposition: attachment; filename="' . $bundle['filename'] . '"');
     header('Content-Length: ' . strlen($bundle['content']));
     echo $bundle['content'];
+/**
+ * GET /api/?action=download-bundle&bundle_id=N&mode=auto|force|repair|diagnostic
+ *
+ * Igual ao bundle-by-id mas reescreve o header REINSTALL_MODE
+ * conforme o modo escolhido pelo tecnico no painel. Autentica por
+ * sessao admin OU Bearer token de estacao (mesma logica do
+ * bundle-by-id).
+ */
+function handleDownloadBundleWithMode($input) {
+    $bundleId = (int)($input['bundle_id'] ?? $_GET['bundle_id'] ?? 0);
+    $mode = strtolower(trim($input['mode'] ?? $_GET['mode'] ?? 'auto'));
+
+    if ($mode === 'never') {
+        $mode = 'diagnostic';
+    }
+    $modesValidos = ['auto', 'force', 'repair', 'diagnostic'];
+    if (!in_array($mode, $modesValidos, true)) {
+        $mode = 'auto';
+    }
+
+    if ($bundleId <= 0) {
+        jsonError('bundle_id obrigatorio', 400);
+    }
+
+    $stationAuth = requireStationAuth();
+    if ($stationAuth) {
+        $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$bundleId]);
+        if (!$bundle) jsonError('Bundle nao encontrado', 404);
+
+        $stationOrgId = (int)($_REQUEST['station_org_id'] ?? 0);
+        if ($stationOrgId > 0 && (int)$bundle['organization_id'] !== $stationOrgId) {
+            jsonError('Sem permissao', 403);
+        }
+    } else {
+        requireAuth();
+        $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$bundleId]);
+        if (!$bundle) jsonError('Bundle nao encontrado', 404);
+
+        $userOrgId = getUserOrgId();
+        if ($userOrgId !== null && !isAdminGap() && (int)$bundle['organization_id'] !== $userOrgId) {
+            jsonError('Sem permissao', 403);
+        }
+    }
+
+    $content = $bundle['content'];
+    $content = preg_replace(
+        '/^export REINSTALL_MODE=.*$/m',
+        "export REINSTALL_MODE='" . $mode . "'",
+        $content
+    );
+
+    header('Content-Type: application/x-shellscript; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $bundle['filename'] . '"');
+    header('Content-Length: ' . strlen($content));
+    header('X-Seeder-Bundle-Mode: ' . $mode);
+    echo $content;
+    exit;
+}
+
+    exit;
+}
+
+/**
+ * GET /api/?action=download-bundle&bundle_id=N&mode=auto|force|repair|diagnostic
+ *
+ * Igual ao bundle-by-id mas reescreve o header REINSTALL_MODE
+ * conforme o modo escolhido pelo tecnico no painel. Autentica por
+ * sessao admin OU Bearer token de estacao (mesma logica do
+ * bundle-by-id).
+ */
+function handleDownloadBundleWithMode($input) {
+    $bundleId = (int)($input['bundle_id'] ?? $_GET['bundle_id'] ?? 0);
+    $mode = strtolower(trim($input['mode'] ?? $_GET['mode'] ?? 'auto'));
+
+    if ($mode === 'never') {
+        $mode = 'diagnostic';
+    }
+    $modesValidos = ['auto', 'force', 'repair', 'diagnostic'];
+    if (!in_array($mode, $modesValidos, true)) {
+        $mode = 'auto';
+    }
+
+    if ($bundleId <= 0) {
+        jsonError('bundle_id obrigatorio', 400);
+    }
+
+    $stationAuth = requireStationAuth();
+    if ($stationAuth) {
+        $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$bundleId]);
+        if (!$bundle) jsonError('Bundle nao encontrado', 404);
+
+        $stationOrgId = (int)($_REQUEST['station_org_id'] ?? 0);
+        if ($stationOrgId > 0 && (int)$bundle['organization_id'] !== $stationOrgId) {
+            jsonError('Sem permissao', 403);
+        }
+    } else {
+        requireAuth();
+        $bundle = Database::fetchOne("SELECT id, organization_id, filename, content FROM deploy_bundles WHERE id = ?", [$bundleId]);
+        if (!$bundle) jsonError('Bundle nao encontrado', 404);
+
+        $userOrgId = getUserOrgId();
+        if ($userOrgId !== null && !isAdminGap() && (int)$bundle['organization_id'] !== $userOrgId) {
+            jsonError('Sem permissao', 403);
+        }
+    }
+
+    $content = $bundle['content'];
+    $content = preg_replace(
+        '/^export REINSTALL_MODE=.*$/m',
+        "export REINSTALL_MODE='" . $mode . "'",
+        $content
+    );
+
+    header('Content-Type: application/x-shellscript; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $bundle['filename'] . '"');
+    header('Content-Length: ' . strlen($content));
+    header('X-Seeder-Bundle-Mode: ' . $mode);
+    echo $content;
     exit;
 }
 

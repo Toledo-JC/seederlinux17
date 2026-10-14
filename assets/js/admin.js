@@ -3177,18 +3177,13 @@ window.updateScript = updateScript;
 
 // ============ BUNDLE ============
 
-async function generateBundle() {
+async function generateBundle(mode) {
     if (!currentOrgId) { Toast.error('Selecione uma organizacao'); return; }
 
     const selected = [...document.querySelectorAll('.script-checkbox:checked')].map(el => parseInt(el.value));
 
-    // Solicitar descricao opcional do bundle
-    const description = prompt('Descricao do bundle (opcional):', '');
-    // Se o usuario cancelar (prompt retorna null), aborta a geracao
-    if (description === null) return;
-
+    const description = '';
     const forceNotify = document.getElementById('force-notify')?.checked ?? false;
-    const reinstallMode = document.getElementById('reinstall-mode')?.value || 'auto';
 
     Toast.info('Gerando bundle...');
 
@@ -3196,13 +3191,17 @@ async function generateBundle() {
         const res = await API.post('generate-bundle', {
             organization_id: currentOrgId,
             scripts: selected,
-            description: description.trim(),
+            description: description,
             force_notify: forceNotify,
-            reinstall_mode: reinstallMode
+            reinstall_mode: mode
         });
         if (res.success) {
-            Toast.success('Bundle gerado com sucesso');
+            Toast.success('Bundle gerado. Iniciando download...');
             loadBundles(currentOrgId);
+            const bundleId = res.data?.bundle_id || res.bundle_id;
+            if (bundleId) {
+                window.location.href = `/api/?action=download-bundle&bundle_id=${bundleId}&mode=${mode}`;
+            }
         } else {
             Toast.error(res.error || 'Erro ao gerar bundle');
         }
@@ -3724,7 +3723,46 @@ function setupEventListeners() {
         });
     });
     document.getElementById('btn-save-vars')?.addEventListener('click', saveVariables);
-    document.getElementById('btn-generate-bundle')?.addEventListener('click', generateBundle);
+
+    document.querySelectorAll('.bundle-action').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            if (btn.disabled) return;
+            const mode = btn.dataset.mode;
+            if (!mode) return;
+            generateBundle(mode);
+        });
+    });
+
+    document.getElementById('btn-copy-command')?.addEventListener('click', async () => {
+        if (!currentOrgId) {
+            Toast.error('Selecione uma OM primeiro');
+            return;
+        }
+
+        const res = await API.get('bundles', { org_id: currentOrgId });
+        const bundleList = Array.isArray(res.data) ? res.data : (res.data && Array.isArray(res.data.bundles) ? res.data.bundles : []);
+        if (!res.success || !bundleList || !bundleList.length) {
+            Toast.warning('Nenhum bundle gerado ainda. Clique em "Instalação automática" primeiro.');
+            return;
+        }
+
+        const bundle = bundleList[0];
+        const baseUrl = window.location.origin;
+        const url = `${baseUrl}/api/?action=download-bundle&bundle_id=${bundle.id}&mode=auto`;
+
+        const cmd =
+            `sudo wget --header="Authorization: Bearer $(sudo cat /etc/seeder/station_token)" \\\n` +
+            `    -O /tmp/bundle.sh "${url}" && \\\n` +
+            `sudo bash /tmp/bundle.sh`;
+
+        try {
+            await navigator.clipboard.writeText(cmd);
+            Toast.success('Comando copiado! Cole no terminal da estação.');
+        } catch (err) {
+            window.prompt('Copie manualmente:', cmd);
+        }
+    });
 
     document.getElementById('btn-new-user')?.addEventListener('click', () => {
         document.getElementById('user-form')?.reset();
