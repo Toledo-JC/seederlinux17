@@ -3343,7 +3343,7 @@ window.downloadBundle = downloadBundle;
 async function copySshCommand(bundleId, mode) {
     const url = `${window.location.origin}/api/?action=download-bundle&bundle_id=${encodeURIComponent(bundleId)}&mode=${encodeURIComponent(mode)}`;
     const cmd = [
-        `sudo sh -c 'wget --header="Authorization: Bearer $(cat /etc/seeder/station_token)" -O /tmp/bundle.sh "$1"' sh '${url}' &&`,
+        `sudo sh -c 'wget --no-check-certificate --header="Authorization: Bearer $(cat /etc/seeder/station_token)" -O /tmp/bundle.sh "$1"' sh '${url}' &&`,
         '    sudo bash /tmp/bundle.sh'
     ].join(` ${String.fromCharCode(92)}\n`);
 

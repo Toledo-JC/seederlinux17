@@ -127,59 +127,151 @@ install_system_packages() {
     print_success "Pacotes instalados"
 }
 
-setup_postgresql() {
+setup_database() {
     print_header "CONFIGURANDO POSTGRESQL"
 
     print_step "Iniciando serviço PostgreSQL..."
     systemctl start postgresql
     systemctl enable postgresql
 
-    if sudo -u postgres psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw "${DB_NAME}"; then
-        print_warning "Banco '${DB_NAME}' já existe"
-        read -p "Recriar banco? (s/N): " -n 1 -r
-        echo
-        if [[ $REPLY =~ ^[Ss]$ ]]; then
-            print_step "Removendo banco existente..."
-            sudo -u postgres dropdb --if-exists "${DB_NAME}"
-            sudo -u postgres dropuser --if-exists "${DB_USER}"
-        else
-            print_step "Mantendo banco existente"
-            return 0
-        fi
+    # ============================================================
+    # Detectar estado do banco e decidir acao
+    # ============================================================
+    DB_EXISTE=false
+    if sudo -u postgres psql -tAc \
+        "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" 2>/dev/null \
+        | grep -q 1; then
+        DB_EXISTE=true
     fi
 
-    print_step "Criando usuário: ${DB_USER}"
-    sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" 2>/dev/null || true
+    AUTO_MODE=false
+    for arg in "$@"; do
+        [ "$arg" = "--auto" ] && AUTO_MODE=true
+    done
 
-    print_step "Criando banco: ${DB_NAME}"
-    sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+    if [ "$DB_EXISTE" = "false" ]; then
+        print_step "Banco '${DB_NAME}' nao existe - criando do zero."
+        DB_ACAO="criar"
 
-    print_step "Concedendo privilégios..."
-    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
-    
-    # PostgreSQL 15+ precisa de permissões no schema public
-    sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};" 2>/dev/null || true
+    elif [ "$AUTO_MODE" = "true" ]; then
+        print_step "Banco existe + --auto - aplicando migrations."
+        DB_ACAO="atualizar"
 
-    print_step "Testando conexão..."
-    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -c "SELECT 1;" > /dev/null 2>&1; then
-        print_success "Conexão com PostgreSQL OK"
     else
-        print_error "Falha ao conectar ao PostgreSQL"
-        exit 1
+        echo ""
+        echo "============================================================"
+        echo "Banco '${DB_NAME}' ja existe."
+        echo "============================================================"
+        echo ""
+        echo "  [1] Atualizar (aplica migrations pendentes)"
+        echo "  [2] Recriar do zero (APAGA TODOS OS DADOS)"
+        echo "  [3] Pular (nao toca no banco, so atualiza arquivos)"
+        echo ""
+        read -p "Escolha [1/2/3] (Enter = 1): " DB_OPCAO
+        DB_OPCAO="${DB_OPCAO:-1}"
+
+        case "$DB_OPCAO" in
+            1) DB_ACAO="atualizar" ;;
+            2) DB_ACAO="recriar" ;;
+            3) DB_ACAO="pular" ;;
+            *) print_error "Opcao invalida. Abortando."; exit 1 ;;
+        esac
+    fi
+
+    # ============================================================
+    # Executar acao escolhida
+    # ============================================================
+    case "$DB_ACAO" in
+
+        criar)
+            print_step "Criando usuário: ${DB_USER}"
+            sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" 2>/dev/null || true
+
+            print_step "Criando banco: ${DB_NAME}"
+            sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+
+            print_step "Concedendo privilégios..."
+            sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
+            sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};" 2>/dev/null || true
+
+            _apply_schema
+            _apply_migrations
+            _load_core_scripts
+            ;;
+
+        atualizar)
+            _backup_database "pre-migration"
+            _apply_migrations
+            ;;
+
+        recriar)
+            echo ""
+            echo "============================================================"
+            echo "ATENCAO: isso vai APAGAR todos os dados de '${DB_NAME}'."
+            echo "============================================================"
+            read -p 'Digite exatamente "RECRIAR" para confirmar: ' CONF
+
+            if [ "$CONF" != "RECRIAR" ]; then
+                print_warning "Cancelado."
+                exit 1
+            fi
+
+            _backup_database "pre-recreate"
+
+            print_step "Removendo banco existente..."
+            sudo -u postgres dropdb --if-exists "${DB_NAME}"
+
+            print_step "Criando banco: ${DB_NAME}"
+            sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
+            sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};" 2>/dev/null || true
+
+            _apply_schema
+            _apply_migrations
+            _load_core_scripts
+            ;;
+
+        pular)
+            print_step "Pulando banco (opcao 3)."
+            ;;
+    esac
+
+    # Testar conexão (a menos que tenha pulado)
+    if [ "$DB_ACAO" != "pular" ]; then
+        print_step "Testando conexão..."
+        if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -c "SELECT 1;" > /dev/null 2>&1; then
+            print_success "Conexão com PostgreSQL OK"
+        else
+            print_error "Falha ao conectar ao PostgreSQL"
+            exit 1
+        fi
     fi
 }
 
-apply_database_schema() {
+_backup_database() {
+    local prefix="$1"
+    local backup_dir="/var/backups/seederlinux"
+    mkdir -p "$backup_dir"
+    local backup="${backup_dir}/${prefix}-$(date +%Y%m%d-%H%M%S).sql"
+    print_step "Backup: ${backup}"
+    sudo -u postgres pg_dump "${DB_NAME}" > "$backup"
+    if [ $? -ne 0 ]; then
+        print_error "Falha no backup. Abortando por segurança."
+        exit 1
+    fi
+    print_success "Backup concluído"
+}
+
+_apply_schema() {
     print_header "APLICANDO SCHEMA DO BANCO DE DADOS"
 
-    SCHEMA_FILE="${SCRIPT_DIR}/schema.sql"
-    if [ ! -f "$SCHEMA_FILE" ]; then
+    local schema_file="${SCRIPT_DIR}/schema.sql"
+    if [ ! -f "$schema_file" ]; then
         print_error "schema.sql nao encontrado em ${SCRIPT_DIR}"
         exit 1
     fi
 
-    print_step "Aplicando schema: $(basename "$SCHEMA_FILE")"
-    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "$SCHEMA_FILE" 2>&1 | tee /tmp/schema-apply.log | grep -v "already exists"; then
+    print_step "Aplicando schema: $(basename "$schema_file")"
+    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "$schema_file" 2>&1 | tee /tmp/schema-apply.log | grep -v "already exists"; then
         if grep -qiE "ERROR|ERRO" /tmp/schema-apply.log; then
             print_error "schema.sql teve erros. Veja /tmp/schema-apply.log"
             cat /tmp/schema-apply.log
@@ -192,32 +284,68 @@ apply_database_schema() {
         exit 1
     fi
 
-    # Garantir constraint UNIQUE em scripts.filename antes de carregar os scripts
-    # (necessaria para o ON CONFLICT (filename) do insert_core_scripts.sql)
     print_step "Garantindo constraint UNIQUE em scripts.filename..."
     PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -c \
         "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scripts_filename_key') THEN ALTER TABLE scripts ADD CONSTRAINT scripts_filename_key UNIQUE (filename); END IF; END \$\$;"
+}
 
-    # Carregar scripts Core de provisionamento
-    if [ -f "${SCRIPT_DIR}/insert_core_scripts.sql" ]; then
-        print_step "Carregando scripts Core de provisionamento..."
-        if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "${SCRIPT_DIR}/insert_core_scripts.sql" 2>&1 | tee /tmp/insert-core-apply.log | grep -v "already exists"; then
-            if grep -qiE "ERROR|ERRO" /tmp/insert-core-apply.log; then
-                print_error "insert_core_scripts.sql teve erros. Veja /tmp/insert-core-apply.log"
-                cat /tmp/insert-core-apply.log
-                exit 1
-            fi
-            print_success "Scripts Core carregados com sucesso"
-        else
-            print_error "Falha ao aplicar insert_core_scripts.sql"
-            cat /tmp/insert-core-apply.log 2>/dev/null
-            exit 1
-        fi
-    else
-        print_warning "Arquivo insert_core_scripts.sql nao encontrado — scripts Core nao foram carregados"
+_apply_migrations() {
+    print_header "APLICANDO MIGRATIONS"
+
+    local migrations_dir="${SCRIPT_DIR}/migrations"
+    if [ ! -d "$migrations_dir" ]; then
+        print_warning "Diretório migrations/ nao encontrado - pulando."
+        return 0
     fi
 
-    print_success "Schema aplicado com sucesso"
+    sudo -u postgres psql -d "${DB_NAME}" -c \
+        "CREATE TABLE IF NOT EXISTS schema_migrations (
+            version VARCHAR(20) PRIMARY KEY,
+            applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );"
+
+    local aplicadas
+    aplicadas=$(sudo -u postgres psql -d "${DB_NAME}" -tAc \
+        "SELECT version FROM schema_migrations ORDER BY version" 2>/dev/null)
+
+    for f in "${migrations_dir}"/*.sql; do
+        [ -f "$f" ] || continue
+        local v
+        v="$(basename "$f" .sql | cut -d_ -f1)"
+        if echo "$aplicadas" | grep -qx "$v"; then
+            continue
+        fi
+        print_step "Aplicando migration ${v}..."
+        if ! sudo -u postgres psql -d "${DB_NAME}" -f "$f"; then
+            print_error "ERRO na migration ${v}. Abortando."
+            exit 1
+        fi
+        sudo -u postgres psql -d "${DB_NAME}" -c \
+            "INSERT INTO schema_migrations (version) VALUES ('${v}') ON CONFLICT DO NOTHING"
+    done
+    print_success "Migrations aplicadas"
+}
+
+_load_core_scripts() {
+    local core_file="${SCRIPT_DIR}/insert_core_scripts.sql"
+    if [ ! -f "$core_file" ]; then
+        print_warning "Arquivo insert_core_scripts.sql nao encontrado — scripts Core nao foram carregados"
+        return 0
+    fi
+
+    print_step "Carregando scripts Core de provisionamento..."
+    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "$core_file" 2>&1 | tee /tmp/insert-core-apply.log | grep -v "already exists"; then
+        if grep -qiE "ERROR|ERRO" /tmp/insert-core-apply.log; then
+            print_error "insert_core_scripts.sql teve erros. Veja /tmp/insert-core-apply.log"
+            cat /tmp/insert-core-apply.log
+            exit 1
+        fi
+        print_success "Scripts Core carregados com sucesso"
+    else
+        print_error "Falha ao aplicar insert_core_scripts.sql"
+        cat /tmp/insert-core-apply.log 2>/dev/null
+        exit 1
+    fi
 }
 
 regenerate_core_scripts() {
@@ -459,9 +587,10 @@ main() {
 
     echo -e "${YELLOW}Este script irá:${NC}"
     echo "  • Configurar repositórios (Debian 13)"
+    echo "  • Use --auto para modo não-interativo (atualiza banco existente)"
     echo "  • Instalar Apache2, PHP, PostgreSQL"
-    echo "  • Criar banco e usuário"
-    echo "  • Aplicar schema consolidado"
+    echo "  • Criar/atualizar banco e usuário"
+    echo "  • Aplicar schema e migrations"
     echo "  • Configurar VirtualHost com SSL"
     echo "  • Copiar arquivos para ${INSTALL_DIR}"
     echo ""
@@ -474,9 +603,10 @@ main() {
 
     configure_sources
     install_system_packages
-    setup_postgresql
-    apply_database_schema
-    regenerate_core_scripts
+    setup_database "$@"
+    if [ "$DB_ACAO" != "pular" ]; then
+        regenerate_core_scripts
+    fi
     setup_project_files
     setup_permissions
     configure_apache

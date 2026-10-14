@@ -137,12 +137,23 @@ chmod 644 /etc/seeder/org.txt
 log_nivel INFO "Acronimo da OM gravado em /etc/seeder/org.txt"
 
 # ============================================================
-# Primeiro check-in (em background, sem bloquear o bundle)
+# Check-in em background.
+#
+# --org so e' passado quando NAO existe token local. Se a estacao
+# ja tem token, o agente autentica por Bearer e o --org e' ruido
+# (o agente ignora silenciosamente, mas polui o log e pode disparar
+# re-registro desnecessario se o hostname mudou).
 # ============================================================
-log_nivel INFO "Executando primeiro check-in em background..."
 mkdir -p /var/log/seeder
-nohup /usr/local/bin/seeder-agent --org "$OM_ACRONYM" --no-check-certificate \
-    > /tmp/seeder-first-checkin.log 2>&1 &
+if [ -s /etc/seeder/station_token ]; then
+    log_nivel INFO "Estacao ja tem token local - disparando check-in normal"
+    nohup /usr/local/bin/seeder-agent --no-check-certificate \
+        > /tmp/seeder-checkin.log 2>&1 &
+else
+    log_nivel INFO "Estacao sem token local - disparando primeiro check-in com --org"
+    nohup /usr/local/bin/seeder-agent --org "$OM_ACRONYM" --no-check-certificate \
+        > /tmp/seeder-first-checkin.log 2>&1 &
+fi
 
 log_nivel OK "Agente instalado e agendado!"
 echo "============================================================"
