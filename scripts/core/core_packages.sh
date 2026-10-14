@@ -280,6 +280,9 @@ EXTRA_PACKAGES=(
     cups-client
     system-config-printer
     x11vnc
+    x11-utils       # <-- NOVO: fornece xdpyinfo
+    xauth           # <-- NOVO: valida XAUTHORITY em runtime
+    logrotate       # <-- NOVO: rotação de /var/log/seederlinux-vnc.log
     conky-all
     jq
     dmidecode
