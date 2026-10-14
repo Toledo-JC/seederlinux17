@@ -478,4 +478,272 @@ BEGIN
     END IF;
     IF to_regclass('public.mirror_jobs') IS NOT NULL AND to_regclass('mirror.jobs') IS NULL THEN
         ALTER TABLE public.mirror_jobs SET SCHEMA mirror;
-        AL
+        ALTER TABLE mirror.mirror_jobs RENAME TO jobs;
+    END IF;
+    IF to_regclass('public.organization_repository_settings') IS NOT NULL
+       AND to_regclass('mirror.organization_repository_settings') IS NULL THEN
+        ALTER TABLE public.organization_repository_settings SET SCHEMA mirror;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS mirror.config (
+    id SERIAL PRIMARY KEY,
+    enabled BOOLEAN DEFAULT FALSE,
+    tool VARCHAR(20) DEFAULT 'aptly',
+    mirror_base_path VARCHAR(255) NOT NULL DEFAULT '/var/lib/seederlinux/mirror',
+    mirror_url_base VARCHAR(255) NOT NULL DEFAULT '',
+    path_locked BOOLEAN DEFAULT FALSE,
+    verify_gpg BOOLEAN DEFAULT TRUE,
+    sync_interval_hours INTEGER DEFAULT 24,
+    auto_cleanup_enabled BOOLEAN DEFAULT TRUE,
+    retention_snapshots INTEGER DEFAULT 2,
+    quarantine_days INTEGER DEFAULT 7,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE mirror.config ADD COLUMN IF NOT EXISTS path_locked BOOLEAN DEFAULT FALSE;
+ALTER TABLE mirror.config ADD COLUMN IF NOT EXISTS mirror_url_base VARCHAR(255) NOT NULL DEFAULT '';
+ALTER TABLE mirror.config ADD COLUMN IF NOT EXISTS auto_cleanup_enabled BOOLEAN DEFAULT TRUE;
+ALTER TABLE mirror.config ADD COLUMN IF NOT EXISTS retention_snapshots INTEGER DEFAULT 2;
+ALTER TABLE mirror.config ADD COLUMN IF NOT EXISTS quarantine_days INTEGER DEFAULT 7;
+
+CREATE TABLE IF NOT EXISTS mirror.distros (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    codename VARCHAR(50) NOT NULL,
+    base_distro_id INTEGER NULL REFERENCES mirror.distros(id) ON DELETE SET NULL,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'mirror_distros_base_distro_id_fkey'
+          AND conrelid = 'mirror.distros'::regclass
+    ) THEN
+        ALTER TABLE mirror.distros ADD CONSTRAINT mirror_distros_base_distro_id_fkey
+            FOREIGN KEY (base_distro_id) REFERENCES mirror.distros(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS mirror.versions (
+    id SERIAL PRIMARY KEY,
+    distro_id INTEGER REFERENCES mirror.distros(id) ON DELETE CASCADE,
+    version VARCHAR(50) NOT NULL,
+    active BOOLEAN DEFAULT TRUE,
+    status VARCHAR(20) DEFAULT 'current',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+ALTER TABLE mirror.versions ADD COLUMN IF NOT EXISTS active BOOLEAN DEFAULT TRUE;
+
+CREATE TABLE IF NOT EXISTS mirror.jobs (
+    id SERIAL PRIMARY KEY,
+    job_type VARCHAR(20) NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending',
+    details TEXT,
+    gpg_verified BOOLEAN DEFAULT FALSE,
+    started_at TIMESTAMP DEFAULT NOW(),
+    finished_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS mirror.organization_repository_settings (
+    id SERIAL PRIMARY KEY,
+    organization_id INTEGER NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE,
+    use_local_mirror BOOLEAN DEFAULT FALSE,
+    mirror_priority INTEGER DEFAULT 100,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mirror_distros_name_codename
+    ON mirror.distros(name, codename);
+
+DO $$
+DECLARE
+    distro RECORD;
+BEGIN
+    FOR distro IN
+        SELECT name, MIN(id) AS keeper_id
+        FROM mirror.distros
+        GROUP BY name
+        HAVING COUNT(*) > 1
+    LOOP
+        UPDATE mirror.versions
+        SET distro_id = distro.keeper_id
+        WHERE distro_id IN (
+            SELECT id FROM mirror.distros
+            WHERE name = distro.name AND id <> distro.keeper_id
+        );
+        UPDATE mirror.distros
+        SET base_distro_id = distro.keeper_id
+        WHERE base_distro_id IN (
+            SELECT id FROM mirror.distros
+            WHERE name = distro.name AND id <> distro.keeper_id
+        );
+        DELETE FROM mirror.distros
+        WHERE name = distro.name AND id <> distro.keeper_id;
+    END LOOP;
+
+    UPDATE mirror.distros
+    SET codename = CASE name
+        WHEN 'Debian' THEN 'debian'
+        WHEN 'Ubuntu' THEN 'ubuntu'
+        WHEN 'Linux Mint' THEN 'mint'
+        WHEN 'Zorin' THEN 'zorin'
+        ELSE LOWER(name)
+    END;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mirror_distros_name
+    ON mirror.distros(name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mirror_versions_distro_version
+    ON mirror.versions(distro_id, version);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_org_repository_settings_org
+    ON mirror.organization_repository_settings(organization_id);
+
+INSERT INTO mirror.config (id, enabled, tool, mirror_base_path, path_locked, verify_gpg,
+                           sync_interval_hours, auto_cleanup_enabled, retention_snapshots, quarantine_days)
+SELECT 1, FALSE, 'aptly', '/var/lib/seederlinux/mirror', FALSE, TRUE, 24, TRUE, 2, 7
+WHERE NOT EXISTS (SELECT 1 FROM mirror.config);
+
+INSERT INTO mirror.distros (name, codename) VALUES
+    ('Debian', 'debian'),
+    ('Ubuntu', 'ubuntu'),
+    ('Linux Mint', 'mint'),
+    ('Zorin', 'zorin')
+ON CONFLICT (name) DO NOTHING;
+
+UPDATE mirror.distros AS child
+SET base_distro_id = base.id
+FROM mirror.distros AS base
+WHERE child.name = 'Linux Mint'
+    AND base.name = 'Ubuntu';
+
+UPDATE mirror.distros AS child
+SET base_distro_id = base.id
+FROM mirror.distros AS base
+WHERE child.name = 'Zorin'
+    AND base.name = 'Ubuntu';
+
+INSERT INTO mirror.versions (distro_id, version, status)
+SELECT d.id, seed.version, seed.status
+FROM mirror.distros d
+JOIN (VALUES
+    ('Debian', 'bookworm', 'old'),
+    ('Debian', 'trixie', 'current'),
+    ('Debian', 'forky', 'future'),
+    ('Ubuntu', 'jammy', 'old'),
+    ('Ubuntu', 'noble', 'current'),
+    ('Linux Mint', 'wilma', 'current'),
+    ('Zorin', 'jammy', 'old')
+) AS seed(name, version, status) ON seed.name = d.name
+ON CONFLICT (distro_id, version) DO NOTHING;
+
+-- ============================================================================
+-- Table 11: om_proxies (multiplos proxies nomeados por OM)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS om_proxies (
+    id              BIGSERIAL PRIMARY KEY,
+    organization_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE,
+    name            VARCHAR(64) NOT NULL,
+    url             TEXT NOT NULL,
+    username        VARCHAR(128) DEFAULT '',
+    password_enc    TEXT DEFAULT '',
+    pac_url         TEXT DEFAULT '',
+    no_proxy        TEXT DEFAULT '',
+    ad_group        VARCHAR(255) NOT NULL DEFAULT '',
+    is_default      BOOLEAN NOT NULL DEFAULT false,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE om_proxies ADD COLUMN IF NOT EXISTS ad_group VARCHAR(255) NOT NULL DEFAULT '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_om_proxies_org_name
+    ON om_proxies (organization_id, name);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_om_proxies_org_default
+    ON om_proxies (organization_id)
+    WHERE is_default = true;
+
+CREATE INDEX IF NOT EXISTS idx_om_proxies_org
+    ON om_proxies (organization_id);
+
+CREATE INDEX IF NOT EXISTS idx_om_proxies_ad_group
+    ON om_proxies (organization_id, ad_group)
+    WHERE ad_group <> '';
+
+-- Seed: novas variaveis de policy para todas as OMs existentes
+INSERT INTO organization_variables (organization_id, variable_id, value)
+SELECT o.id, vd.id, vd.default_value
+FROM organizations o
+CROSS JOIN variable_definitions vd
+WHERE vd.name IN ('APT_POLICY', 'CLI_POLICY', 'BROWSER_POLICY', 'APT_PROXY_NAME', 'CLI_PROXY_NAME', 'BROWSER_PROXY_NAME', 'PROXY_USER', 'PROXY_PASSWORD_B64', 'MIRROR_LOCAL_SEEDER_PATH', 'MIRROR_LOCAL_OM_URL', 'LEGACY_ALLOW_EXTERNAL', 'VNC_PORT', 'VNC_LISTEN_ADDRESS')
+ON CONFLICT (organization_id, variable_id) DO NOTHING;
+
+-- ============================================================================
+-- Ownership e permissões
+-- ============================================================================
+-- Transferimos ownership de TODAS as tabelas e sequências (public e
+-- mirror) para 'seeder'. Dessa forma:
+--   - 'seeder' passa a ser owner de fato, e pode ALTER, GRANT, etc.
+--   - O install.sh roda o schema como 'postgres' (superuser), então
+--     os ALTER OWNER funcionam mesmo em re-execuções onde algum objeto
+--     foi criado por 'postgres' numa execução anterior.
+--   - Depois da primeira execução, tudo pertence a 'seeder'. O próximo
+--     install já não precisa se preocupar com isso.
+--
+-- Este bloco é idempotente: se o owner já for 'seeder', o ALTER é no-op.
+DO $$
+DECLARE
+    r RECORD;
+BEGIN
+    -- Tabelas em public
+    FOR r IN
+        SELECT tablename FROM pg_tables WHERE schemaname = 'public'
+    LOOP
+        EXECUTE format('ALTER TABLE public.%I OWNER TO seeder', r.tablename);
+    END LOOP;
+
+    -- Sequências em public
+    FOR r IN
+        SELECT sequence_name FROM information_schema.sequences
+        WHERE sequence_schema = 'public'
+    LOOP
+        EXECUTE format('ALTER SEQUENCE public.%I OWNER TO seeder', r.sequence_name);
+    END LOOP;
+
+    -- Tabelas em mirror
+    FOR r IN
+        SELECT tablename FROM pg_tables WHERE schemaname = 'mirror'
+    LOOP
+        EXECUTE format('ALTER TABLE mirror.%I OWNER TO seeder', r.tablename);
+    END LOOP;
+
+    -- Sequências em mirror
+    FOR r IN
+        SELECT sequence_name FROM information_schema.sequences
+        WHERE sequence_schema = 'mirror'
+    LOOP
+        EXECUTE format('ALTER SEQUENCE mirror.%I OWNER TO seeder', r.sequence_name);
+    END LOOP;
+END $$;
+
+-- Schema-level: seeder pode criar objetos em public e mirror
+GRANT ALL ON SCHEMA public TO seeder;
+GRANT ALL ON SCHEMA mirror TO seeder;
+
+-- ============================================================================
+-- VERIFICACAO DE INTEGRIDADE
+-- Execute estas queries para verificar se o schema esta correto
+-- ============================================================================
+-- SELECT COUNT(*) AS total_tabelas FROM information_schema.tables WHERE table_schema = 'public';
+-- SELECT COUNT(*) AS total_usuarios FROM users;
+-- SELECT COUNT(*) AS total_variaveis FROM variable_definitions;
+-- SELECT COUNT(*) AS total_scripts FROM scripts;
+-- ============================================================================
