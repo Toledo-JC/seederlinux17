@@ -1,10 +1,13 @@
 #!/bin/bash
 # ============================================================================
 # SeederLinux Lite - Installation Script (Debian 13 Ready)
-# Corrigido - Mescla do original funcional com schema consolidado
+# ============================================================================
+# Instalador consciente do estado: detecta banco existente, oferece
+# atualizar (schema idempotente, sem perder dados) / recriar / pular.
+# Nunca dropa o usuário `seeder` — sempre CREATE ou ALTER USER.
 # ============================================================================
 
-set -e
+set -Eeuo pipefail
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -21,7 +24,23 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 DB_NAME="seederlinux"
 DB_USER="seeder"
-DB_PASS=$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)
+
+# ============================================================
+# DB_PASS: persistir em ${INSTALL_DIR}/.env
+#
+# Regra: se .env existe, LER a senha de lá (fonte de verdade).
+# Se não existe, GERAR uma nova. Nunca regenerar quando o banco
+# já existe — isso quebrava o setup anterior (senha nova em
+# memória vs. senha antiga no PostgreSQL -> auth falhava).
+# ============================================================
+ENV_FILE="${INSTALL_DIR}/.env"
+DB_PASS=""
+if [ -f "$ENV_FILE" ] && grep -q '^DB_PASS=' "$ENV_FILE"; then
+    DB_PASS="$(grep '^DB_PASS=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
+fi
+if [ -z "$DB_PASS" ]; then
+    DB_PASS="$(openssl rand -base64 16 | tr -d "=+/" | cut -c1-16)"
+fi
 
 APACHE_USER="www-data"
 APACHE_GROUP="www-data"
@@ -38,6 +57,33 @@ print_success(){ echo -e "${GREEN}[✓]${NC} $1"; }
 print_warning(){ echo -e "${YELLOW}[!]${NC} $1"; }
 print_error()  { echo -e "${RED}[✗]${NC} $1"; }
 
+
+# ============================================================
+# _psql_file: aplica um arquivo SQL e preserva o exit code real
+# do psql. ON_ERROR_STOP faz o psql retornar erro ao falhar.
+# O log completo fica disponível para diagnóstico; o filtro serve
+# apenas para reduzir ruído na saída do terminal.
+# ============================================================
+_psql_file() {
+    local file="$1"
+    local log="$2"
+    local rc=0
+
+    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" \
+            -v ON_ERROR_STOP=1 -f "$file" >"$log" 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+
+    grep -vE 'already exists|já existe' "$log" | sed 's/^/    /' || true
+
+    if [ "$rc" -ne 0 ]; then
+        return "$rc"
+    fi
+    return 0
+}
+
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         print_error "Execute como root: sudo $0"
@@ -48,34 +94,31 @@ check_root() {
 configure_sources() {
     print_header "CONFIGURANDO REPOSITÓRIOS"
 
-    # Detectar versão do Debian
     if [ -f /etc/debian_version ]; then
         DEBIAN_VERSION=$(cat /etc/debian_version | cut -d. -f1)
         case "$DEBIAN_VERSION" in
             13) CODENAME="trixie" ;;
             12) CODENAME="bookworm" ;;
             11) CODENAME="bullseye" ;;
-            *)  CODENAME="trixie" ;; # fallback
+            *)  CODENAME="trixie" ;;
         esac
     else
+        DEBIAN_VERSION="desconhecida"
         CODENAME="trixie"
     fi
     print_step "Debian detectado: ${CODENAME}"
 
-    # Remover arquivos conflitantes do sources.list.d
     if [ -f /etc/apt/sources.list.d/debian.sources ]; then
         print_step "Removendo debian.sources conflitante..."
         rm -f /etc/apt/sources.list.d/debian.sources
     fi
-    
-    # Desabilitar outros arquivos .list que possam conflitar
+
     for f in /etc/apt/sources.list.d/*.list; do
         if [ -f "$f" ]; then
             mv "$f" "${f}.bak" 2>/dev/null || true
         fi
     done
 
-    # Escrever sources.list correto
     cat > /etc/apt/sources.list << EOF
 # Debian ${DEBIAN_VERSION} (${CODENAME}) - Repositórios Oficiais
 deb http://deb.debian.org/debian ${CODENAME} main contrib non-free non-free-firmware
@@ -115,7 +158,7 @@ install_system_packages() {
         sudo \
         libapache2-mod-php
 
-    PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "desconhecida")
+    PHP_VER=$(php -r 'echo PHP_MAJOR_VERSION."."; echo PHP_MINOR_VERSION;' 2>/dev/null || echo "desconhecida")
     print_success "PHP ${PHP_VER} instalado"
 
     print_step "Instalando Apache2..."
@@ -127,6 +170,157 @@ install_system_packages() {
     print_success "Pacotes instalados"
 }
 
+# ============================================================
+# _ensure_db_user: garante que o usuário existe E tem a senha correta.
+# Chamado SOMENTE quando vamos tocar no banco (criar/atualizar/recriar).
+# NÃO é chamado em "pular" — o operador que escolhe pular espera que
+# o banco e o usuário fiquem intocados.
+# ============================================================
+_ensure_db_user() {
+    local exists
+    exists="$(sudo -u postgres psql -tAc \
+        "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" 2>/dev/null || echo "")"
+
+    if [ "$exists" = "1" ]; then
+        print_step "Usuário '${DB_USER}' existe - sincronizando senha..."
+        sudo -u postgres psql -c \
+            "ALTER USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" >/dev/null
+    else
+        print_step "Criando usuário '${DB_USER}'..."
+        sudo -u postgres psql -c \
+            "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" >/dev/null
+    fi
+    print_success "Usuário '${DB_USER}' pronto"
+}
+
+# ============================================================
+# _backup_database: pg_dump antes de qualquer operação destrutiva
+# ============================================================
+_backup_database() {
+    local prefix="$1"
+    local backup_dir="/var/backups/seederlinux"
+    mkdir -p "$backup_dir"
+    local backup="${backup_dir}/${prefix}-$(date +%Y%m%d-%H%M%S).sql"
+    print_step "Backup: ${backup}"
+    if ! sudo -u postgres pg_dump "${DB_NAME}" > "$backup"; then
+        print_error "Falha no backup. Abortando por segurança."
+        exit 1
+    fi
+    print_success "Backup concluído"
+}
+
+# ============================================================
+# _apply_schema: schema.sql idempotente — é a "migração" do projeto
+# ============================================================
+_apply_schema() {
+    print_header "APLICANDO SCHEMA DO BANCO DE DADOS"
+
+    local schema_file="${SCRIPT_DIR}/schema.sql"
+    if [ ! -f "$schema_file" ]; then
+        print_error "schema.sql nao encontrado em ${SCRIPT_DIR}"
+        exit 1
+    fi
+
+    print_step "Aplicando schema: $(basename "$schema_file")"
+    if _psql_file "$schema_file" "/tmp/schema-apply.log"; then
+        print_success "Schema aplicado"
+    else
+        print_error "Falha ao aplicar schema.sql. Veja /tmp/schema-apply.log"
+        cat /tmp/schema-apply.log 2>/dev/null || true
+        exit 1
+    fi
+}
+
+# ============================================================
+# _load_core_scripts: carrega os 24 scripts core de provisionamento
+# ============================================================
+_load_core_scripts() {
+    local core_file="${SCRIPT_DIR}/insert_core_scripts.sql"
+    if [ ! -f "$core_file" ]; then
+        print_warning "Arquivo insert_core_scripts.sql nao encontrado — scripts Core nao foram carregados"
+        return 0
+    fi
+
+    print_step "Carregando scripts Core de provisionamento..."
+    if _psql_file "$core_file" "/tmp/insert-core-apply.log"; then
+        print_success "Scripts Core carregados com sucesso"
+    else
+        print_error "Falha ao aplicar insert_core_scripts.sql. Veja /tmp/insert-core-apply.log"
+        cat /tmp/insert-core-apply.log 2>/dev/null || true
+        exit 1
+    fi
+}
+
+# ============================================================
+# _create_initial_factory_version: cria versão 'factory' inicial
+# em script_versions para cada script core, e aponta
+# scripts.current_version_id pra ela.
+#
+# Sem isso, um servidor recém-instalado fica com
+# current_version_id=NULL, e o getScriptContent da API pode cair
+# em fallback imprevisível.
+#
+# Idempotente: só cria factory se ainda não existe nenhuma para
+# o script.
+# ============================================================
+_create_initial_factory_version() {
+    print_step "Criando versão factory inicial em script_versions..."
+
+    sudo -u postgres psql -d "${DB_NAME}" <<'SQL'
+BEGIN;
+
+INSERT INTO script_versions
+    (script_id, version_name, version_number, content, changelog,
+     version_type, is_active)
+SELECT
+    s.id,
+    s.filename || ' - Factory v1',
+    1,
+    s.content,
+    'Criado pelo install.sh no setup inicial',
+    'factory',
+    TRUE
+FROM scripts s
+WHERE s.is_core = TRUE
+  AND s.content IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM script_versions sv
+      WHERE sv.script_id = s.id
+        AND sv.version_type = 'factory'
+  );
+
+UPDATE scripts s
+SET current_version_id = latest_factory.id
+FROM (
+    SELECT DISTINCT ON (sv.script_id) sv.script_id, sv.id
+    FROM script_versions sv
+    JOIN scripts core_script ON core_script.id = sv.script_id
+    WHERE core_script.is_core = TRUE
+      AND sv.version_type = 'factory'
+    ORDER BY sv.script_id, sv.version_number DESC, sv.id DESC
+) latest_factory
+WHERE s.id = latest_factory.script_id
+  AND s.current_version_id IS DISTINCT FROM latest_factory.id;
+
+COMMIT;
+SQL
+
+    print_success "Versão factory inicial criada"
+}
+
+# ============================================================
+# setup_database: menu de 3 opções + schema idempotente
+#
+# Ordem de operações:
+#   1) Detecta estado do banco
+#   2) Menu (se interativo e banco existe)
+#   3) Só então decide o que tocar:
+#      - criar:     _ensure_db_user → CREATE DB → schema → scripts → factory
+#      - atualizar: _ensure_db_user → schema → scripts → factory
+#      - recriar:   _ensure_db_user → backup → DROP DB → CREATE DB → ...
+#      - pular:     NADA. Não toca usuário, não toca banco.
+#   4) Testa conexão (só se não pulou)
+# ============================================================
 setup_database() {
     print_header "CONFIGURANDO POSTGRESQL"
 
@@ -135,7 +329,7 @@ setup_database() {
     systemctl enable postgresql
 
     # ============================================================
-    # Detectar estado do banco e decidir acao
+    # Detectar estado do banco (não toca nada ainda)
     # ============================================================
     DB_EXISTE=false
     if sudo -u postgres psql -tAc \
@@ -154,7 +348,7 @@ setup_database() {
         DB_ACAO="criar"
 
     elif [ "$AUTO_MODE" = "true" ]; then
-        print_step "Banco existe + --auto - aplicando migrations."
+        print_step "Banco existe + --auto - atualizando."
         DB_ACAO="atualizar"
 
     else
@@ -163,7 +357,7 @@ setup_database() {
         echo "Banco '${DB_NAME}' ja existe."
         echo "============================================================"
         echo ""
-        echo "  [1] Atualizar (aplica migrations pendentes)"
+        echo "  [1] Atualizar (aplica schema idempotente - NAO perde dados)"
         echo "  [2] Recriar do zero (APAGA TODOS OS DADOS)"
         echo "  [3] Pular (nao toca no banco, so atualiza arquivos)"
         echo ""
@@ -179,29 +373,36 @@ setup_database() {
     fi
 
     # ============================================================
-    # Executar acao escolhida
+    # Executar ação escolhida
     # ============================================================
+
+    if [ "$DB_ACAO" = "pular" ]; then
+        print_step "Pulando banco (opcao 3). Nenhuma alteracao no PostgreSQL."
+        return 0
+    fi
+
+    # A partir daqui, VAMOS tocar no banco. Garantir usuário primeiro.
+    _ensure_db_user
+
     case "$DB_ACAO" in
 
         criar)
-            print_step "Criando usuário: ${DB_USER}"
-            sudo -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASS}';" 2>/dev/null || true
-
             print_step "Criando banco: ${DB_NAME}"
             sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
-
-            print_step "Concedendo privilégios..."
-            sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USER};"
-            sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};" 2>/dev/null || true
+            sudo -u postgres psql -d "${DB_NAME}" -c \
+                "GRANT ALL ON SCHEMA public TO ${DB_USER};" 2>/dev/null || true
 
             _apply_schema
-            _apply_migrations
             _load_core_scripts
+            _create_initial_factory_version
             ;;
 
         atualizar)
-            _backup_database "pre-migration"
-            _apply_migrations
+            # schema.sql é idempotente: não apaga nada, só adiciona
+            # o que falta. É a "migração" deste projeto.
+            _apply_schema
+            _load_core_scripts
+            _create_initial_factory_version
             ;;
 
         recriar)
@@ -218,168 +419,29 @@ setup_database() {
 
             _backup_database "pre-recreate"
 
-            print_step "Removendo banco existente..."
+            print_step "Removendo banco existente (usuario seeder preservado)..."
             sudo -u postgres dropdb --if-exists "${DB_NAME}"
 
-            print_step "Criando banco: ${DB_NAME}"
+            print_step "Recriando banco: ${DB_NAME}"
             sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};"
-            sudo -u postgres psql -d "${DB_NAME}" -c "GRANT ALL ON SCHEMA public TO ${DB_USER};" 2>/dev/null || true
+            sudo -u postgres psql -d "${DB_NAME}" -c \
+                "GRANT ALL ON SCHEMA public TO ${DB_USER};" 2>/dev/null || true
 
             _apply_schema
-            _apply_migrations
             _load_core_scripts
+            _create_initial_factory_version
             ;;
 
-        pular)
-            print_step "Pulando banco (opcao 3)."
-            ;;
     esac
 
-    # Testar conexão (a menos que tenha pulado)
-    if [ "$DB_ACAO" != "pular" ]; then
-        print_step "Testando conexão..."
-        if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -c "SELECT 1;" > /dev/null 2>&1; then
-            print_success "Conexão com PostgreSQL OK"
-        else
-            print_error "Falha ao conectar ao PostgreSQL"
-            exit 1
-        fi
-    fi
-}
-
-_backup_database() {
-    local prefix="$1"
-    local backup_dir="/var/backups/seederlinux"
-    mkdir -p "$backup_dir"
-    local backup="${backup_dir}/${prefix}-$(date +%Y%m%d-%H%M%S).sql"
-    print_step "Backup: ${backup}"
-    sudo -u postgres pg_dump "${DB_NAME}" > "$backup"
-    if [ $? -ne 0 ]; then
-        print_error "Falha no backup. Abortando por segurança."
-        exit 1
-    fi
-    print_success "Backup concluído"
-}
-
-_apply_schema() {
-    print_header "APLICANDO SCHEMA DO BANCO DE DADOS"
-
-    local schema_file="${SCRIPT_DIR}/schema.sql"
-    if [ ! -f "$schema_file" ]; then
-        print_error "schema.sql nao encontrado em ${SCRIPT_DIR}"
-        exit 1
-    fi
-
-    print_step "Aplicando schema: $(basename "$schema_file")"
-    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "$schema_file" 2>&1 | tee /tmp/schema-apply.log | grep -v "already exists"; then
-        if grep -qiE "ERROR|ERRO" /tmp/schema-apply.log; then
-            print_error "schema.sql teve erros. Veja /tmp/schema-apply.log"
-            cat /tmp/schema-apply.log
-            exit 1
-        fi
-        print_success "Schema aplicado"
+    # Testar conexão (só chegamos aqui se não foi "pular")
+    print_step "Testando conexão..."
+    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" \
+            -c "SELECT 1;" > /dev/null 2>&1; then
+        print_success "Conexão com PostgreSQL OK"
     else
-        print_error "Falha ao aplicar schema.sql"
-        cat /tmp/schema-apply.log 2>/dev/null
-        exit 1
-    fi
-
-    print_step "Garantindo constraint UNIQUE em scripts.filename..."
-    PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -c \
-        "DO \$\$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'scripts_filename_key') THEN ALTER TABLE scripts ADD CONSTRAINT scripts_filename_key UNIQUE (filename); END IF; END \$\$;"
-}
-
-_apply_migrations() {
-    print_header "APLICANDO MIGRATIONS"
-
-    local migrations_dir="${SCRIPT_DIR}/migrations"
-    if [ ! -d "$migrations_dir" ]; then
-        print_warning "Diretório migrations/ nao encontrado - pulando."
-        return 0
-    fi
-
-    sudo -u postgres psql -d "${DB_NAME}" -c \
-        "CREATE TABLE IF NOT EXISTS schema_migrations (
-            version VARCHAR(20) PRIMARY KEY,
-            applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );"
-
-    local aplicadas
-    aplicadas=$(sudo -u postgres psql -d "${DB_NAME}" -tAc \
-        "SELECT version FROM schema_migrations ORDER BY version" 2>/dev/null)
-
-    for f in "${migrations_dir}"/*.sql; do
-        [ -f "$f" ] || continue
-        local v
-        v="$(basename "$f" .sql | cut -d_ -f1)"
-        if echo "$aplicadas" | grep -qx "$v"; then
-            continue
-        fi
-        print_step "Aplicando migration ${v}..."
-        if ! sudo -u postgres psql -d "${DB_NAME}" -f "$f"; then
-            print_error "ERRO na migration ${v}. Abortando."
-            exit 1
-        fi
-        sudo -u postgres psql -d "${DB_NAME}" -c \
-            "INSERT INTO schema_migrations (version) VALUES ('${v}') ON CONFLICT DO NOTHING"
-    done
-    print_success "Migrations aplicadas"
-}
-
-_load_core_scripts() {
-    local core_file="${SCRIPT_DIR}/insert_core_scripts.sql"
-    if [ ! -f "$core_file" ]; then
-        print_warning "Arquivo insert_core_scripts.sql nao encontrado — scripts Core nao foram carregados"
-        return 0
-    fi
-
-    print_step "Carregando scripts Core de provisionamento..."
-    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "$core_file" 2>&1 | tee /tmp/insert-core-apply.log | grep -v "already exists"; then
-        if grep -qiE "ERROR|ERRO" /tmp/insert-core-apply.log; then
-            print_error "insert_core_scripts.sql teve erros. Veja /tmp/insert-core-apply.log"
-            cat /tmp/insert-core-apply.log
-            exit 1
-        fi
-        print_success "Scripts Core carregados com sucesso"
-    else
-        print_error "Falha ao aplicar insert_core_scripts.sql"
-        cat /tmp/insert-core-apply.log 2>/dev/null
-        exit 1
-    fi
-}
-
-regenerate_core_scripts() {
-    print_header "REGENERANDO SCRIPTS CORE NO BANCO"
-
-    if [ ! -f "${SCRIPT_DIR}/gen_insert_core.py" ]; then
-        print_error "gen_insert_core.py nao encontrado em ${SCRIPT_DIR}"
-        exit 1
-    fi
-
-    print_step "Executando gen_insert_core.py..."
-    if python3 "${SCRIPT_DIR}/gen_insert_core.py" 2>&1; then
-        print_success "insert_core_scripts.sql regenerado"
-    else
-        print_error "Falha ao executar gen_insert_core.py"
-        exit 1
-    fi
-
-    if [ ! -f "${SCRIPT_DIR}/insert_core_scripts.sql" ]; then
-        print_error "insert_core_scripts.sql nao foi gerado"
-        exit 1
-    fi
-
-    print_step "Aplicando insert_core_scripts.sql no banco..."
-    if PGPASSWORD="${DB_PASS}" psql -h localhost -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 -f "${SCRIPT_DIR}/insert_core_scripts.sql" 2>&1 | tee /tmp/insert-core-regen.log | grep -v "already exists"; then
-        if grep -qiE "ERROR|ERRO" /tmp/insert-core-regen.log; then
-            print_error "insert_core_scripts.sql teve erros. Veja /tmp/insert-core-regen.log"
-            cat /tmp/insert-core-regen.log
-            exit 1
-        fi
-        print_success "Scripts Core atualizados no banco"
-    else
-        print_error "Falha ao aplicar insert_core_scripts.sql"
-        cat /tmp/insert-core-regen.log 2>/dev/null
+        print_error "Falha ao conectar ao PostgreSQL"
+        print_error "Verifique: senha em ${ENV_FILE} vs. senha em pg_roles"
         exit 1
     fi
 }
@@ -422,23 +484,20 @@ setup_permissions() {
 
     print_step "Permissões de diretórios..."
     find "${INSTALL_DIR}" -type d -exec chmod 755 {} \;
-    
+
     print_step "Permissões de arquivos..."
     find "${INSTALL_DIR}" -type f -exec chmod 644 {} \;
 
-    # Scripts executáveis
     chmod +x "${INSTALL_DIR}/downloads/"*.py 2>/dev/null || true
     chmod +x "${INSTALL_DIR}/scripts/"*.sh 2>/dev/null || true
     chmod +x "${INSTALL_DIR}/scripts/mirror-sync.sh" 2>/dev/null || true
 
-    # Storage com permissão de escrita
     chmod -R 775 "${INSTALL_DIR}/storage"
     chown -R ${APACHE_USER}:${APACHE_GROUP} /var/lib/seederlinux/mirror
     chmod -R 775 /var/lib/seederlinux/mirror
-    
-    # Arquivo .env protegido
+
     chmod 600 "${INSTALL_DIR}/.env"
-    
+
     print_success "Permissões configuradas"
 }
 
@@ -446,7 +505,7 @@ configure_apache() {
     print_header "CONFIGURANDO APACHE"
 
     print_step "Criando VirtualHost com SSL..."
-    
+
     cat > "/etc/apache2/sites-available/${PROJECT_NAME}.conf" <<EOF
 <IfModule mod_ssl.c>
     <VirtualHost *:443>
@@ -460,7 +519,6 @@ configure_apache() {
             Require all granted
         </Directory>
 
-        # Proteger diretórios sensíveis
         <Directory ${INSTALL_DIR}/storage>
             Require all denied
         </Directory>
@@ -473,7 +531,6 @@ configure_apache() {
             Require all denied
         </Directory>
 
-        # Mirror: servir arquivos estáticos via Apache (sem PHP)
         Alias /mirror /var/lib/seederlinux/mirror/public
         <Directory /var/lib/seederlinux/mirror/public>
             Options +Indexes +FollowSymLinks
@@ -547,26 +604,27 @@ show_summary() {
     echo -e "\n${BOLD}Banco de Dados:${NC}"
     echo -e "  Database: ${DB_NAME}"
     echo -e "  User:     ${DB_USER}"
-    echo -e "  Pass:     ${DB_PASS}"
     echo -e "  Host:     localhost:5432"
+    echo -e "  Env file: ${ENV_FILE}"
 
-    echo -e "\n${RED}${BOLD}"
+    echo -e "\n${YELLOW}${BOLD}"
     echo "╔══════════════════════════════════════════════════════════════════╗"
-    echo "║              GUARDE ESTA SENHA EM LOCAL SEGURO!               ║"
+    echo "║                    CREDENCIAIS DO BANCO                        ║"
     echo "╠══════════════════════════════════════════════════════════════════╣"
-    printf "║  Banco:   %-54s║\n" "${DB_NAME}"
-    printf "║  Usuario: %-54s║\n" "${DB_USER}"
-    printf "║  Senha:   %-54s║\n" "${DB_PASS}"
+    printf "║  Database: %-52s║\n" "${DB_NAME}"
+    printf "║  Usuario:  %-52s║\n" "${DB_USER}"
+    echo "║  Senha: armazenada no arquivo .env (não exibida aqui)          ║"
     echo "╠══════════════════════════════════════════════════════════════════╣"
-    echo "║  Necessaria para manutencao e backup do sistema.              ║"
-    echo "║  Nao sera exibida novamente apos o fechamento deste terminal. ║"
+    echo "║  Para consultar em sessão administrativa:                      ║"
+    echo "║    sudo grep '^DB_PASS=' ${ENV_FILE}                            ║"
+    echo "║  Evite compartilhar saídas de terminal com credenciais.         ║"
     echo "╚══════════════════════════════════════════════════════════════════╝"
     echo -e "${NC}"
 
     echo -e "\n${BOLD}Arquivos:${NC}"
     echo -e "  Diretório: ${INSTALL_DIR}"
     echo -e "  Schema:    ${INSTALL_DIR}/install/schema.sql"
-    echo -e "  Config:    ${INSTALL_DIR}/.env"
+    echo -e "  Config:    ${ENV_FILE}"
 
     echo -e "\n${BOLD}Logs:${NC}"
     echo -e "  Apache:  /var/log/apache2/${PROJECT_NAME}_error.log"
@@ -576,7 +634,7 @@ show_summary() {
 }
 
 main() {
-    clear
+    clear 2>/dev/null || true
     echo -e "${CYAN}${BOLD}"
     echo "╔══════════════════════════════════════════════════════════════════╗"
     echo "║       SEEDERLINUX LITE - INSTALADOR v1.0.0 (Debian 13)        ║"
@@ -587,26 +645,49 @@ main() {
 
     echo -e "${YELLOW}Este script irá:${NC}"
     echo "  • Configurar repositórios (Debian 13)"
-    echo "  • Use --auto para modo não-interativo (atualiza banco existente)"
     echo "  • Instalar Apache2, PHP, PostgreSQL"
-    echo "  • Criar/atualizar banco e usuário"
-    echo "  • Aplicar schema e migrations"
+    echo "  • Criar/atualizar banco (sem perder dados se ja existir)"
+    echo "  • Aplicar schema idempotente + scripts core"
+    echo "  • Criar versao factory inicial em script_versions"
     echo "  • Configurar VirtualHost com SSL"
     echo "  • Copiar arquivos para ${INSTALL_DIR}"
     echo ""
-    read -p "Deseja continuar? (s/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Ss]$ ]]; then
-        echo "Instalação cancelada."
-        exit 0
+    echo "  Flag --auto: atualiza banco existente sem perguntas interativas"
+    echo ""
+    AUTO_MODE=false
+    for arg in "$@"; do
+        [ "$arg" = "--auto" ] && AUTO_MODE=true
+    done
+    if [ "$AUTO_MODE" != "true" ]; then
+        read -p "Deseja continuar? (s/N): " -n 1 -r
+        echo
+        if [[ ! ${REPLY:-} =~ ^[Ss]$ ]]; then
+            echo "Instalação cancelada."
+            exit 0
+        fi
     fi
 
     configure_sources
     install_system_packages
-    setup_database "$@"
-    if [ "$DB_ACAO" != "pular" ]; then
-        regenerate_core_scripts
+
+    # Gerar o SQL a partir das fontes Core ANTES de carregar o banco,
+    # para que scripts.content e as versões factory nasçam sincronizados.
+    if [ -f "${SCRIPT_DIR}/gen_insert_core.py" ]; then
+        print_header "REGENERANDO SCRIPTS CORE A PARTIR DA FONTE"
+        print_step "Executando gen_insert_core.py..."
+        if python3 "${SCRIPT_DIR}/gen_insert_core.py"; then
+            print_success "insert_core_scripts.sql regenerado"
+        else
+            print_error "Falha ao executar gen_insert_core.py"
+            exit 1
+        fi
+    else
+        print_error "gen_insert_core.py nao encontrado em ${SCRIPT_DIR}"
+        exit 1
     fi
+
+    setup_database "$@"
+
     setup_project_files
     setup_permissions
     configure_apache
