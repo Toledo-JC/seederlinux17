@@ -199,6 +199,8 @@ INSERT INTO variable_definitions (name, placeholder, description, type, category
 ('SSH_GROUPS', '{{SSH_GROUPS}}', 'Grupos do dominio com acesso SSH (um por linha)', 'array', 'seguranca', FALSE, 'linux-admins', 124),
 ('VNC_ENABLED', '{{VNC_ENABLED}}', 'Habilitar servidor VNC (x11vnc)?', 'boolean', 'acesso_remoto', FALSE, 'false', 122),
 ('VNC_PASSWORD_B64', '{{VNC_PASSWORD_B64}}', 'Senha do servidor VNC (em branco = aleatoria)', 'password', 'acesso_remoto', FALSE, '', 123),
+('VNC_PORT', '{{VNC_PORT}}', 'Porta do VNC', 'integer', 'acesso_remoto', FALSE, '5900', 124),
+('VNC_LISTEN_ADDRESS', '{{VNC_LISTEN_ADDRESS}}', 'Endereco VNC', 'string', 'acesso_remoto', FALSE, '', 125),
 
 -- Certificates
 ('CERTIFICATE_BUNDLE', '{{CERTIFICATE_BUNDLE}}', 'URL para download do pacote de certificados CA institucionais (formato .tar.gz). Deixe vazio se nao houver certificados personalizados.', 'url', 'oculto', FALSE, '', 130),
@@ -677,7 +679,7 @@ INSERT INTO organization_variables (organization_id, variable_id, value)
 SELECT o.id, vd.id, vd.default_value
 FROM organizations o
 CROSS JOIN variable_definitions vd
-WHERE vd.name IN ('APT_POLICY', 'CLI_POLICY', 'BROWSER_POLICY', 'APT_PROXY_NAME', 'CLI_PROXY_NAME', 'BROWSER_PROXY_NAME', 'PROXY_USER', 'PROXY_PASSWORD_B64', 'MIRROR_LOCAL_SEEDER_PATH', 'MIRROR_LOCAL_OM_URL', 'LEGACY_ALLOW_EXTERNAL')
+WHERE vd.name IN ('APT_POLICY', 'CLI_POLICY', 'BROWSER_POLICY', 'APT_PROXY_NAME', 'CLI_PROXY_NAME', 'BROWSER_PROXY_NAME', 'PROXY_USER', 'PROXY_PASSWORD_B64', 'MIRROR_LOCAL_SEEDER_PATH', 'MIRROR_LOCAL_OM_URL', 'LEGACY_ALLOW_EXTERNAL', 'VNC_PORT', 'VNC_LISTEN_ADDRESS')
 ON CONFLICT (organization_id, variable_id) DO NOTHING;
 
 -- ============================================================================

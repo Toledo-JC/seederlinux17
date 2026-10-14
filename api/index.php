@@ -1585,6 +1585,30 @@ function handleUpdateVariables($input) {
 
         if ($needsPac && $pacUrl === '') jsonError('PAC_URL e obrigatorio quando alguma policy = PAC', 400);
 
+        // Validacao VNC
+        $vncPort = trim($newValues['VNC_PORT'] ?? '');
+        if ($vncPort !== '') {
+            if (!ctype_digit($vncPort)) {
+                jsonError('VNC_PORT deve ser um numero inteiro.', 400);
+            }
+            $portInt = (int)$vncPort;
+            if ($portInt < 1024 || $portInt > 65535) {
+                jsonError('VNC_PORT deve estar entre 1024 e 65535.', 400);
+            }
+        }
+
+        $vncAddr = trim($newValues['VNC_LISTEN_ADDRESS'] ?? '');
+        if ($vncAddr !== '') {
+            if (!preg_match('/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/', $vncAddr, $m)) {
+                jsonError('VNC_LISTEN_ADDRESS deve ser um IPv4 valido ou vazio.', 400);
+            }
+            for ($i = 1; $i <= 4; $i++) {
+                if ((int)$m[$i] > 255) {
+                    jsonError('VNC_LISTEN_ADDRESS invalido (octeto > 255).', 400);
+                }
+            }
+        }
+
         if ($aptPolicy === 'MIRROR_LOCAL_OM' && $mirrorOmUrl === '') jsonError('MIRROR_LOCAL_OM_URL e obrigatorio quando APT_POLICY = MIRROR_LOCAL_OM', 400);
         if ($aptPolicy === 'MIRROR_LOCAL_SEEDER') {
             if ($mirrorPath === '' || $mirrorPath[0] !== '/' || substr($mirrorPath, -1) !== '/') {
