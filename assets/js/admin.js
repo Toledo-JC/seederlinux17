@@ -3252,9 +3252,9 @@ window.updateScript = updateScript;
 
 // ============ BUNDLE ============
 
-async function generateBundle(mode) {
+async function generateBundle(notify) {
     if (!currentOrgId) {
-        Toast.error('Selecione uma organizacao');
+        Toast.warning('Selecione uma OM primeiro');
         return;
     }
 
@@ -3262,29 +3262,23 @@ async function generateBundle(mode) {
         .map((element) => Number.parseInt(element.value, 10))
         .filter(Number.isFinite);
 
-    const forceNotify = document.getElementById('force-notify')?.checked ?? false;
-
     try {
         const res = await API.post('generate-bundle', {
             organization_id: currentOrgId,
             scripts: selected,
             description: '',
-            force_notify: forceNotify,
-            reinstall_mode: mode
+            force_notify: notify,
+            reinstall_mode: 'auto'
         });
-
         if (!res.success) {
             Toast.error(res.error || 'Erro ao gerar bundle');
             return;
         }
 
-        Toast.success('Bundle gerado. Iniciando download...');
+        Toast.success(notify
+            ? 'Bundle gerado e estações serão notificadas.'
+            : 'Bundle gerado sem notificar as estações.');
         await loadBundles(currentOrgId);
-
-        const bundleId = res.data?.bundle_id;
-        if (bundleId) {
-            window.location.href = `/api/?action=download-bundle&bundle_id=${bundleId}&mode=${encodeURIComponent(mode)}`;
-        }
     } catch (error) {
         Toast.error(error.message || 'Nao foi possivel gerar o bundle');
     }
@@ -3890,15 +3884,8 @@ function setupEventListeners() {
     });
     document.getElementById('btn-save-vars')?.addEventListener('click', saveVariables);
 
-    document.querySelectorAll('.bundle-action').forEach((btn) => {
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            if (btn.disabled) return;
-            const mode = btn.dataset.mode;
-            if (!mode) return;
-            generateBundle(mode);
-        });
-    });
+    document.getElementById('btn-generate-bundle')?.addEventListener('click', () => generateBundle(false));
+    document.getElementById('btn-generate-bundle-notify')?.addEventListener('click', () => generateBundle(true));
 
     document.getElementById('btn-copy-command')?.addEventListener('click', async () => {
         if (!currentOrgId) {
