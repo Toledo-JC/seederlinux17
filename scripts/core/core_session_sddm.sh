@@ -170,6 +170,8 @@ mkdir -p /etc/sddm.conf.d
 
 cat > /etc/sddm.conf.d/seederlinux.conf <<EOF
 # Configuracao SDDM - SeederLinux
+[General]
+DisplayServer=x11
 [Theme]
 Current=breeze
 ThemeDir=/usr/share/sddm/themes
