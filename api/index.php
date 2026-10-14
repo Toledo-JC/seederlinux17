@@ -3623,6 +3623,24 @@ function handleStationCheckin($input) {
 
         if ($isNew && $newToken) {
             $response['station_token'] = $newToken;
+        } elseif (!$isNew && empty($stationToken)) {
+            // Estacao achada por hostname, agente nao mandou token.
+            //
+            // Caso coberto: agente perdeu o token local (reimagem, reset,
+            // primeiro teste interrompido, arquivo apagado manualmente).
+            // Sem isso, a estacao fica em deadlock: existe no banco com
+            // token, mas o agente nunca recebe e nunca consegue autenticar.
+            //
+            // Seguranca: so devolve token se o cliente alcancou o endpoint
+            // da rede interna (.intraer). Ver REQUISITOS-V2.md - gate de IP
+            // para V1.5 e recovery_secret para V2.
+            $existingTokenRow = Database::fetchOne(
+                "SELECT token FROM stations WHERE id = ?",
+                [$stationId]
+            );
+            if (!empty($existingTokenRow['token'])) {
+                $response['station_token'] = $existingTokenRow['token'];
+            }
         }
 
         jsonSuccess($response, 'Check-in registrado');
