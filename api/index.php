@@ -252,6 +252,12 @@ try {
         case 'bundle-by-id':
             handleDownloadBundle($id);
             break;
+        case 'download-bundle':
+            handleDownloadBundleWithMode($input);
+            break;
+        case 'download-bundle':
+            handleDownloadBundleWithMode($input);
+            break;
         case 'bundles':
             requireAuth();
             handleListBundles($orgId);
