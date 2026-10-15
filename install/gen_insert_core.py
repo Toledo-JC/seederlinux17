@@ -5,6 +5,7 @@ Usa dollar-quoting do PostgreSQL ($SeederScript$) para eliminar escaping.
 """
 import os
 import sys
+import argparse
 
 SCRIPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts', 'core')
 OUTPUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'insert_core_scripts.sql')
@@ -61,6 +62,15 @@ def sql_text_array(values):
     return f"ARRAY[{items}]::TEXT[]"
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '--insert-only',
+        action='store_true',
+        help='Do not update rows when a script filename already exists',
+    )
+    parser.add_argument('--output', default=OUTPUT, help='Path for the generated SQL file')
+    args = parser.parse_args()
+
     header = """-- ============================================================================
 -- SeederLinux Lite - Insercao dos Scripts Core
 -- ============================================================================
@@ -78,17 +88,20 @@ def main():
 """
 
     parts = [header]
-    on_conflict = (
-        "ON CONFLICT (filename) DO UPDATE SET\n"
-        "    name = EXCLUDED.name,\n"
-        "    description = EXCLUDED.description,\n"
-        "    content = EXCLUDED.content,\n"
-        "    execution_order = EXCLUDED.execution_order,\n"
-        "    depends_on = EXCLUDED.depends_on,\n"
-        "    version = EXCLUDED.version,\n"
-        "    is_active = EXCLUDED.is_active,\n"
-        "    updated_at = CURRENT_TIMESTAMP;\n"
-    )
+    if args.insert_only:
+        on_conflict = "ON CONFLICT (filename) DO NOTHING;\n"
+    else:
+        on_conflict = (
+            "ON CONFLICT (filename) DO UPDATE SET\n"
+            "    name = EXCLUDED.name,\n"
+            "    description = EXCLUDED.description,\n"
+            "    content = EXCLUDED.content,\n"
+            "    execution_order = EXCLUDED.execution_order,\n"
+            "    depends_on = EXCLUDED.depends_on,\n"
+            "    version = EXCLUDED.version,\n"
+            "    is_active = EXCLUDED.is_active,\n"
+            "    updated_at = CURRENT_TIMESTAMP;\n"
+        )
 
     missing = []
     tag_collisions = []
@@ -188,10 +201,10 @@ def main():
 """
     parts.append(footer)
 
-    with open(OUTPUT, 'w', encoding='utf-8') as f:
+    with open(args.output, 'w', encoding='utf-8') as f:
         f.write('\n'.join(parts))
 
-    print(f"OK: {OUTPUT} gerado com {len(CATALOG)} scripts.")
+    print(f"OK: {args.output} gerado com {len(CATALOG)} scripts.")
 
 if __name__ == '__main__':
     main()

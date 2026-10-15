@@ -243,17 +243,42 @@ _apply_schema() {
 }
 
 # ============================================================
-# _load_core_scripts: carrega os 24 scripts core de provisionamento
+# _load_core_scripts: carrega os scripts core de provisionamento.
+# Banco vazio recebe a carga completa; banco existente recebe somente
+# scripts ausentes, sem atualizar conteúdo nem metadados dos existentes.
 # ============================================================
 _load_core_scripts() {
     local core_file="${SCRIPT_DIR}/insert_core_scripts.sql"
+    local existing_core_count
     if [ ! -f "$core_file" ]; then
         print_warning "Arquivo insert_core_scripts.sql nao encontrado — scripts Core nao foram carregados"
         return 0
     fi
 
+    existing_core_count="$(sudo -u postgres psql -d "${DB_NAME}" -tA -c \
+        "SELECT COUNT(*) FROM scripts WHERE is_core = TRUE;")"
+
     print_step "Carregando scripts Core de provisionamento..."
-    if _psql_file "$core_file" "/tmp/insert-core-apply.log"; then
+    if [ "$existing_core_count" -gt 0 ]; then
+        local insert_only_file="/tmp/insert-core-only-$$.sql"
+        local insert_only_log="/tmp/insert-core-only-$$.log"
+
+        print_step "Banco contém ${existing_core_count} scripts Core; adicionando apenas arquivos ausentes."
+        if ! python3 "${SCRIPT_DIR}/gen_insert_core.py" --insert-only --output "$insert_only_file"; then
+            print_error "Falha ao gerar SQL incremental de scripts Core."
+            exit 1
+        fi
+
+        if _psql_file "$insert_only_file" "$insert_only_log"; then
+            rm -f "$insert_only_file" "$insert_only_log"
+            print_success "Scripts Core ausentes carregados sem atualizar os existentes"
+        else
+            rm -f "$insert_only_file"
+            print_error "Falha ao aplicar SQL incremental de scripts Core. Veja ${insert_only_log}"
+            cat "$insert_only_log" 2>/dev/null || true
+            exit 1
+        fi
+    elif _psql_file "$core_file" "/tmp/insert-core-apply.log"; then
         print_success "Scripts Core carregados com sucesso"
     else
         print_error "Falha ao aplicar insert_core_scripts.sql. Veja /tmp/insert-core-apply.log"
@@ -265,7 +290,7 @@ _load_core_scripts() {
 # ============================================================
 # _create_initial_factory_version: cria versão 'factory' inicial
 # em script_versions para cada script core, e aponta
-# scripts.current_version_id pra ela.
+# scripts.current_version_id para ela quando o ponteiro ainda está NULL.
 #
 # Sem isso, um servidor recém-instalado fica com
 # current_version_id=NULL, e o getScriptContent da API pode cair
@@ -311,7 +336,7 @@ FROM (
     ORDER BY sv.script_id, sv.version_number DESC, sv.id DESC
 ) latest_factory
 WHERE s.id = latest_factory.script_id
-  AND s.current_version_id IS DISTINCT FROM latest_factory.id;
+  AND s.current_version_id IS NULL;
 
 COMMIT;
 SQL

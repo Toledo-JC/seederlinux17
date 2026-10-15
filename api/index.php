@@ -1986,8 +1986,11 @@ function resolveScriptSourceMetadataForOrg($orgId, $scriptId) {
     $orgId = (int)$orgId;
 
     $localRow = Database::fetchOne(
-        "SELECT osv.version_id, osv.content, sv.version_number
+        "SELECT osv.version_id, osv.content, osv.version_number AS om_version_number,
+                o.acronym AS organization_acronym,
+                sv.version_number AS linked_version_number
          FROM om_script_versions osv
+         LEFT JOIN organizations o ON o.id = osv.organization_id
          LEFT JOIN script_versions sv ON sv.id = osv.version_id
          WHERE osv.organization_id = ? AND osv.script_id = ? AND osv.is_active = true
          ORDER BY osv.id DESC LIMIT 1",
@@ -1997,8 +2000,10 @@ function resolveScriptSourceMetadataForOrg($orgId, $scriptId) {
     // Check for local override: either has version_id reference OR direct content
     if ($localRow && (!empty($localRow['version_id']) || !empty($localRow['content']))) {
         return [
-            'source_type' => 'local',
-            'version_number' => (int)($localRow['version_number'] ?? 0),
+            'source_type' => !empty($localRow['organization_acronym'])
+                ? $localRow['organization_acronym'] . ' (override)'
+                : 'om_override',
+            'version_number' => (int)($localRow['linked_version_number'] ?? $localRow['om_version_number'] ?? 0),
         ];
     }
 
