@@ -102,7 +102,7 @@ fi
 # Recusamos senhas mais longas para não criar a falsa impressão de que todos
 # os caracteres estão sendo verificados.
 VNC_PASSWORD=""
-if [[ -n "$VNC_PASSWORD_B64" && "$VNC_PASSWORD_B64" != "__VNC_PASSWORD_B64__" ]]; then
+if [[ -n "$VNC_PASSWORD_B64" && "$VNC_PASSWORD_B64" != __*__ ]]; then
   VNC_PASSWORD="$(printf '%s' "$VNC_PASSWORD_B64" | base64 -d 2>/dev/null || true)"
 fi
 unset VNC_PASSWORD_B64
